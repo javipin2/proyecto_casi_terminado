@@ -1,0 +1,36 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "canchas-la-jugada",
+          "appId": "1:201739490840:android:edc5780957d2b4ca6a156d",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "canchas-la-jugada",
+          "configurations": {
+            "android": "1:201739490840:android:edc5780957d2b4ca6a156d",
+            "web": "1:201739490840:web:d2159a208f44b7ce6a156d"
+          }
+        }
+      }
+    }
+  },
+  "hosting": {
+    "public": "public",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  }
+}
