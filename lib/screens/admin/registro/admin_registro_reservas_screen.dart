@@ -504,7 +504,7 @@ class AdminRegistroReservasScreenState
                               value: null,
                               child: Text('Todas las sedes',
                                   style: GoogleFonts.montserrat())),
-                          ...sedeProvider.validSedes
+                          ...sedeProvider.sedes
                               .map((sede) => DropdownMenuItem(
                                   value: sede,
                                   child: Text(sede,

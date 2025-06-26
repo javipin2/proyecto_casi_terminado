@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:intl/intl.dart';
 import '../models/cancha.dart';
 
@@ -27,6 +28,74 @@ class CanchaProvider with ChangeNotifier {
     });
   }
 
+  /// Obtiene la URL de descarga de Firebase Storage
+  Future<String> _getDownloadUrl(String imagePath) async {
+    try {
+      // Si ya es una URL completa, la devolvemos tal como está
+      if (imagePath.startsWith('http')) {
+        return imagePath;
+      }
+
+      // Si es una referencia gs://, la convertimos
+      if (imagePath.startsWith('gs://')) {
+        final ref = FirebaseStorage.instance.refFromURL(imagePath);
+        return await ref.getDownloadURL();
+      }
+
+      // Si es una ruta simple (como 'canchas/imagen.jpg'), creamos la referencia
+      final ref = FirebaseStorage.instance.ref().child(imagePath);
+      return await ref.getDownloadURL();
+    } catch (e) {
+      print('❌ Error obteniendo URL de descarga para $imagePath: $e');
+      // Devolver una URL por defecto o la ruta original
+      return 'assets/cancha_demo.png';
+    }
+  }
+
+  /// Procesa una cancha para obtener su URL de imagen real
+  Future<Cancha> _procesarCancha(DocumentSnapshot doc) async {
+    final data = doc.data() as Map<String, dynamic>? ?? {};
+    
+    // Obtener la URL real de la imagen
+    String imagenUrl = data['imagen'] as String? ?? 'assets/cancha_demo.png';
+    
+    // Si la imagen no es un asset local, obtener URL de descarga
+    if (!imagenUrl.startsWith('assets/')) {
+      imagenUrl = await _getDownloadUrl(imagenUrl);
+    }
+
+    // Optimizar conversión de preciosPorHorario
+    final preciosPorHorario = <String, Map<String, double>>{};
+    if (data.containsKey('preciosPorHorario')) {
+      final preciosRaw = Map<String, dynamic>.from(data['preciosPorHorario'] as Map);
+      preciosPorHorario.addAll(preciosRaw.map((day, horarios) => MapEntry(
+        day,
+        (horarios is Map)
+            ? Map<String, double>.from(
+                horarios.map((hora, precio) => MapEntry(
+                  hora,
+                  (precio is num) ? precio.toDouble() : 0.0,
+                )),
+              )
+            : <String, double>{},
+      )));
+    }
+
+    return Cancha(
+      id: doc.id,
+      nombre: data['nombre'] as String? ?? '',
+      descripcion: data['descripcion'] as String? ?? '',
+      imagen: imagenUrl, // URL real de descarga
+      techada: data['techada'] as bool? ?? false,
+      ubicacion: data['ubicacion'] as String? ?? '',
+      precio: (data['precio'] is num) ? (data['precio'] as num).toDouble() : 0.0,
+      sede: data['sede'] as String? ?? '',
+      preciosPorHorario: preciosPorHorario,
+      disponible: data['disponible'] as bool? ?? true,
+      motivoNoDisponible: data['motivoNoDisponible'] as String?,
+    );
+  }
+
   Future<void> fetchCanchas(String sede) async {
     _isLoading = true;
     _errorMessage = '';
@@ -49,12 +118,22 @@ class CanchaProvider with ChangeNotifier {
         _errorMessage = "No hay canchas registradas para esta sede.";
         print('⚠️ No se encontraron canchas para $sede');
       } else {
-        _canchas =
-            querySnapshot.docs.map((doc) => Cancha.fromFirestore(doc)).toList();
+        // Procesar cada cancha para obtener URLs reales
+        List<Cancha> canchasProcessed = [];
+        for (DocumentSnapshot doc in querySnapshot.docs) {
+          try {
+            final cancha = await _procesarCancha(doc);
+            canchasProcessed.add(cancha);
+            print('✅ Cancha procesada: ${cancha.nombre} - Imagen: ${cancha.imagen}');
+          } catch (e) {
+            print('❌ Error procesando cancha ${doc.id}: $e');
+            // Agregar cancha con imagen por defecto
+            canchasProcessed.add(Cancha.fromFirestore(doc));
+          }
+        }
+        
+        _canchas = canchasProcessed;
         print('✅ Canchas cargadas para $sede: ${_canchas.length}');
-        _canchas.forEach((cancha) {
-          print('  - ${cancha.nombre} (${cancha.sede})');
-        });
       }
     } catch (error) {
       _errorMessage = 'Error al cargar canchas: $error';
@@ -79,11 +158,23 @@ class CanchaProvider with ChangeNotifier {
 
       if (querySnapshot.docs.isEmpty) {
         _errorMessage = "No hay canchas registradas.";
+      } else {
+        // Procesar cada cancha para obtener URLs reales
+        List<Cancha> canchasProcessed = [];
+        for (DocumentSnapshot doc in querySnapshot.docs) {
+          try {
+            final cancha = await _procesarCancha(doc);
+            canchasProcessed.add(cancha);
+          } catch (e) {
+            print('❌ Error procesando cancha ${doc.id}: $e');
+            // Agregar cancha con imagen por defecto
+            canchasProcessed.add(Cancha.fromFirestore(doc));
+          }
+        }
+        
+        _canchas = canchasProcessed;
+        print('✅ Todas las canchas cargadas: ${_canchas.length}');
       }
-
-      _canchas =
-          querySnapshot.docs.map((doc) => Cancha.fromFirestore(doc)).toList();
-      print('✅ Todas las canchas cargadas: ${_canchas.length}');
     } catch (error) {
       _errorMessage = 'Error al cargar todas las canchas: $error';
     } finally {
@@ -108,9 +199,8 @@ class CanchaProvider with ChangeNotifier {
         Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
         final canchaId = data['cancha_id'] ?? '';
         final fecha = DateFormat('yyyy-MM-dd').parse(data['fecha']);
-        final horaStrFull =
-            data['horario'] as String; // Ej. "8:00 PM" o "20:00"
-        final horaStr = horaStrFull.split(' ')[0]; // Ej. "8:00"
+        final horaStrFull = data['horario'] as String;
+        final horaStr = horaStrFull.split(' ')[0];
         final is12HourFormat =
             horaStrFull.contains(RegExp(r'(AM|PM)', caseSensitive: false));
         int hour = int.parse(horaStr.split(':')[0]);
@@ -119,9 +209,9 @@ class CanchaProvider with ChangeNotifier {
         if (is12HourFormat) {
           final period = horaStrFull.toUpperCase().contains('PM') ? 'PM' : 'AM';
           if (period == 'PM' && hour != 12) {
-            hour += 12; // Convertir a formato 24h
+            hour += 12;
           } else if (period == 'AM' && hour == 12) {
-            hour = 0; // 12 AM es 00:00
+            hour = 0;
           }
         }
 

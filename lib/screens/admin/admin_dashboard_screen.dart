@@ -8,6 +8,7 @@ import 'graficas/graficas_screen.dart';
 import 'reservas/admin_reservas_horarios_screen.dart';
 import 'registro/admin_registro_reservas_screen.dart';
 import '../sede_screen.dart';
+import 'sedes/admin_sedes_screen.dart'; // Nueva importación
 
 class AdminDashboardScreen extends StatefulWidget {
   const AdminDashboardScreen({super.key});
@@ -82,7 +83,6 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
         ),
         backgroundColor: _backgroundColor,
         elevation: 0,
-        // Eliminamos el botón de retroceso automático
         automaticallyImplyLeading: false,
         actions: [
           Tooltip(
@@ -94,11 +94,9 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
           ),
         ],
       ),
-      // Solo mostramos el drawer en móvil/tablet
       drawer: isDesktop ? null : _buildDrawer(context, user),
       body: Row(
         children: [
-          // No mostramos NavigationRail en desktop para este dashboard
           Expanded(
             child: Padding(
               padding: const EdgeInsets.all(16.0),
@@ -115,7 +113,6 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
                     mainAxisSpacing: 16,
                     childAspectRatio: 1.2,
                     children: [
-                      // Eliminamos la card de "Inicio"
                       _buildAdminCard(
                         icon: Icons.people,
                         title: 'Clientes',
@@ -127,11 +124,19 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
                       ),
                       _buildAdminCard(
                         icon: Icons.business,
-                        title: 'Sedes y Canchas',
-                        description: 'Administra sedes y asigna canchas.',
+                        title: 'Canchas',
+                        description: 'Administra tus canchas.',
                         color: Colors.orange,
                         context: context,
                         screen: const CanchasScreen(),
+                      ),
+                      _buildAdminCard(
+                        icon: Icons.location_city,
+                        title: 'Sedes',
+                        description: 'Gestiona las sedes de tu negocio.',
+                        color: Colors.purple,
+                        context: context,
+                        screen: const AdminSedesScreen(),
                       ),
                       _buildAdminCard(
                         icon: Icons.bar_chart,
@@ -208,7 +213,6 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
             title: 'Dashboard',
             onTap: () {
               Navigator.pop(context);
-              // Ya estamos en el dashboard, no necesitamos navegar
             },
           ),
           _buildDrawerItem(
@@ -230,6 +234,18 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
               Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => const CanchasScreen()),
+              );
+            },
+          ),
+          _buildDrawerItem(
+            icon: Icons.location_city,
+            title: 'Sedes',
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (context) => const AdminSedesScreen()),
               );
             },
           ),

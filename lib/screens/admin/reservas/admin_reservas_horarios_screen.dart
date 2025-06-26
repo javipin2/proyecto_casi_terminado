@@ -15,6 +15,7 @@ import '../../../providers/sede_provider.dart';
 import 'detalles_reserva_screen.dart';
 import 'agregar_reserva_screen.dart';
 
+
 class AdminReservasScreen extends StatefulWidget {
   const AdminReservasScreen({super.key});
 
@@ -68,7 +69,7 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
       setState(() {
-        _selectedSede = sedeProvider.sede;
+        _selectedSede = sedeProvider.selectedSede;
       });
       _loadCanchas();
     });
@@ -82,28 +83,6 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
     super.dispose();
   }
 
-  int _parseHora(String horarioStr) {
-    if (horarioStr.isEmpty) return 0;
-
-    final pattern = RegExp(r'(\d+):(\d+)\s*(AM|PM)?', caseSensitive: false);
-    final match = pattern.firstMatch(horarioStr);
-
-    if (match == null) {
-      debugPrint('Formato de horario inválido: $horarioStr');
-      return 0;
-    }
-
-    int hour = int.tryParse(match.group(1) ?? '0') ?? 0;
-    final ampm = match.group(3)?.toUpperCase();
-
-    if (ampm == 'PM' && hour != 12) {
-      hour += 12;
-    } else if (ampm == 'AM' && hour == 12) {
-      hour = 0;
-    }
-
-    return hour;
-  }
 
   Future<void> _loadCanchas() async {
     final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
@@ -151,85 +130,74 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
   }
 
   Future<void> _loadReservas() async {
-    if (_selectedCancha == null) return;
-    setState(() {
-      _isLoading = true;
-      _reservas.clear();
-      _reservedMap.clear();
-      _selectedHours.clear();
-    });
+  if (_selectedCancha == null) return;
+  setState(() {
+    _isLoading = true;
+    _reservas.clear();
+    _reservedMap.clear();
+    _selectedHours.clear();
+  });
 
-    final snapshotKey =
-        '${DateFormat('yyyy-MM-dd').format(_selectedDate)}_${_selectedCancha!.id}_$_selectedSede';
+  final snapshotKey =
+      '${DateFormat('yyyy-MM-dd').format(_selectedDate)}_${_selectedCancha!.id}_$_selectedSede';
 
-    try {
-      QuerySnapshot? querySnapshot = _reservasSnapshots[snapshotKey];
+  try {
+    QuerySnapshot? querySnapshot = _reservasSnapshots[snapshotKey];
 
-      if (querySnapshot == null) {
-        for (int i = 0; i < 3; i++) {
-          try {
-            querySnapshot = await FirebaseFirestore.instance
-                .collection('reservas')
-                .where('fecha',
-                    isEqualTo: DateFormat('yyyy-MM-dd').format(_selectedDate))
-                .where('sede', isEqualTo: _selectedSede)
-                .where('cancha_id', isEqualTo: _selectedCancha!.id)
-                .get();
-            break;
-          } catch (e) {
-            if (i == 2) rethrow;
-            await Future.delayed(Duration(milliseconds: 500));
-          }
-        }
-        if (_reservasSnapshots.length >= 5) {
-          _reservasSnapshots.remove(_reservasSnapshots.keys.first);
-        }
-        _reservasSnapshots[snapshotKey] = querySnapshot!;
-      }
-
-      List<Reserva> reservasTemp = [];
-      for (var doc in querySnapshot.docs) {
+    if (querySnapshot == null) {
+      for (int i = 0; i < 3; i++) {
         try {
-          final reserva = Reserva.fromFirestore(doc);
-          final data = doc.data() as Map<String, dynamic>;
-          if (data.containsKey('horario')) {
-            final horarioStr = data['horario'] as String? ?? '0:00 AM';
-            final hour = _parseHora(horarioStr);
-            final minuteMatch = RegExp(r':(\d+)').firstMatch(horarioStr);
-            final minute =
-                minuteMatch != null ? int.parse(minuteMatch.group(1)!) : 0;
-            reserva.horario =
-                Horario(hora: TimeOfDay(hour: hour, minute: minute));
-          }
-          if (reserva.cancha.nombre.isEmpty && _selectedCancha != null) {
-            reserva.cancha = _selectedCancha!;
-          }
-          _reservedMap[reserva.horario.hora.hour] = reserva;
-          reservasTemp.add(reserva);
+          querySnapshot = await FirebaseFirestore.instance
+              .collection('reservas')
+              .where('fecha',
+                  isEqualTo: DateFormat('yyyy-MM-dd').format(_selectedDate))
+              .where('sede', isEqualTo: _selectedSede)
+              .where('cancha_id', isEqualTo: _selectedCancha!.id)
+              .get();
+          break;
         } catch (e) {
-          debugPrint("Error al procesar documento: $e");
+          if (i == 2) rethrow;
+          await Future.delayed(Duration(milliseconds: 500));
         }
       }
+      if (_reservasSnapshots.length >= 5) {
+        _reservasSnapshots.remove(_reservasSnapshots.keys.first);
+      }
+      _reservasSnapshots[snapshotKey] = querySnapshot!;
+    }
 
-      if (mounted) {
-        setState(() {
-          _reservas = reservasTemp;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        _showErrorSnackBar('Error al cargar reservas: $e');
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-        _fadeController.reset();
-        _fadeController.forward();
+    List<Reserva> reservasTemp = [];
+    for (var doc in querySnapshot.docs) {
+      try {
+        final reserva = await Reserva.fromFirestore(doc);
+        final hour = reserva.horario.hora.hour;
+        _reservedMap[hour] = reserva;
+        reservasTemp.add(reserva);
+      } catch (e) {
+        debugPrint("Error al procesar documento: $e");
       }
     }
+
+    if (mounted) {
+      setState(() {
+        _reservas = reservasTemp;
+      });
+    }
+  } catch (e) {
+    if (mounted) {
+      _showErrorSnackBar('Error al cargar reservas: $e');
+    }
+  } finally {
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+      });
+      _fadeController.reset();
+      _fadeController.forward();
+    }
   }
+}
+
 
   void _showErrorSnackBar(String message) {
     if (mounted) {

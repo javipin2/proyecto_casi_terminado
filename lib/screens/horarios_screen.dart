@@ -6,6 +6,7 @@ import 'package:table_calendar/table_calendar.dart';
 import '../models/cancha.dart';
 import '../models/horario.dart';
 import '../providers/sede_provider.dart';
+import '../providers/cancha_provider.dart';
 import 'detalles_screen.dart';
 import 'reserva_detalles_screen.dart';
 import '../main.dart';
@@ -28,6 +29,7 @@ class _HorariosScreenState extends State<HorariosScreen>
   bool _calendarExpanded = false;
   final Map<String, QuerySnapshot> _reservasSnapshots = {};
   Timer? _debounceTimer;
+  Cancha? _updatedCancha;
 
   late AnimationController _fadeController;
   late Animation<double> _fadeAnimation;
@@ -59,7 +61,23 @@ class _HorariosScreenState extends State<HorariosScreen>
       curve: Curves.easeOutCubic,
     ));
 
-    _loadHorarios();
+    final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
+    final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
+    canchaProvider.fetchCanchas(sedeProvider.selectedSede).then((_) {
+      setState(() {
+        _updatedCancha = canchaProvider.canchas.firstWhere(
+          (c) => c.id == widget.cancha.id,
+          orElse: () => widget.cancha,
+        );
+        _loadHorarios();
+      });
+    }).catchError((_) {
+      setState(() {
+        _updatedCancha = widget.cancha;
+        _loadHorarios();
+      });
+    });
+
     _fadeController.forward();
     _slideController.forward();
   }
@@ -94,7 +112,7 @@ class _HorariosScreenState extends State<HorariosScreen>
     _debounceTimer?.cancel();
 
     final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
-    final sedeSeleccionada = sedeProvider.sede;
+    final sedeSeleccionada = sedeProvider.selectedSede;
     final snapshotKey =
         '${DateFormat('yyyy-MM-dd').format(_selectedDate)}_${widget.cancha.id}_$sedeSeleccionada';
 
@@ -104,8 +122,7 @@ class _HorariosScreenState extends State<HorariosScreen>
       if (reservasSnapshot == null) {
         reservasSnapshot = await FirebaseFirestore.instance
             .collection('reservas')
-            .where('fecha',
-                isEqualTo: DateFormat('yyyy-MM-dd').format(_selectedDate))
+            .where('fecha', isEqualTo: DateFormat('yyyy-MM-dd').format(_selectedDate))
             .where('cancha_id', isEqualTo: widget.cancha.id)
             .where('sede', isEqualTo: sedeSeleccionada)
             .get();
@@ -139,8 +156,7 @@ class _HorariosScreenState extends State<HorariosScreen>
           content: Text('Error al cargar horarios: $e'),
           backgroundColor: Colors.red.shade800,
           behavior: SnackBarBehavior.floating,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           margin: const EdgeInsets.all(12),
         ),
       );
@@ -154,15 +170,13 @@ class _HorariosScreenState extends State<HorariosScreen>
   }
 
   void _onDaySelected(DateTime selectedDay, DateTime focusedDay) {
-    if (selectedDay
-        .isBefore(DateTime.now().subtract(const Duration(days: 1)))) {
+    if (selectedDay.isBefore(DateTime.now().subtract(const Duration(days: 1)))) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: const Text('No puedes seleccionar fechas pasadas'),
           backgroundColor: Colors.orange.shade800,
           behavior: SnackBarBehavior.floating,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           margin: const EdgeInsets.all(12),
         ),
       );
@@ -189,10 +203,7 @@ class _HorariosScreenState extends State<HorariosScreen>
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [
-            Color(0xFFF5F5F5),
-            Colors.white,
-          ],
+          colors: [Color(0xFFF5F5F5), Colors.white],
         ),
       ),
       child: Scaffold(
@@ -290,8 +301,8 @@ class _HorariosScreenState extends State<HorariosScreen>
           ClipRRect(
             borderRadius: BorderRadius.circular(12),
             child: Image.network(
-              widget.cancha.imagen.startsWith('http')
-                  ? widget.cancha.imagen
+              (_updatedCancha?.imagen ?? widget.cancha.imagen).startsWith('http')
+                  ? _updatedCancha?.imagen ?? widget.cancha.imagen
                   : 'assets/cancha_demo.png',
               width: 70,
               height: 70,
@@ -302,8 +313,7 @@ class _HorariosScreenState extends State<HorariosScreen>
                   width: 70,
                   height: 70,
                   color: Colors.grey.shade200,
-                  child: const Icon(Icons.sports_soccer_outlined,
-                      color: Colors.grey),
+                  child: const Icon(Icons.sports_soccer_outlined, color: Colors.grey),
                 );
               },
             ),
@@ -314,7 +324,7 @@ class _HorariosScreenState extends State<HorariosScreen>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  widget.cancha.nombre,
+                  _updatedCancha?.nombre ?? widget.cancha.nombre,
                   style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w600,
@@ -323,47 +333,42 @@ class _HorariosScreenState extends State<HorariosScreen>
                 ),
                 const SizedBox(height: 4),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                   decoration: BoxDecoration(
-                    color: widget.cancha.techada
+                    color: (_updatedCancha?.techada ?? widget.cancha.techada)
                         ? Colors.blue.shade50
                         : Colors.amber.shade50,
                     borderRadius: BorderRadius.circular(20),
                     border: Border.all(
-                      color: widget.cancha.techada
+                      color: (_updatedCancha?.techada ?? widget.cancha.techada)
                           ? Colors.blue.shade200
                           : Colors.amber.shade200,
                       width: 1,
                     ),
                   ),
                   child: Text(
-                    widget.cancha.techada ? 'Techada' : 'Al aire libre',
+                    (_updatedCancha?.techada ?? widget.cancha.techada) ? 'Techada' : 'Al aire libre',
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w500,
-                      color: widget.cancha.techada
+                      color: (_updatedCancha?.techada ?? widget.cancha.techada)
                           ? Colors.blue.shade700
                           : Colors.amber.shade700,
                     ),
                   ),
                 ),
-                if (!widget.cancha.disponible &&
-                    widget.cancha.motivoNoDisponible != null) ...[
+                if ((!(_updatedCancha?.disponible ?? widget.cancha.disponible)) &&
+                    (_updatedCancha?.motivoNoDisponible ?? widget.cancha.motivoNoDisponible) != null) ...[
                   const SizedBox(height: 4),
                   Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                     decoration: BoxDecoration(
                       color: Colors.red.shade50,
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: Colors.red.shade200,
-                        width: 1,
-                      ),
+                      border: Border.all(color: Colors.red.shade200, width: 1),
                     ),
                     child: Text(
-                      widget.cancha.motivoNoDisponible!,
+                      _updatedCancha?.motivoNoDisponible ?? widget.cancha.motivoNoDisponible!,
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w500,
@@ -391,7 +396,7 @@ class _HorariosScreenState extends State<HorariosScreen>
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  Provider.of<SedeProvider>(context).sede,
+                  Provider.of<SedeProvider>(context).selectedSede,
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w500,
@@ -408,9 +413,9 @@ class _HorariosScreenState extends State<HorariosScreen>
 
   Widget _buildDateSelector() {
     return GestureDetector(
-      onTap: widget.cancha.disponible
+      onTap: (_updatedCancha?.disponible ?? widget.cancha.disponible)
           ? _toggleCalendar
-          : null, // Deshabilitar si no está disponible
+          : null,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         decoration: BoxDecoration(
@@ -464,9 +469,7 @@ class _HorariosScreenState extends State<HorariosScreen>
             ),
             const Spacer(),
             Icon(
-              _calendarExpanded
-                  ? Icons.keyboard_arrow_up
-                  : Icons.keyboard_arrow_down,
+              _calendarExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
               color: Colors.grey.shade700,
             ),
           ],
@@ -561,7 +564,7 @@ class _HorariosScreenState extends State<HorariosScreen>
   }
 
   Widget _buildHorariosGrid() {
-    if (!widget.cancha.disponible) {
+    if (!(_updatedCancha?.disponible ?? widget.cancha.disponible)) {
       return Expanded(
         child: Center(
           child: Column(
@@ -579,7 +582,7 @@ class _HorariosScreenState extends State<HorariosScreen>
               ),
               const SizedBox(height: 8),
               Text(
-                widget.cancha.motivoNoDisponible ?? 'No especificado',
+                _updatedCancha?.motivoNoDisponible ?? widget.cancha.motivoNoDisponible ?? 'No especificado',
                 style: TextStyle(
                   fontSize: 14,
                   color: Colors.grey.shade600,
@@ -596,8 +599,7 @@ class _HorariosScreenState extends State<HorariosScreen>
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.white,
                   foregroundColor: Colors.grey.shade800,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                   elevation: 0,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
@@ -622,8 +624,7 @@ class _HorariosScreenState extends State<HorariosScreen>
                 height: 40,
                 child: CircularProgressIndicator(
                   strokeWidth: 3,
-                  valueColor:
-                      AlwaysStoppedAnimation<Color>(Colors.green.shade300),
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.green.shade300),
                 ),
               ),
               const SizedBox(height: 16),
@@ -647,8 +648,7 @@ class _HorariosScreenState extends State<HorariosScreen>
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.access_time_rounded,
-                  size: 70, color: Colors.grey.shade300),
+              Icon(Icons.access_time_rounded, size: 70, color: Colors.grey.shade300),
               const SizedBox(height: 16),
               Text(
                 'No hay horarios disponibles',
@@ -677,8 +677,7 @@ class _HorariosScreenState extends State<HorariosScreen>
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.white,
                   foregroundColor: Colors.grey.shade800,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                   elevation: 0,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
@@ -704,182 +703,181 @@ class _HorariosScreenState extends State<HorariosScreen>
         itemCount: horarios.length,
         itemBuilder: (context, index) {
           final horario = horarios[index];
-          return _buildHorarioCard(
-              horario, Provider.of<SedeProvider>(context, listen: false).sede);
+          return _buildHorarioCard(horario, Provider.of<SedeProvider>(context, listen: false).selectedSede);
         },
       ),
     );
   }
 
-Widget _buildHorarioCard(Horario horario, String sede) {
-  final String day = DateFormat('EEEE', 'es').format(_selectedDate).toLowerCase();
-  final String horaStr = '${horario.hora.hour}:00';
-  final Map<String, double>? dayPrices = widget.cancha.preciosPorHorario[day];
-  final double precio = dayPrices != null && dayPrices.containsKey(horaStr)
-      ? dayPrices[horaStr] ?? widget.cancha.precio
-      : widget.cancha.precio;
+  Widget _buildHorarioCard(Horario horario, String sede) {
+    final String day = DateFormat('EEEE', 'es').format(_selectedDate).toLowerCase();
+    final String horaStr = '${horario.hora.hour}:00';
+    final Map<String, double>? dayPrices = (_updatedCancha?.preciosPorHorario ?? widget.cancha.preciosPorHorario)[day];
+    final double precio = dayPrices != null && dayPrices.containsKey(horaStr)
+        ? dayPrices[horaStr] ?? (_updatedCancha?.precio ?? widget.cancha.precio)
+        : _updatedCancha?.precio ?? widget.cancha.precio;
 
-  return AnimatedBuilder(
-    animation: _fadeController,
-    builder: (context, child) {
-      return FadeTransition(
-        opacity: _fadeAnimation,
-        child: child,
-      );
-    },
-    child: InkWell(
-      onTap: () {
-        if (horario.estado == EstadoHorario.vencido) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Text('Esta hora ya ha pasado'),
-              backgroundColor: Colors.grey.shade600,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-              margin: const EdgeInsets.all(12),
-            ),
-          );
-          return;
-        }
-        if (mounted) {
-          Navigator.push<bool>(
-            context,
-            PageRouteBuilder(
-              pageBuilder: (_, animation, __) {
-                return FadeTransition(
-                  opacity: animation,
-                  child: horario.estado == EstadoHorario.disponible
-                      ? DetallesScreen(
-                          cancha: widget.cancha,
-                          fecha: _selectedDate,
-                          horario: horario,
-                          sede: sede,
-                        )
-                      : ReservaDetallesScreen(
-                          cancha: widget.cancha,
-                          fecha: _selectedDate,
-                          horario: horario,
-                          sede: sede,
-                        ),
-                );
-              },
-              transitionDuration: const Duration(milliseconds: 300),
-            ),
-          ).then((reservaRealizada) {
-            if (reservaRealizada == true) {
-              _reservasSnapshots.clear();
-              _loadHorarios();
-            }
-          });
-        }
+    return AnimatedBuilder(
+      animation: _fadeController,
+      builder: (context, child) {
+        return FadeTransition(
+          opacity: _fadeAnimation,
+          child: child,
+        );
       },
-      borderRadius: BorderRadius.circular(12),
-      splashColor: horario.estado == EstadoHorario.reservado
-          ? Colors.red.shade100.withValues(alpha: 0.3)
-          : Colors.green.shade100.withValues(alpha: 0.3),
-      highlightColor: horario.estado == EstadoHorario.reservado
-          ? Colors.red.shade200.withValues(alpha: 0.2)
-          : Colors.green.shade200.withValues(alpha: 0.2),
-      child: Container(
-        decoration: BoxDecoration(
-          gradient: horario.estado == EstadoHorario.reservado
-              ? LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    const Color.fromARGB(255, 134, 134, 134),
-                    const Color.fromARGB(255, 243, 243, 243),
-                  ],
-                )
-              : null,
-          color: horario.estado == EstadoHorario.disponible
-              ? Colors.white
-              : horario.estado == EstadoHorario.vencido
-                  ? Colors.grey.shade300
-                  : null,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
+      child: InkWell(
+        onTap: () {
+          if (horario.estado == EstadoHorario.vencido) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('Esta hora ya ha pasado'),
+                backgroundColor: Colors.grey.shade600,
+                behavior: SnackBarBehavior.floating,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                margin: const EdgeInsets.all(12),
+              ),
+            );
+            return;
+          }
+          if (mounted) {
+            Navigator.push<bool>(
+              context,
+              PageRouteBuilder(
+                pageBuilder: (_, animation, __) {
+                  return FadeTransition(
+                    opacity: animation,
+                    child: horario.estado == EstadoHorario.disponible
+                        ? DetallesScreen(
+                            cancha: widget.cancha,
+                            fecha: _selectedDate,
+                            horario: horario,
+                            sede: sede,
+                          )
+                        : ReservaDetallesScreen(
+                            cancha: widget.cancha,
+                            fecha: _selectedDate,
+                            horario: horario,
+                            sede: sede,
+                          ),
+                  );
+                },
+                transitionDuration: const Duration(milliseconds: 300),
+              ),
+            ).then((reservaRealizada) {
+              if (reservaRealizada == true) {
+                _reservasSnapshots.clear();
+                _loadHorarios();
+              }
+            });
+          }
+        },
+        borderRadius: BorderRadius.circular(12),
+        splashColor: horario.estado == EstadoHorario.reservado
+            ? Colors.red.shade100.withAlpha(50)
+            : Colors.green.shade100.withAlpha(50),
+        highlightColor: horario.estado == EstadoHorario.reservado
+            ? Colors.red.shade200.withAlpha(30)
+            : Colors.green.shade200.withAlpha(30),
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: horario.estado == EstadoHorario.reservado
+                ? LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      const Color.fromARGB(255, 134, 134, 134),
+                      const Color.fromARGB(255, 243, 243, 243),
+                    ],
+                  )
+                : null,
             color: horario.estado == EstadoHorario.disponible
-                ? Colors.green.shade300
-                : horario.estado == EstadoHorario.reservado
-                    ? const Color.fromARGB(255, 168, 168, 168)
-                    : Colors.grey.shade400,
-            width: 1.5,
+                ? Colors.white
+                : horario.estado == EstadoHorario.vencido
+                    ? Colors.grey.shade300
+                    : null,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: horario.estado == EstadoHorario.disponible
+                  ? Colors.green.shade300
+                  : horario.estado == EstadoHorario.reservado
+                      ? const Color.fromARGB(255, 168, 168, 168)
+                      : Colors.grey.shade400,
+              width: 1.5,
+            ),
+            boxShadow: [
+              if (horario.estado == EstadoHorario.disponible)
+                BoxShadow(
+                  color: Colors.green.withAlpha(26),
+                  blurRadius: 5,
+                  offset: const Offset(0, 2),
+                ),
+              if (horario.estado == EstadoHorario.reservado)
+                BoxShadow(
+                  color: const Color.fromARGB(255, 77, 77, 77).withAlpha(50),
+                  blurRadius: 8,
+                  offset: const Offset(0, 3),
+                ),
+            ],
           ),
-          boxShadow: [
-            if (horario.estado == EstadoHorario.disponible)
-              BoxShadow(
-                color: Colors.green.withAlpha(26),
-                blurRadius: 5,
-                offset: const Offset(0, 2),
-              ),
-            if (horario.estado == EstadoHorario.reservado)
-              BoxShadow(
-                color: const Color.fromARGB(255, 77, 77, 77).withAlpha(50),
-                blurRadius: 8,
-                offset: const Offset(0, 3),
-              ),
-          ],
-        ),
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                horario.horaFormateada,
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: horario.estado == EstadoHorario.disponible
-                      ? Colors.green.shade700
-                      : Colors.white70,
-                  letterSpacing: 0.2,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                NumberFormat.currency(symbol: '\$', decimalDigits: 0).format(precio),
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: horario.estado == EstadoHorario.disponible
-                      ? Colors.green.shade700
-                      : Colors.white70,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(
-                  color: horario.estado == EstadoHorario.disponible
-                      ? Colors.green.shade50
-                      : horario.estado == EstadoHorario.reservado
-                          ? Colors.red.shade50
-                          : Colors.black12,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text(
-                  horario.estado == EstadoHorario.disponible
-                      ? 'Disponible'
-                      : horario.estado == EstadoHorario.reservado
-                          ? 'Reservado'
-                          : 'Vencido',
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  horario.horaFormateada,
                   style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w500,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
                     color: horario.estado == EstadoHorario.disponible
                         ? Colors.green.shade700
-                        : horario.estado == EstadoHorario.reservado
-                            ? const Color.fromARGB(255, 0, 0, 0)
-                            : Colors.black38,
+                        : Colors.black54,
+                    letterSpacing: 0.2,
                   ),
                 ),
-              ),
-            ],
+                const SizedBox(height: 4),
+                Text(
+                  NumberFormat.currency(symbol: '\$', decimalDigits: 0).format(precio),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: horario.estado == EstadoHorario.disponible
+                        ? Colors.green.shade700
+                        : Colors.black54,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: horario.estado == EstadoHorario.disponible
+                        ? Colors.green.shade50
+                        : horario.estado == EstadoHorario.reservado
+                            ? Colors.red.shade50
+                            : Colors.black12,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    horario.estado == EstadoHorario.disponible
+                        ? 'Disponible'
+                        : horario.estado == EstadoHorario.reservado
+                            ? 'Reservado'
+                            : 'Vencido',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w500,
+                      color: horario.estado == EstadoHorario.disponible
+                          ? Colors.green.shade700
+                          : horario.estado == EstadoHorario.reservado
+                              ? const Color.fromARGB(255, 0, 0, 0)
+                              : Colors.black38,
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
-    ),
-  );
-}
+    );
+  }
 }

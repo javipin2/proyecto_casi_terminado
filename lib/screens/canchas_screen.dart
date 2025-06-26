@@ -50,12 +50,12 @@ class _CanchasScreenState extends State<CanchasScreen>
 
   Future<void> _loadCanchas() async {
     try {
-      final sede = Provider.of<SedeProvider>(context, listen: false).sede;
-      print('📌 Cargando canchas para la sede: $sede');
+      final sede = Provider.of<SedeProvider>(context, listen: false).selectedSede;
+      debugPrint('📌 Cargando canchas para la sede: $sede');
       await Provider.of<CanchaProvider>(context, listen: false)
           .fetchCanchas(sede);
     } catch (e) {
-      print('❌ Error al cargar canchas: $e');
+      debugPrint('❌ Error al cargar canchas: $e');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -144,7 +144,7 @@ class _CanchasScreenState extends State<CanchasScreen>
               padding: const EdgeInsets.symmetric(horizontal: 16.0),
               child: Chip(
                 label: Text(
-                  'Sede: ${sedeProvider.sede}',
+                  'Sede: ${sedeProvider.selectedSede}',
                   style:
                       const TextStyle(fontSize: 12, color: Color(0xFF424242)),
                 ),

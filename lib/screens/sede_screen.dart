@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter/services.dart';
-import 'dart:ui';
 import '../providers/sede_provider.dart';
 import 'canchas_screen.dart';
 import 'admin/admin_login_screen.dart';
@@ -18,10 +17,14 @@ class _SedeScreenState extends State<SedeScreen>
   late AnimationController _controller;
   late Animation<Offset> _slideAnimation;
   late Animation<double> _fadeAnimation;
-  final List<Animation<double>> _buttonScales = [];
 
   int _logoTapCount = 0;
   DateTime? _lastTapTime;
+
+  // Estilos constantes para mejor organización
+  static const _primaryColor = Color(0xFF2E7D60);
+  static const _accentColor = Color(0xFF4CAF50);
+  static const _cardRadius = 16.0;
 
   @override
   void initState() {
@@ -59,19 +62,8 @@ class _SedeScreenState extends State<SedeScreen>
       ),
     );
 
-    for (int i = 0; i < 2; i++) {
-      _buttonScales.add(
-        Tween<double>(begin: 0.9, end: 1.0).animate(
-          CurvedAnimation(
-            parent: _controller,
-            curve: Interval(0.3 + (i * 0.1), 0.7 + (i * 0.1),
-                curve: Curves.easeOutCubic),
-          ),
-        ),
-      );
-    }
-
-    Future.delayed(const Duration(milliseconds: 50), () {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Provider.of<SedeProvider>(context, listen: false).fetchSedes();
       _controller.forward();
     });
   }
@@ -82,19 +74,39 @@ class _SedeScreenState extends State<SedeScreen>
     super.dispose();
   }
 
+  // Función para determinar si es pantalla grande
+  bool _isLargeScreen(BuildContext context) {
+    return MediaQuery.of(context).size.width > 768;
+  }
+
+  // Función para obtener el ancho máximo del contenido
+  double _getMaxContentWidth(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    if (screenWidth > 1200) return 1000;
+    if (screenWidth > 768) return 700;
+    return screenWidth;
+  }
+
+  // Función para obtener tamaños responsivos
+  double _getResponsiveSize(BuildContext context, double mobileSize, double desktopSize) {
+    return _isLargeScreen(context) ? desktopSize : mobileSize;
+  }
+
   void _seleccionarSede(BuildContext context, String sede) async {
     HapticFeedback.lightImpact();
-    await Provider.of<SedeProvider>(context, listen: false).setSede(sede);
+    Provider.of<SedeProvider>(context, listen: false).setSede(sede);
     if (!mounted) return;
 
-    Navigator.push(
+    Navigator.pushReplacement(
       context,
       PageRouteBuilder(
         pageBuilder: (context, animation, secondaryAnimation) =>
             const CanchasScreen(),
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
-          final curvedAnimation =
-              CurvedAnimation(parent: animation, curve: Curves.easeOutQuart);
+          final curvedAnimation = CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutQuart,
+          );
           return FadeTransition(
             opacity: curvedAnimation,
             child: SlideTransition(
@@ -130,8 +142,7 @@ class _SedeScreenState extends State<SedeScreen>
           PageRouteBuilder(
             pageBuilder: (context, animation, secondaryAnimation) =>
                 const LoginScreen(),
-            transitionsBuilder:
-                (context, animation, secondaryAnimation, child) {
+            transitionsBuilder: (context, animation, secondaryAnimation, child) {
               final curvedAnimation = CurvedAnimation(
                 parent: animation,
                 curve: Curves.easeInOutQuart,
@@ -160,7 +171,13 @@ class _SedeScreenState extends State<SedeScreen>
 
   @override
   Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    final sedeProvider = Provider.of<SedeProvider>(context);
+    _isLargeScreen(context);
+    final maxWidth = _getMaxContentWidth(context);
+
     return Scaffold(
+      backgroundColor: Colors.white, // Fondo blanco
       extendBodyBehindAppBar: true,
       appBar: AppBar(
         title: FadeTransition(
@@ -170,119 +187,124 @@ class _SedeScreenState extends State<SedeScreen>
         backgroundColor: Colors.transparent,
         elevation: 0,
         centerTitle: true,
-        // Eliminamos el botón de retroceso automático
         automaticallyImplyLeading: false,
       ),
-      body: Stack(
-        children: [
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              gradient: LinearGradient(
-                colors: [
-                  Colors.white,
-                  const Color(0xFFF8F9FA),
-                ],
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-              ),
-            ),
-          ),
-          Positioned.fill(
-            child: FadeTransition(
-              opacity: Animation<double>.fromValueListenable(
-                ValueNotifier(_fadeAnimation.value * 0.4),
-              ),
-              child: CustomPaint(
-                painter: MinimalistPatternPainter(),
-                size: Size.infinite,
-              ),
-            ),
-          ),
-          SafeArea(
-            child: Center(
-              child: SlideTransition(
-                position: _slideAnimation,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 30),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      FadeTransition(
+      body: Container(
+        color: Colors.white, // Fondo blanco explícito
+        width: double.infinity,
+        child: Center(
+          child: Container(
+            width: maxWidth,
+            child: SafeArea(
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: _getResponsiveSize(context, size.width * 0.05, 24.0),
+                  vertical: _getResponsiveSize(context, size.height * 0.02, 32.0),
+                ),
+                child: Column(
+                  children: [
+                    // Header Section
+                    SlideTransition(
+                      position: _slideAnimation,
+                      child: FadeTransition(
                         opacity: _fadeAnimation,
-                        child: GestureDetector(
-                          onTap: _handleLogoTap,
-                          child: Container(
-                            margin: const EdgeInsets.only(bottom: 16),
-                            child: Image.asset(
-                              'assets/img1.png',
-                              width: 100,
-                              height: 100,
-                              errorBuilder: (context, error, stackTrace) {
-                                return const Icon(Icons.sports_tennis,
-                                    size: 70, color: Colors.black87);
-                              },
-                            ),
-                          ),
-                        ),
+                        child: _buildHeader(context),
                       ),
-                      FadeTransition(
-                        opacity: _fadeAnimation,
-                        child: const Text(
-                          'Selecciona una sede',
-                          style: TextStyle(
-                            fontSize: 26,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.black87,
-                            letterSpacing: 0.3,
-                            height: 1.2,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      FadeTransition(
-                        opacity: _fadeAnimation,
-                        child: Text(
-                          'Para comenzar tu reserva',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w400,
-                            color: Colors.black54,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-                      const SizedBox(height: 50),
-                      ScaleTransition(
-                        scale: _buttonScales[0],
-                        child: Hero(
-                          tag: "sede_1",
-                          child: _buildSedeCard(
-                            context,
-                            title: 'Sede 1',
-                            imagePath: 'assets/cancha2.jpg',
-                            sede: 'Sede 1',
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 18),
-                      ScaleTransition(
-                        scale: _buttonScales[1],
-                        child: Hero(
-                          tag: "sede_2",
-                          child: _buildSedeCard(
-                            context,
-                            title: 'Sede 2',
-                            imagePath: 'assets/cancha4.jpg',
-                            sede: 'Sede 2',
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                    ),
+                    
+                    SizedBox(height: _getResponsiveSize(context, size.height * 0.04, 48.0)),
+                    
+                    // Sedes List
+                    Expanded(
+                      child: sedeProvider.sedes.isEmpty
+                          ? _buildEmptyState(context)
+                          : _buildSedesList(sedeProvider, context),
+                    ),
+                  ],
                 ),
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeader(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    _isLargeScreen(context);
+    
+    return Column(
+      children: [
+        // Logo
+        GestureDetector(
+          onTap: _handleLogoTap,
+          child: Container(
+            padding: EdgeInsets.all(_getResponsiveSize(context, 16.0, 20.0)),
+            decoration: BoxDecoration(
+              color: Colors.white,
+            ),
+            child: Image.asset(
+              'assets/img1.png',
+              width: _getResponsiveSize(context, size.width * 0.2, 80.0),
+              height: _getResponsiveSize(context, size.width * 0.2, 80.0),
+              errorBuilder: (context, error, stackTrace) {
+                return Icon(
+                  Icons.sports_tennis,
+                  size: _getResponsiveSize(context, size.width * 0.15, 60.0),
+                  color: _primaryColor,
+                );
+              },
+            ),
+          ),
+        ),
+        
+        SizedBox(height: _getResponsiveSize(context, size.height * 0.03, 32.0)),
+        
+        // Title and Subtitle
+        Text(
+          'Selecciona una sede',
+          style: TextStyle(
+            fontSize: _getResponsiveSize(context, 28.0, 36.0),
+            fontWeight: FontWeight.w700,
+            color: const Color(0xFF1B4D3E),
+            letterSpacing: -0.5,
+          ),
+          textAlign: TextAlign.center,
+        ),
+        
+        SizedBox(height: _getResponsiveSize(context, size.height * 0.01, 12.0)),
+        
+        Text(
+          'Para comenzar tu reserva',
+          style: TextStyle(
+            fontSize: _getResponsiveSize(context, 16.0, 18.0),
+            fontWeight: FontWeight.w400,
+            color: const Color(0xFF6B7280),
+          ),
+          textAlign: TextAlign.center,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEmptyState(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.location_off_outlined,
+            size: _getResponsiveSize(context, 64.0, 80.0),
+            color: Colors.grey[400],
+          ),
+          SizedBox(height: _getResponsiveSize(context, 16.0, 20.0)),
+          Text(
+            'No hay sedes disponibles',
+            style: TextStyle(
+              fontSize: _getResponsiveSize(context, 18.0, 22.0),
+              color: Colors.grey[600],
+              fontWeight: FontWeight.w500,
             ),
           ),
         ],
@@ -290,148 +312,238 @@ class _SedeScreenState extends State<SedeScreen>
     );
   }
 
+  Widget _buildSedesList(SedeProvider sedeProvider, BuildContext context) {
+    final isLarge = _isLargeScreen(context);
+    
+    if (isLarge) {
+      // Vista de grid para pantallas grandes
+      return GridView.builder(
+        physics: const BouncingScrollPhysics(),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 2,
+          childAspectRatio: 1.4,
+          crossAxisSpacing: 24,
+          mainAxisSpacing: 24,
+        ),
+        itemCount: sedeProvider.sedes.length,
+        itemBuilder: (context, index) {
+          final sede = sedeProvider.sedes[index];
+          return TweenAnimationBuilder<double>(
+            tween: Tween<double>(begin: 0.0, end: 1.0),
+            duration: Duration(milliseconds: 300 + (index * 100)),
+            curve: Curves.easeOutBack,
+            builder: (context, scale, child) {
+              return Transform.scale(
+                scale: scale,
+                child: Hero(
+                  tag: 'sede_$sede',
+                  child: _buildSedeCard(
+                    context,
+                    title: sede,
+                    imageUrl: sedeProvider.sedeImages[sede] ?? 
+                             'https://via.placeholder.com/400x200',
+                    sede: sede,
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      );
+    } else {
+      // Vista de lista para móviles
+      return ListView.builder(
+        physics: const BouncingScrollPhysics(),
+        itemCount: sedeProvider.sedes.length,
+        itemBuilder: (context, index) {
+          final sede = sedeProvider.sedes[index];
+          return Padding(
+            padding: EdgeInsets.only(bottom: 16.0),
+            child: TweenAnimationBuilder<double>(
+              tween: Tween<double>(begin: 0.0, end: 1.0),
+              duration: Duration(milliseconds: 300 + (index * 100)),
+              curve: Curves.easeOutBack,
+              builder: (context, scale, child) {
+                return Transform.scale(
+                  scale: scale,
+                  child: Hero(
+                    tag: 'sede_$sede',
+                    child: _buildSedeCard(
+                      context,
+                      title: sede,
+                      imageUrl: sedeProvider.sedeImages[sede] ?? 
+                               'https://via.placeholder.com/400x200',
+                      sede: sede,
+                    ),
+                  ),
+                );
+              },
+            ),
+          );
+        },
+      );
+    }
+  }
+
   Widget _buildSedeCard(
     BuildContext context, {
     required String title,
-    required String imagePath,
+    required String imageUrl,
     required String sede,
   }) {
-    return TweenAnimationBuilder<double>(
-      tween: Tween<double>(begin: 0.0, end: 1.0),
-      duration: const Duration(milliseconds: 30),
-      builder: (context, value, child) {
-        return Container(
-          width: MediaQuery.of(context).size.width * 0.8,
-          height: 160,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.15 * value),
-                blurRadius: 10 * value,
-                offset: Offset(0, 5 * value),
-              ),
-            ],
+    final size = MediaQuery.of(context).size;
+    _isLargeScreen(context);
+    
+    return Container(
+      height: _getResponsiveSize(context, size.height * 0.25, 200.0),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(_cardRadius),
+        boxShadow: [
+          BoxShadow(
+            color: _primaryColor.withOpacity(0.12),
+            blurRadius: 15,
+            offset: const Offset(0, 5),
           ),
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              onTap: () => _seleccionarSede(context, sede),
-              borderRadius: BorderRadius.circular(14),
-              splashColor: Colors.white.withOpacity(0.1),
-              highlightColor: Colors.white.withOpacity(0.05),
-              child: MouseRegion(
-                onEnter: (_) => setState(() {}),
-                onExit: (_) => setState(() {}),
-                child: Ink(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(14),
-                    image: DecorationImage(
-                      image: AssetImage(imagePath),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () => _seleccionarSede(context, sede),
+          borderRadius: BorderRadius.circular(_cardRadius),
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(_cardRadius),
+              color: Colors.white,
+              border: Border.all(
+                color: Colors.grey.withOpacity(0.1),
+                width: 1,
+              ),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(_cardRadius),
+              child: Stack(
+                children: [
+                  // Background Image
+                  Positioned.fill(
+                    child: Image.network(
+                      imageUrl,
                       fit: BoxFit.cover,
-                      onError: (exception, stackTrace) {
-                        debugPrint('Error cargando imagen de sede: $exception');
+                      loadingBuilder: (context, child, loadingProgress) {
+                        if (loadingProgress == null) return child;
+                        return Container(
+                          color: Colors.grey[50],
+                          child: Center(
+                            child: CircularProgressIndicator(
+                              color: _primaryColor,
+                              strokeWidth: 2,
+                            ),
+                          ),
+                        );
+                      },
+                      errorBuilder: (context, error, stackTrace) {
+                        return Container(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [
+                                _primaryColor.withOpacity(0.05), 
+                                _accentColor.withOpacity(0.05)
+                              ],
+                            ),
+                          ),
+                          child: Center(
+                            child: Icon(
+                              Icons.location_city,
+                              size: _getResponsiveSize(context, 48.0, 56.0),
+                              color: _primaryColor,
+                            ),
+                          ),
+                        );
                       },
                     ),
                   ),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(14),
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          Colors.black.withOpacity(0.15),
-                          Colors.black.withOpacity(0.5),
-                        ],
+                  
+                  // Gradient Overlay
+                  Positioned.fill(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Colors.transparent,
+                            Colors.black.withOpacity(0.6),
+                          ],
+                          stops: const [0.5, 1.0],
+                        ),
                       ),
                     ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(20),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisAlignment: MainAxisAlignment.end,
+                  ),
+                  
+                  // Content
+                  Positioned(
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    child: Container(
+                      padding: EdgeInsets.all(_getResponsiveSize(context, 20.0, 24.0)),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              Text(
-                                title,
-                                style: const TextStyle(
-                                  fontSize: 22,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.white,
-                                  letterSpacing: 0.3,
-                                  shadows: [
-                                    Shadow(
-                                      blurRadius: 3,
-                                      color: Colors.black38,
-                                      offset: Offset(0, 1),
-                                    ),
-                                  ],
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  title,
+                                  style: TextStyle(
+                                    fontSize: _getResponsiveSize(context, 22.0, 24.0),
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.white,
+                                    letterSpacing: 0.3,
+                                  ),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
                                 ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Toca para seleccionar',
+                                  style: TextStyle(
+                                    fontSize: _getResponsiveSize(context, 14.0, 15.0),
+                                    color: Colors.white.withOpacity(0.9),
+                                    fontWeight: FontWeight.w400,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Container(
+                            padding: EdgeInsets.all(_getResponsiveSize(context, 12.0, 14.0)),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.2),
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: Colors.white.withOpacity(0.3),
+                                width: 1,
                               ),
-                              Container(
-                                width: 28,
-                                height: 28,
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.25),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: const Icon(
-                                  Icons.arrow_forward_ios,
-                                  color: Colors.white,
-                                  size: 14,
-                                ),
-                              ),
-                            ],
+                            ),
+                            child: Icon(
+                              Icons.arrow_forward_ios,
+                              color: Colors.white,
+                              size: _getResponsiveSize(context, 16.0, 18.0),
+                            ),
                           ),
                         ],
                       ),
                     ),
                   ),
-                ),
+                ],
               ),
             ),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
-}
-
-class MinimalistPatternPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.grey.withOpacity(0.04)
-      ..style = PaintingStyle.fill;
-
-    final path = Path()
-      ..addRRect(RRect.fromRectAndRadius(
-        Rect.fromLTWH(size.width * 0.15, size.height * 0.2, size.width * 0.25,
-            size.height * 0.15),
-        const Radius.circular(20),
-      ))
-      ..addRRect(RRect.fromRectAndRadius(
-        Rect.fromLTWH(size.width * 0.7, size.height * 0.3, size.width * 0.4,
-            size.height * 0.2),
-        const Radius.circular(20),
-      ))
-      ..addRRect(RRect.fromRectAndRadius(
-        Rect.fromLTWH(size.width * 0.1, size.height * 0.75, size.width * 0.3,
-            size.height * 0.1),
-        const Radius.circular(20),
-      ))
-      ..addOval(Rect.fromCircle(
-        center: Offset(size.width * 0.8, size.height * 0.8),
-        radius: size.width * 0.15,
-      ));
-
-    canvas.drawPath(path, paint);
-  }
-
-  @override
-  bool shouldRepaint(CustomPainter oldDelegate) => false;
 }

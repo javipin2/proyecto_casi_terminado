@@ -4,8 +4,11 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:reserva_canchas/models/cancha.dart';
 
 import '../../../models/reserva.dart';
+import '../../../models/horario.dart';
 
 class DetallesReservaScreen extends StatefulWidget {
   final Reserva reserva;
@@ -22,7 +25,6 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
   late TextEditingController _nombreController;
   late TextEditingController _telefonoController;
   late TextEditingController _emailController;
-  late TextEditingController _montoTotalController;
   late TextEditingController _montoPagadoController;
   TipoAbono? _selectedTipo;
   final _formKey = GlobalKey<FormState>();
@@ -45,10 +47,6 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
     _telefonoController =
         TextEditingController(text: widget.reserva.telefono ?? '');
     _emailController = TextEditingController(text: widget.reserva.email ?? '');
-    // Calcular el monto total dinámico basado en la fecha y horario
-    final initialMontoTotal = _calcularMontoTotal(widget.reserva);
-    _montoTotalController =
-        TextEditingController(text: initialMontoTotal.toStringAsFixed(0));
     _montoPagadoController = TextEditingController(
         text: widget.reserva.montoPagado.toStringAsFixed(0));
     _selectedTipo = widget.reserva.tipoAbono;
@@ -67,29 +65,127 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
     _nombreController.dispose();
     _telefonoController.dispose();
     _emailController.dispose();
-    _montoTotalController.dispose();
     _montoPagadoController.dispose();
     _fadeController.dispose();
     super.dispose();
   }
 
-  // Método para calcular el monto total dinámico
-  double _calcularMontoTotal(Reserva reserva) {
-    final String day =
-        DateFormat('EEEE', 'es').format(reserva.fecha).toLowerCase();
-    final horaStr = '${reserva.horario.hora.hour}:00';
-    final precio = reserva.cancha.preciosPorHorario[day]?[horaStr] ??
-        reserva.cancha.precio;
-    return precio;
+  Future<double> _calcularMontoTotal(Reserva reserva) async {
+  debugPrint('--- Calculando monto total ---');
+  final day = DateFormat('EEEE', 'es').format(reserva.fecha).toLowerCase();
+  debugPrint('Día: $day');
+  debugPrint('Cancha ID: ${reserva.cancha.id}');
+  debugPrint('Hora formateada inicial: ${reserva.horario.horaFormateada}');
+
+  // Cargar cancha desde Firestore si está incompleta
+  Cancha cancha = reserva.cancha;
+  if (cancha.preciosPorHorario.isEmpty || cancha.precio == 0) {
+    try {
+      final canchaDoc = await FirebaseFirestore.instance
+          .collection('canchas')
+          .doc(reserva.cancha.id)
+          .get();
+      if (canchaDoc.exists) {
+        cancha = Cancha.fromFirestore(canchaDoc);
+        debugPrint('Cancha cargada desde Firestore: ${cancha.nombre}');
+        debugPrint('Precios por día completos: ${cancha.preciosPorHorario}');
+        debugPrint('Precio por defecto: ${cancha.precio}');
+      }
+    } catch (e) {
+      debugPrint('Error al cargar cancha: $e');
+    }
   }
+
+  double montoTotal = 0.0;
+
+  try {
+    final doc = await FirebaseFirestore.instance
+        .collection('reservas')
+        .doc(reserva.id)
+        .get();
+    debugPrint('Documento Firestore: ${doc.data()}');
+
+    List<String> horarios = [];
+    if (doc.exists && doc.data() != null) {
+      final data = doc.data();
+      horarios = (data?['horarios'] as List<dynamic>?)?.cast<String>() ?? [reserva.horario.horaFormateada];
+    } else {
+      horarios = [reserva.horario.horaFormateada];
+    }
+    debugPrint('Horarios obtenidos: $horarios');
+
+    for (var horarioStr in horarios) {
+      try {
+        final time = DateFormat('h:mm a').parse(horarioStr);
+        final horario = Horario(hora: TimeOfDay(hour: time.hour, minute: time.minute));
+        final precio = Reserva.calcularMontoTotal(cancha, reserva.fecha, horario);
+        montoTotal += precio;
+        debugPrint('Horario: $horarioStr, Precio: $precio, Total parcial: $montoTotal');
+      } catch (e) {
+        debugPrint('Error al parsear hora: $horarioStr, error: $e');
+        montoTotal += cancha.precio;
+      }
+    }
+  } catch (e) {
+    debugPrint('Error Firestore: $e');
+    montoTotal = Reserva.calcularMontoTotal(cancha, reserva.fecha, reserva.horario);
+    debugPrint('Fallback: ${reserva.horario.horaFormateada}, Precio: $montoTotal');
+  }
+
+  debugPrint('Total final: $montoTotal');
+  return montoTotal;
+}
+
 
   Future<void> _saveChanges() async {
     if (!_formKey.currentState!.validate()) {
-      if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Por favor, corrige los errores en el formulario.',
+            style: GoogleFonts.montserrat(),
+          ),
+          backgroundColor: Colors.redAccent,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          margin: const EdgeInsets.all(12),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      return;
+    }
+
+    if (FirebaseAuth.instance.currentUser == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Debes iniciar sesión como administrador para editar reservas.',
+            style: GoogleFonts.montserrat(),
+          ),
+          backgroundColor: Colors.redAccent,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          margin: const EdgeInsets.all(12),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      return;
+    }
+
+    try {
+      double montoTotal = await _calcularMontoTotal(_currentReserva);
+      double montoPagado = double.tryParse(_montoPagadoController.text) ??
+          _currentReserva.montoPagado;
+
+      if (montoPagado < 20000) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Por favor, corrige los errores en el formulario.',
+              'El abono debe ser al menos 20000.',
               style: GoogleFonts.montserrat(),
             ),
             backgroundColor: Colors.redAccent,
@@ -101,97 +197,61 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
             duration: const Duration(seconds: 4),
           ),
         );
-      }
-      return;
-    }
-
-    try {
-      double montoTotal = double.tryParse(_montoTotalController.text) ??
-          _calcularMontoTotal(_currentReserva);
-      double montoPagado = double.tryParse(_montoPagadoController.text) ??
-          _currentReserva.montoPagado;
-
-      // Validar que el abono no exceda el monto total ni sea menor al mínimo (20000)
-      if (montoPagado < 20000) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                'El abono debe ser al menos 20000.',
-                style: GoogleFonts.montserrat(),
-              ),
-              backgroundColor: Colors.redAccent,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-              margin: const EdgeInsets.all(12),
-              duration: const Duration(seconds: 4),
-            ),
-          );
-        }
         return;
       }
       if (montoPagado > montoTotal) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                'El abono no puede superar el monto total.',
-                style: GoogleFonts.montserrat(),
-              ),
-              backgroundColor: Colors.redAccent,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-              margin: const EdgeInsets.all(12),
-              duration: const Duration(seconds: 4),
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'El abono no puede superar el monto total.',
+              style: GoogleFonts.montserrat(),
             ),
-          );
-        }
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+            margin: const EdgeInsets.all(12),
+            duration: const Duration(seconds: 4),
+          ),
+        );
         return;
       }
 
-      // Validar consistencia de tipoAbono
       if (_selectedTipo == TipoAbono.completo && montoPagado != montoTotal) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                'El abono debe ser igual al monto total para un pago completo.',
-                style: GoogleFonts.montserrat(),
-              ),
-              backgroundColor: Colors.redAccent,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-              margin: const EdgeInsets.all(12),
-              duration: const Duration(seconds: 4),
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'El abono debe ser igual al monto total para un pago completo.',
+              style: GoogleFonts.montserrat(),
             ),
-          );
-        }
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+            margin: const EdgeInsets.all(12),
+            duration: const Duration(seconds: 4),
+          ),
+        );
         return;
       }
       if (_selectedTipo == TipoAbono.parcial && montoPagado == montoTotal) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                'El abono debe ser menor al monto total para un pago parcial.',
-                style: GoogleFonts.montserrat(),
-              ),
-              backgroundColor: Colors.redAccent,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-              margin: const EdgeInsets.all(12),
-              duration: const Duration(seconds: 4),
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'El abono debe ser menor al monto total para un pago parcial.',
+              style: GoogleFonts.montserrat(),
             ),
-          );
-        }
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+            margin: const EdgeInsets.all(12),
+            duration: const Duration(seconds: 4),
+          ),
+        );
         return;
       }
 
@@ -202,10 +262,11 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
       await reservaRef.update({
         'nombre': _nombreController.text,
         'telefono': _telefonoController.text,
-        'email': _emailController.text,
-        'montoTotal': montoTotal,
+        'correo': _emailController.text,
+        'valor': montoTotal,
         'montoPagado': montoPagado,
-        'tipoAbono': _selectedTipo.toString().split('.').last,
+        'estado': _selectedTipo == TipoAbono.completo ? 'completo' : 'parcial',
+        'confirmada': _currentReserva.confirmada,
       });
 
       setState(() {
@@ -221,46 +282,44 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
           nombre: _nombreController.text,
           telefono: _telefonoController.text,
           email: _emailController.text,
+          confirmada: _currentReserva.confirmada,
         );
         isEditing = false;
       });
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Reserva actualizada exitosamente.',
-              style: GoogleFonts.montserrat(),
-            ),
-            backgroundColor: _secondaryColor,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-            margin: const EdgeInsets.all(12),
-            duration: const Duration(seconds: 4),
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Reserva actualizada exitosamente.',
+            style: GoogleFonts.montserrat(),
           ),
-        );
-      }
+          backgroundColor: _secondaryColor,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          margin: const EdgeInsets.all(12),
+          duration: const Duration(seconds: 4),
+        ),
+      );
       Navigator.of(context).pop(true);
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Error al actualizar la reserva: $e',
-              style: GoogleFonts.montserrat(),
-            ),
-            backgroundColor: Colors.redAccent,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-            margin: const EdgeInsets.all(12),
-            duration: const Duration(seconds: 4),
+      debugPrint('Error al actualizar la reserva: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Error al actualizar la reserva: $e',
+            style: GoogleFonts.montserrat(),
           ),
-        );
-      }
+          backgroundColor: Colors.redAccent,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          margin: const EdgeInsets.all(12),
+          duration: const Duration(seconds: 4),
+        ),
+      );
     }
   }
 
@@ -324,42 +383,39 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
             .doc(widget.reserva.id)
             .delete();
 
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                'Reserva eliminada con éxito.',
-                style: GoogleFonts.montserrat(),
-              ),
-              backgroundColor: _secondaryColor,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-              margin: const EdgeInsets.all(12),
-              duration: const Duration(seconds: 4),
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Reserva eliminada con éxito.',
+              style: GoogleFonts.montserrat(),
             ),
-          );
-        }
+            backgroundColor: _secondaryColor,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+            margin: const EdgeInsets.all(12),
+            duration: const Duration(seconds: 4),
+          ),
+        );
         Navigator.of(context).pop(true);
       } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                'Error al eliminar la reserva: $e',
-                style: GoogleFonts.montserrat(),
-              ),
-              backgroundColor: Colors.redAccent,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-              margin: const EdgeInsets.all(12),
-              duration: const Duration(seconds: 4),
+        debugPrint('Error al eliminar la reserva: $e');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Error al eliminar la reserva: $e',
+              style: GoogleFonts.montserrat(),
             ),
-          );
-        }
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+            margin: const EdgeInsets.all(12),
+            duration: const Duration(seconds: 4),
+          ),
+        );
       }
     }
   }
@@ -435,103 +491,190 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
   }
 
   Widget _buildInfoCard() {
-    final reserva = _currentReserva;
-    return Card(
-      elevation: 0,
-      color: _cardColor,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Detalles de la Reserva',
-              style: GoogleFonts.montserrat(
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-                color: _primaryColor,
+  final reserva = _currentReserva;
+  return FutureBuilder<double>(
+    future: _calcularMontoTotal(reserva),
+    builder: (context, snapshot) {
+      if (snapshot.connectionState == ConnectionState.waiting) {
+        return Card(
+          elevation: 0,
+          color: _cardColor,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: const Padding(
+            padding: EdgeInsets.all(16.0),
+            child: Center(child: CircularProgressIndicator()),
+          ),
+        );
+      }
+      if (snapshot.hasError) {
+        return Card(
+          elevation: 0,
+          color: _cardColor,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Text(
+              'Error: ${snapshot.error}',
+              style: GoogleFonts.montserrat(color: Colors.redAccent),
+            ),
+          ),
+        );
+      }
+
+      final montoTotal = snapshot.data ?? 0.0;
+      return FutureBuilder<DocumentSnapshot>(
+        future: FirebaseFirestore.instance
+            .collection('reservas')
+            .doc(reserva.id)
+            .get(),
+        builder: (context, docSnapshot) {
+          List<String> horarios = [reserva.horario.horaFormateada];
+          if (docSnapshot.hasData && docSnapshot.data!.exists) {
+            final data = docSnapshot.data!.data() as Map<String, dynamic>?;
+            final horariosList = data?['horarios'] as List<dynamic>?;
+            if (horariosList != null && horariosList.isNotEmpty) {
+              horarios = horariosList.cast<String>();
+            }
+          }
+
+          return Card(
+            elevation: 0,
+            color: _cardColor,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Detalles de la Reserva',
+                    style: GoogleFonts.montserrat(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: _primaryColor,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.sports_soccer,
+                        color: _secondaryColor,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Cancha: ${reserva.cancha.nombre}',
+                        style: GoogleFonts.montserrat(
+                          fontSize: 16,
+                          color: _primaryColor,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.location_on,
+                        color: _secondaryColor,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Sede: ${reserva.sede}',
+                        style: GoogleFonts.montserrat(
+                          fontSize: 16,
+                          color: _primaryColor,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.calendar_today,
+                        color: _secondaryColor,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Fecha: ${DateFormat('EEEE d MMMM, yyyy', 'es').format(reserva.fecha)}',
+                        style: GoogleFonts.montserrat(
+                          fontSize: 16,
+                          color: _primaryColor,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        Icons.access_time,
+                        color: _secondaryColor,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Hora${horarios.length > 1 ? 's' : ''}:',
+                              style: GoogleFonts.montserrat(
+                                fontSize: 16,
+                                color: _primaryColor,
+                              ),
+                            ),
+                            ...horarios.map((hora) => Text(
+                                  hora,
+                                  style: GoogleFonts.montserrat(
+                                    fontSize: 16,
+                                    color: _primaryColor,
+                                  ),
+                                )),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.monetization_on,
+                        color: _secondaryColor,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Valor Total: COP ${montoTotal.toStringAsFixed(0)}',
+                        style: GoogleFonts.montserrat(
+                          fontSize: 16,
+                          color: _primaryColor,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Icon(
-                  Icons.sports_soccer,
-                  color: _secondaryColor,
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  'Cancha: ${reserva.cancha.nombre}',
-                  style: GoogleFonts.montserrat(
-                    fontSize: 16,
-                    color: _primaryColor,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Icon(
-                  Icons.location_on,
-                  color: _secondaryColor,
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  'Sede: ${reserva.sede}',
-                  style: GoogleFonts.montserrat(
-                    fontSize: 16,
-                    color: _primaryColor,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Icon(
-                  Icons.calendar_today,
-                  color: _secondaryColor,
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  'Fecha: ${DateFormat('EEEE d MMMM, yyyy', 'es').format(reserva.fecha)}',
-                  style: GoogleFonts.montserrat(
-                    fontSize: 16,
-                    color: _primaryColor,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Icon(
-                  Icons.access_time,
-                  color: _secondaryColor,
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  'Hora: ${reserva.horario.horaFormateada}',
-                  style: GoogleFonts.montserrat(
-                    fontSize: 16,
-                    color: _primaryColor,
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+          );
+        },
+      );
+    },
+  );
+}
+
 
   Widget _buildFormCard() {
     return Card(
@@ -657,42 +800,6 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
               const SizedBox(height: 16),
               isEditing
                   ? TextFormField(
-                      controller: _montoTotalController,
-                      decoration: InputDecoration(
-                        labelText: 'Valor Total',
-                        labelStyle: GoogleFonts.montserrat(
-                          color: _primaryColor.withOpacity(0.6),
-                        ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide(color: _disabledColor),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide(color: _disabledColor),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide(color: _secondaryColor),
-                        ),
-                      ),
-                      style: GoogleFonts.montserrat(color: _primaryColor),
-                      keyboardType: TextInputType.number,
-                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                      validator: (value) {
-                        if (value == null || value.trim().isEmpty) {
-                          return 'Ingresa el valor total';
-                        }
-                        if (double.tryParse(value) == null) {
-                          return 'Ingresa un número válido';
-                        }
-                        return null;
-                      },
-                    )
-                  : _buildDetailRow('Valor Total', _montoTotalController.text),
-              const SizedBox(height: 16),
-              isEditing
-                  ? TextFormField(
                       controller: _montoPagadoController,
                       decoration: InputDecoration(
                         labelText: 'Abono',
@@ -726,18 +833,10 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
                         if (abono < 20000) {
                           return 'El abono debe ser al menos 20000';
                         }
-                        double? montoTotal =
-                            double.tryParse(_montoTotalController.text);
-                        if (montoTotal == null) {
-                          return 'El valor total no es válido';
-                        }
-                        if (abono > montoTotal) {
-                          return 'El abono no puede superar el valor total';
-                        }
                         return null;
                       },
                     )
-                  : _buildDetailRow('Abono', _montoPagadoController.text),
+                  : _buildDetailRow('Abono', 'COP ${_montoPagadoController.text}'),
               const SizedBox(height: 16),
               isEditing
                   ? DropdownButtonFormField<TipoAbono>(

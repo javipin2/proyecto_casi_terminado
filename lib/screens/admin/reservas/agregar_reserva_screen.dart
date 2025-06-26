@@ -24,19 +24,20 @@ class AgregarReservaScreen extends StatefulWidget {
   });
 
   @override
-  _AgregarReservaScreenState createState() => _AgregarReservaScreenState();
+  AgregarReservaScreenState createState() => AgregarReservaScreenState();
 }
 
-class _AgregarReservaScreenState extends State<AgregarReservaScreen>
+class AgregarReservaScreenState extends State<AgregarReservaScreen>
     with TickerProviderStateMixin {
   final _formKey = GlobalKey<FormState>();
   late TextEditingController _nombreController;
   late TextEditingController _telefonoController;
   late TextEditingController _emailController;
-  late TextEditingController _valorController;
+  late TextEditingController _abonoController;
   TipoAbono? _selectedTipo;
   bool _isProcessing = false;
   String? _selectedClienteId;
+  bool _showAbonoField = true;
 
   late AnimationController _fadeController;
 
@@ -52,9 +53,7 @@ class _AgregarReservaScreenState extends State<AgregarReservaScreen>
     _nombreController = TextEditingController();
     _telefonoController = TextEditingController();
     _emailController = TextEditingController();
-    // Calcular el valor total dinámico basado en los horarios y fecha
-    final total = _calcularMontoTotal();
-    _valorController = TextEditingController(text: total.toStringAsFixed(0));
+    _abonoController = TextEditingController(text: '0');
     _selectedTipo = TipoAbono.parcial;
 
     _fadeController = AnimationController(
@@ -71,21 +70,17 @@ class _AgregarReservaScreenState extends State<AgregarReservaScreen>
     _nombreController.dispose();
     _telefonoController.dispose();
     _emailController.dispose();
-    _valorController.dispose();
+    _abonoController.dispose();
     _fadeController.dispose();
     super.dispose();
   }
 
-  // Método para calcular el monto total dinámico
   double _calcularMontoTotal() {
-    final String day =
-        DateFormat('EEEE', 'es').format(widget.fecha).toLowerCase();
     double total = 0.0;
     for (final horario in widget.horarios) {
-      final horaStr = '${horario.hora.hour}:00';
-      final precio = widget.cancha.preciosPorHorario[day]?[horaStr] ??
-          widget.cancha.precio;
+      final precio = Reserva.calcularMontoTotal(widget.cancha, widget.fecha, horario);
       total += precio;
+      debugPrint('Horario: ${horario.horaFormateada}, Precio: $precio, Total parcial: $total');
     }
     return total;
   }
@@ -98,8 +93,15 @@ class _AgregarReservaScreenState extends State<AgregarReservaScreen>
     });
 
     try {
-      final batch = FirebaseFirestore.instance.batch();
+      final montoTotal = _calcularMontoTotal();
+      final abono = _selectedTipo == TipoAbono.completo
+          ? montoTotal
+          : double.parse(_abonoController.text);
+      final abonoPorHora = widget.horarios.isNotEmpty ? abono / widget.horarios.length : 0.0;
+
+      // Crear una reserva por cada horario
       for (final horario in widget.horarios) {
+        final montoHora = Reserva.calcularMontoTotal(widget.cancha, widget.fecha, horario);
         final reserva = Reserva(
           id: '',
           cancha: widget.cancha,
@@ -107,23 +109,23 @@ class _AgregarReservaScreenState extends State<AgregarReservaScreen>
           horario: horario,
           sede: widget.sede,
           tipoAbono: _selectedTipo!,
-          montoTotal: _calcularMontoTotal() /
-              widget.horarios.length, // Distribuir el total entre los horarios
-          montoPagado: 0,
+          montoTotal: montoHora,
+          montoPagado: _selectedTipo == TipoAbono.completo ? montoHora : abonoPorHora,
           nombre: _nombreController.text,
           telefono: _telefonoController.text,
-          email: _emailController.text,
+          email: _emailController.text.isEmpty ? null : _emailController.text,
+          confirmada: false,
         );
+
         final docRef = FirebaseFirestore.instance.collection('reservas').doc();
-        batch.set(docRef, reserva.toFirestore());
+        await docRef.set(reserva.toFirestore());
       }
 
-      await batch.commit();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Se crearon ${widget.horarios.length} reserva${widget.horarios.length > 1 ? 's' : ''} exitosamente.',
+              'Reserva${widget.horarios.length > 1 ? 's' : ''} creada${widget.horarios.length > 1 ? 's' : ''} exitosamente.',
               style: GoogleFonts.montserrat(),
             ),
             backgroundColor: _secondaryColor,
@@ -142,7 +144,7 @@ class _AgregarReservaScreenState extends State<AgregarReservaScreen>
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Error al crear las reservas: $e',
+              'Error al crear la${widget.horarios.length > 1 ? 's' : ''} reserva${widget.horarios.length > 1 ? 's' : ''}: $e',
               style: GoogleFonts.montserrat(),
             ),
             backgroundColor: Colors.redAccent,
@@ -178,12 +180,14 @@ class _AgregarReservaScreenState extends State<AgregarReservaScreen>
         _nombreController.clear();
         _telefonoController.clear();
         _emailController.clear();
+        _abonoController.text = '0';
       });
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final total = _calcularMontoTotal();
     return Scaffold(
       appBar: AppBar(
         title: Text(
@@ -214,7 +218,11 @@ class _AgregarReservaScreenState extends State<AgregarReservaScreen>
                       Text(
                         'Procesando...',
                         style: GoogleFonts.montserrat(
-                          color: _primaryColor.withOpacity(0.6),
+                          color: Color.fromRGBO(
+                              (_primaryColor.r * 255).toInt(),
+                              (_primaryColor.g * 255).toInt(),
+                              (_primaryColor.b * 255).toInt(),
+                              0.6),
                           fontSize: 16,
                         ),
                       ),
@@ -232,7 +240,7 @@ class _AgregarReservaScreenState extends State<AgregarReservaScreen>
                             duration: 600.ms,
                             curve: Curves.easeOutQuad),
                     const SizedBox(height: 16),
-                    _buildInfoCard()
+                    _buildInfoCard(total)
                         .animate()
                         .fadeIn(duration: 600.ms, curve: Curves.easeOutQuad)
                         .slideY(
@@ -313,7 +321,11 @@ class _AgregarReservaScreenState extends State<AgregarReservaScreen>
                   decoration: InputDecoration(
                     labelText: 'Seleccionar Cliente',
                     labelStyle: GoogleFonts.montserrat(
-                      color: _primaryColor.withOpacity(0.6),
+                      color: Color.fromRGBO(
+                          (_primaryColor.r * 255).toInt(),
+                          (_primaryColor.g * 255).toInt(),
+                          (_primaryColor.b * 255).toInt(),
+                          0.6),
                     ),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(8),
@@ -368,7 +380,7 @@ class _AgregarReservaScreenState extends State<AgregarReservaScreen>
     );
   }
 
-  Widget _buildInfoCard() {
+  Widget _buildInfoCard(double total) {
     return Card(
       elevation: 0,
       color: _cardColor,
@@ -450,25 +462,53 @@ class _AgregarReservaScreenState extends State<AgregarReservaScreen>
                         spacing: 8,
                         runSpacing: 4,
                         children: widget.horarios.map((horario) {
+                          final precio = Reserva.calcularMontoTotal(
+                              widget.cancha, widget.fecha, horario);
                           return Chip(
                             label: Text(
-                              horario.horaFormateada,
+                              '${horario.horaFormateada} (COP ${precio.toStringAsFixed(0)})',
                               style: GoogleFonts.montserrat(
                                 fontSize: 14,
                                 color: _primaryColor,
                               ),
                             ),
-                            backgroundColor: _secondaryColor.withOpacity(0.1),
+                            backgroundColor: Color.fromRGBO(
+                                (_secondaryColor.r * 255).toInt(),
+                                (_secondaryColor.g * 255).toInt(),
+                                (_secondaryColor.b * 255).toInt(),
+                                0.1),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(8),
                               side: BorderSide(
-                                color: _secondaryColor.withOpacity(0.3),
+                                color: Color.fromRGBO(
+                                    (_secondaryColor.r * 255).toInt(),
+                                    (_secondaryColor.g * 255).toInt(),
+                                    (_secondaryColor.b * 255).toInt(),
+                                    0.3),
                               ),
                             ),
                           );
                         }).toList(),
                       ),
                     ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Icon(
+                  Icons.monetization_on,
+                  color: _secondaryColor,
+                  size: 20,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Valor Total: COP ${total.toStringAsFixed(0)}',
+                  style: GoogleFonts.montserrat(
+                    fontSize: 16,
+                    color: _primaryColor,
                   ),
                 ),
               ],
@@ -507,7 +547,11 @@ class _AgregarReservaScreenState extends State<AgregarReservaScreen>
                 decoration: InputDecoration(
                   labelText: 'Nombre',
                   labelStyle: GoogleFonts.montserrat(
-                    color: _primaryColor.withOpacity(0.6),
+                    color: Color.fromRGBO(
+                        (_primaryColor.r * 255).toInt(),
+                        (_primaryColor.g * 255).toInt(),
+                        (_primaryColor.b * 255).toInt(),
+                        0.6),
                   ),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(8),
@@ -536,7 +580,11 @@ class _AgregarReservaScreenState extends State<AgregarReservaScreen>
                 decoration: InputDecoration(
                   labelText: 'Teléfono',
                   labelStyle: GoogleFonts.montserrat(
-                    color: _primaryColor.withOpacity(0.6),
+                    color: Color.fromRGBO(
+                        (_primaryColor.r * 255).toInt(),
+                        (_primaryColor.g * 255).toInt(),
+                        (_primaryColor.b * 255).toInt(),
+                        0.6),
                   ),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(8),
@@ -566,7 +614,11 @@ class _AgregarReservaScreenState extends State<AgregarReservaScreen>
                 decoration: InputDecoration(
                   labelText: 'Correo',
                   labelStyle: GoogleFonts.montserrat(
-                    color: _primaryColor.withOpacity(0.6),
+                    color: Color.fromRGBO(
+                        (_primaryColor.r * 255).toInt(),
+                        (_primaryColor.g * 255).toInt(),
+                        (_primaryColor.b * 255).toInt(),
+                        0.6),
                   ),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(8),
@@ -584,56 +636,65 @@ class _AgregarReservaScreenState extends State<AgregarReservaScreen>
                 style: GoogleFonts.montserrat(color: _primaryColor),
                 keyboardType: TextInputType.emailAddress,
                 validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
+                  if (value != null && value.trim().isNotEmpty) {
+                    if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$')
+                        .hasMatch(value)) {
+                      return 'Ingresa un correo válido';
+                    }
+                  }
+                  return null;
+                },
+              ),
+              if (_showAbonoField) ...[
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _abonoController,
+                  decoration: InputDecoration(
+                    labelText: 'Abono',
+                    labelStyle: GoogleFonts.montserrat(
+                      color: Color.fromRGBO(
+                          (_primaryColor.r * 255).toInt(),
+                          (_primaryColor.g * 255).toInt(),
+                          (_primaryColor.b * 255).toInt(),
+                          0.6),
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: _disabledColor),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: _disabledColor),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: _secondaryColor),
+                    ),
+                  ),
+                  style: GoogleFonts.montserrat(color: _primaryColor),
+                  keyboardType: TextInputType.number,
+                  validator: (value) {
+                    if (value == null || value.trim().isEmpty) {
+                      return 'Ingresa el abono';
+                    }
+                    if (double.tryParse(value) == null) {
+                      return 'Ingresa un número válido';
+                    }
                     return null;
-                  }
-                  if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$')
-                      .hasMatch(value)) {
-                    return 'Ingresa un correo válido';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _valorController,
-                decoration: InputDecoration(
-                  labelText: 'Valor Total',
-                  labelStyle: GoogleFonts.montserrat(
-                    color: _primaryColor.withOpacity(0.6),
-                  ),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide(color: _disabledColor),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide(color: _disabledColor),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide(color: _secondaryColor),
-                  ),
+                  },
                 ),
-                style: GoogleFonts.montserrat(color: _primaryColor),
-                keyboardType: TextInputType.number,
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'Ingresa el valor';
-                  }
-                  if (double.tryParse(value) == null) {
-                    return 'Ingresa un número válido';
-                  }
-                  return null;
-                },
-              ),
+              ],
               const SizedBox(height: 16),
               DropdownButtonFormField<TipoAbono>(
                 value: _selectedTipo,
                 decoration: InputDecoration(
                   labelText: 'Estado de pago',
                   labelStyle: GoogleFonts.montserrat(
-                    color: _primaryColor.withOpacity(0.6),
+                    color: Color.fromRGBO(
+                        (_primaryColor.r * 255).toInt(),
+                        (_primaryColor.g * 255).toInt(),
+                        (_primaryColor.b * 255).toInt(),
+                        0.6),
                   ),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(8),
@@ -669,6 +730,10 @@ class _AgregarReservaScreenState extends State<AgregarReservaScreen>
                 onChanged: (value) {
                   setState(() {
                     _selectedTipo = value;
+                    _showAbonoField = value == TipoAbono.parcial;
+                    if (!_showAbonoField) {
+                      _abonoController.text = '0';
+                    }
                   });
                 },
               ),

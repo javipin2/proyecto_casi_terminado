@@ -24,10 +24,13 @@ class EditarCanchaScreen extends StatefulWidget {
 
 class _EditarCanchaScreenState extends State<EditarCanchaScreen>
     with SingleTickerProviderStateMixin {
+  List<String> _sedesDisponibles = [];
+  bool _isLoadingSedes = false;
   final _formKey = GlobalKey<FormState>();
   final _scrollController = ScrollController();
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
+  
 
   // Controllers
   late TextEditingController _nombreController;
@@ -81,6 +84,7 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
 
     _initializeControllers();
     _initializePreciosPorHorario();
+    _cargarSedes();
   }
 
   void _initializeControllers() {
@@ -109,6 +113,55 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
       }
     }
   }
+
+
+  Future<void> _cargarSedes() async {
+  setState(() {
+    _isLoadingSedes = true;
+  });
+
+  try {
+    // Obtener todas las sedes únicas de la colección de canchas
+    QuerySnapshot querySnapshot = await FirebaseFirestore.instance
+        .collection('canchas')
+        .get();
+
+    Set<String> sedesUnicas = {};
+    
+    for (QueryDocumentSnapshot doc in querySnapshot.docs) {
+      final data = doc.data() as Map<String, dynamic>;
+      final sede = data['sede'] as String?;
+      if (sede != null && sede.isNotEmpty) {
+        sedesUnicas.add(sede);
+      }
+    }
+
+    // Asegurar que la sede actual de la cancha esté incluida
+    if (widget.cancha.sede.isNotEmpty) {
+      sedesUnicas.add(widget.cancha.sede);
+    }
+
+    // Convertir a lista y ordenar
+    _sedesDisponibles = sedesUnicas.toList()..sort();
+
+    print('Sedes cargadas: $_sedesDisponibles');
+    print('Sede actual de la cancha: ${widget.cancha.sede}');
+
+  } catch (e) {
+    print('Error cargando sedes: $e');
+    _mostrarError("Error al cargar sedes: $e");
+    
+    // Fallback: usar la sede actual de la cancha
+    if (widget.cancha.sede.isNotEmpty) {
+      _sedesDisponibles = [widget.cancha.sede];
+    }
+  } finally {
+    setState(() {
+      _isLoadingSedes = false;
+    });
+  }
+}
+
 
   Future<void> _seleccionarImagen() async {
     showModalBottomSheet(
@@ -869,40 +922,55 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
   }
 
   Widget _buildSedeDropdown() {
-    return DropdownButtonFormField<String>(
-      decoration: InputDecoration(
-        labelText: "Sede",
-        prefixIcon: const Icon(Icons.business, color: Color(0xFF4F46E5)),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.grey[300]!),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.grey[300]!),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: Color(0xFF4F46E5), width: 2),
-        ),
-        filled: true,
-        fillColor: Colors.grey[50],
-        contentPadding:
-        const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+  return DropdownButtonFormField<String>(
+    decoration: InputDecoration(
+      labelText: "Sede",
+      prefixIcon: const Icon(Icons.business, color: Color(0xFF4F46E5)),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: Colors.grey[300]!),
       ),
-      value: _sede.isNotEmpty ? _sede : null,
-      items: const [
-        DropdownMenuItem(value: "Sede 1", child: Text("Sede 1")),
-        DropdownMenuItem(value: "Sede 2", child: Text("Sede 2")),
-      ],
-      validator: (value) =>
-      value == null || value.isEmpty ? "Seleccione la sede" : null,
-      onChanged: (value) => setState(() => _sede = value ?? ""),
-      style: GoogleFonts.montserrat(color: Colors.black87), // Forzado de color
-      dropdownColor: Colors.white, // Fondo claro para el menú
-      iconEnabledColor: const Color(0xFF4F46E5), // Ícono visible
-    );
-  }
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: Colors.grey[300]!),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: Color(0xFF4F46E5), width: 2),
+      ),
+      filled: true,
+      fillColor: Colors.grey[50],
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+    ),
+    value: _sedesDisponibles.contains(_sede) ? _sede : null,
+    hint: _isLoadingSedes 
+        ? const Row(
+            children: [
+              SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              SizedBox(width: 8),
+              Text("Cargando sedes..."),
+            ],
+          )
+        : const Text("Selecciona una sede"),
+    items: _sedesDisponibles.map((sede) {
+      return DropdownMenuItem<String>(
+        value: sede,
+        child: Text(sede),
+      );
+    }).toList(),
+    validator: (value) =>
+        value == null || value.isEmpty ? "Seleccione la sede" : null,
+    onChanged: _isLoadingSedes ? null : (value) => setState(() => _sede = value ?? ""),
+    style: GoogleFonts.montserrat(color: Colors.black87),
+    dropdownColor: Colors.white,
+    iconEnabledColor: const Color(0xFF4F46E5),
+  );
+}
+
 
   Widget _buildPricingSection() {
     return Container(
