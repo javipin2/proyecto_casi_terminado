@@ -9,7 +9,6 @@ class CanchaProvider with ChangeNotifier {
   final Map<String, Map<DateTime, List<TimeOfDay>>> _horasReservadas = {};
   bool _isLoading = false;
   String _errorMessage = '';
-  String? _currentSede;
 
   List<Cancha> get canchas => _canchas;
   bool get isLoading => _isLoading;
@@ -89,7 +88,7 @@ class CanchaProvider with ChangeNotifier {
       techada: data['techada'] as bool? ?? false,
       ubicacion: data['ubicacion'] as String? ?? '',
       precio: (data['precio'] is num) ? (data['precio'] as num).toDouble() : 0.0,
-      sede: data['sede'] as String? ?? '',
+      sedeId: data['sedeId'] as String? ?? '', // CORREGIDO: era 'sede', ahora es 'sedeId'
       preciosPorHorario: preciosPorHorario,
       disponible: data['disponible'] as bool? ?? true,
       motivoNoDisponible: data['motivoNoDisponible'] as String?,
@@ -99,41 +98,33 @@ class CanchaProvider with ChangeNotifier {
   Future<void> fetchCanchas(String sede) async {
     _isLoading = true;
     _errorMessage = '';
-
-    if (_currentSede != null && _currentSede != sede) {
-      print('🔄 Sede cambió de $_currentSede a $sede - Limpiando canchas...');
-      _canchas.clear();
-    }
-    _currentSede = sede;
+    _canchas.clear();
 
     try {
-      print('🔍 Buscando canchas para sede: $sede');
-
+      print('🔍 Consultando canchas para sedeId: "$sede"');
       QuerySnapshot querySnapshot = await FirebaseFirestore.instance
           .collection('canchas')
-          .where('sede', isEqualTo: sede)
+          .where('sedeId', isEqualTo: sede)
           .get();
 
+      print('📄 Documentos encontrados: ${querySnapshot.docs.length}');
       if (querySnapshot.docs.isEmpty) {
-        _errorMessage = "No hay canchas registradas para esta sede.";
-        print('⚠️ No se encontraron canchas para $sede');
+        _errorMessage = "No hay canchas registradas para la sedeId '$sede'.";
+        print('⚠️ No se encontraron canchas para "$sede"');
       } else {
-        // Procesar cada cancha para obtener URLs reales
         List<Cancha> canchasProcessed = [];
         for (DocumentSnapshot doc in querySnapshot.docs) {
           try {
             final cancha = await _procesarCancha(doc);
             canchasProcessed.add(cancha);
-            print('✅ Cancha procesada: ${cancha.nombre} - Imagen: ${cancha.imagen}');
+            print('✅ Cancha procesada: ${cancha.nombre} - SedeId: ${cancha.sedeId}'); // CORREGIDO: era cancha.sede
           } catch (e) {
             print('❌ Error procesando cancha ${doc.id}: $e');
-            // Agregar cancha con imagen por defecto
             canchasProcessed.add(Cancha.fromFirestore(doc));
           }
         }
-        
         _canchas = canchasProcessed;
-        print('✅ Canchas cargadas para $sede: ${_canchas.length}');
+        print('✅ Total canchas cargadas: ${_canchas.length}');
       }
     } catch (error) {
       _errorMessage = 'Error al cargar canchas: $error';
@@ -150,7 +141,6 @@ class CanchaProvider with ChangeNotifier {
   Future<void> fetchAllCanchas() async {
     _isLoading = true;
     _errorMessage = '';
-    _currentSede = null;
 
     try {
       QuerySnapshot querySnapshot =
@@ -239,7 +229,6 @@ class CanchaProvider with ChangeNotifier {
     _horasReservadas.clear();
     _isLoading = false;
     _errorMessage = '';
-    _currentSede = null;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       print('🔔 Notificando reset de CanchaProvider');
       notifyListeners();

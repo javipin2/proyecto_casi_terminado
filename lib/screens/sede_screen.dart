@@ -313,22 +313,59 @@ class _SedeScreenState extends State<SedeScreen>
   }
 
   Widget _buildSedesList(SedeProvider sedeProvider, BuildContext context) {
-    final isLarge = _isLargeScreen(context);
-    
-    if (isLarge) {
-      // Vista de grid para pantallas grandes
-      return GridView.builder(
-        physics: const BouncingScrollPhysics(),
-        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 2,
-          childAspectRatio: 1.4,
-          crossAxisSpacing: 24,
-          mainAxisSpacing: 24,
-        ),
-        itemCount: sedeProvider.sedes.length,
-        itemBuilder: (context, index) {
-          final sede = sedeProvider.sedes[index];
-          return TweenAnimationBuilder<double>(
+  final isLarge = _isLargeScreen(context);
+  
+  if (isLarge) {
+    // Vista de grid para pantallas grandes
+    return GridView.builder(
+      physics: const BouncingScrollPhysics(),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 2,
+        childAspectRatio: 1.4,
+        crossAxisSpacing: 24,
+        mainAxisSpacing: 24,
+      ),
+      itemCount: sedeProvider.sedes.length,
+      itemBuilder: (context, index) {
+        final sede = sedeProvider.sedes[index];
+        final nombreSede = sede['nombre'] as String;
+        final imagenSede = sede['imagen'] as String;
+        
+        return TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: 0.0, end: 1.0),
+          duration: Duration(milliseconds: 300 + (index * 100)),
+          curve: Curves.easeOutBack,
+          builder: (context, scale, child) {
+            return Transform.scale(
+              scale: scale,
+              child: Hero(
+                tag: 'sede_$nombreSede',
+                child: _buildSedeCard(
+                  context,
+                  title: nombreSede,
+                  imageUrl: imagenSede,
+                  sede: nombreSede,
+                  descripcion: sede['descripcion'] as String? ?? '',
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  } else {
+    // Vista de lista para móviles
+    return ListView.builder(
+      physics: const BouncingScrollPhysics(),
+      itemCount: sedeProvider.sedes.length,
+      itemBuilder: (context, index) {
+        final sede = sedeProvider.sedes[index];
+        final nombreSede = sede['nombre'] as String;
+        final imagenSede = sede['imagen'] as String;
+        
+        return Padding(
+          padding: EdgeInsets.only(bottom: 16.0),
+          child: TweenAnimationBuilder<double>(
             tween: Tween<double>(begin: 0.0, end: 1.0),
             duration: Duration(milliseconds: 300 + (index * 100)),
             curve: Curves.easeOutBack,
@@ -336,214 +373,189 @@ class _SedeScreenState extends State<SedeScreen>
               return Transform.scale(
                 scale: scale,
                 child: Hero(
-                  tag: 'sede_$sede',
+                  tag: 'sede_$nombreSede',
                   child: _buildSedeCard(
                     context,
-                    title: sede,
-                    imageUrl: sedeProvider.sedeImages[sede] ?? 
-                             'https://via.placeholder.com/400x200',
-                    sede: sede,
+                    title: nombreSede,
+                    imageUrl: imagenSede,
+                    sede: nombreSede,
+                    descripcion: sede['descripcion'] as String? ?? '',
                   ),
                 ),
               );
             },
-          );
-        },
-      );
-    } else {
-      // Vista de lista para móviles
-      return ListView.builder(
-        physics: const BouncingScrollPhysics(),
-        itemCount: sedeProvider.sedes.length,
-        itemBuilder: (context, index) {
-          final sede = sedeProvider.sedes[index];
-          return Padding(
-            padding: EdgeInsets.only(bottom: 16.0),
-            child: TweenAnimationBuilder<double>(
-              tween: Tween<double>(begin: 0.0, end: 1.0),
-              duration: Duration(milliseconds: 300 + (index * 100)),
-              curve: Curves.easeOutBack,
-              builder: (context, scale, child) {
-                return Transform.scale(
-                  scale: scale,
-                  child: Hero(
-                    tag: 'sede_$sede',
-                    child: _buildSedeCard(
-                      context,
-                      title: sede,
-                      imageUrl: sedeProvider.sedeImages[sede] ?? 
-                               'https://via.placeholder.com/400x200',
-                      sede: sede,
-                    ),
-                  ),
-                );
-              },
-            ),
-          );
-        },
-      );
-    }
+          ),
+        );
+      },
+    );
   }
+}
+
 
   Widget _buildSedeCard(
-    BuildContext context, {
-    required String title,
-    required String imageUrl,
-    required String sede,
-  }) {
-    final size = MediaQuery.of(context).size;
-    _isLargeScreen(context);
-    
-    return Container(
-      height: _getResponsiveSize(context, size.height * 0.25, 200.0),
-      decoration: BoxDecoration(
+  BuildContext context, {
+  required String title,
+  required String imageUrl,
+  required String sede,
+  String? descripcion,
+}) {
+  final size = MediaQuery.of(context).size;
+  
+  return Container(
+    height: _getResponsiveSize(context, size.height * 0.25, 200.0),
+    decoration: BoxDecoration(
+      borderRadius: BorderRadius.circular(_cardRadius),
+      boxShadow: [
+        BoxShadow(
+          color: _primaryColor.withOpacity(0.12),
+          blurRadius: 15,
+          offset: const Offset(0, 5),
+        ),
+      ],
+    ),
+    child: Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => _seleccionarSede(context, sede),
         borderRadius: BorderRadius.circular(_cardRadius),
-        boxShadow: [
-          BoxShadow(
-            color: _primaryColor.withOpacity(0.12),
-            blurRadius: 15,
-            offset: const Offset(0, 5),
-          ),
-        ],
-      ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: () => _seleccionarSede(context, sede),
-          borderRadius: BorderRadius.circular(_cardRadius),
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(_cardRadius),
-              color: Colors.white,
-              border: Border.all(
-                color: Colors.grey.withOpacity(0.1),
-                width: 1,
-              ),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(_cardRadius),
+            color: Colors.white,
+            border: Border.all(
+              color: Colors.grey.withOpacity(0.1),
+              width: 1,
             ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(_cardRadius),
-              child: Stack(
-                children: [
-                  // Background Image
-                  Positioned.fill(
-                    child: Image.network(
-                      imageUrl,
-                      fit: BoxFit.cover,
-                      loadingBuilder: (context, child, loadingProgress) {
-                        if (loadingProgress == null) return child;
-                        return Container(
-                          color: Colors.grey[50],
-                          child: Center(
-                            child: CircularProgressIndicator(
-                              color: _primaryColor,
-                              strokeWidth: 2,
-                            ),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(_cardRadius),
+            child: Stack(
+              children: [
+                // Background Image
+                Positioned.fill(
+                  child: Image.network(
+                    imageUrl,
+                    fit: BoxFit.cover,
+                    loadingBuilder: (context, child, loadingProgress) {
+                      if (loadingProgress == null) return child;
+                      return Container(
+                        color: Colors.grey[50],
+                        child: Center(
+                          child: CircularProgressIndicator(
+                            color: _primaryColor,
+                            strokeWidth: 2,
                           ),
-                        );
-                      },
-                      errorBuilder: (context, error, stackTrace) {
-                        return Container(
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: [
-                                _primaryColor.withOpacity(0.05), 
-                                _accentColor.withOpacity(0.05)
-                              ],
-                            ),
-                          ),
-                          child: Center(
-                            child: Icon(
-                              Icons.location_city,
-                              size: _getResponsiveSize(context, 48.0, 56.0),
-                              color: _primaryColor,
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                  
-                  // Gradient Overlay
-                  Positioned.fill(
-                    child: Container(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [
-                            Colors.transparent,
-                            Colors.black.withOpacity(0.6),
-                          ],
-                          stops: const [0.5, 1.0],
                         ),
-                      ),
-                    ),
+                      );
+                    },
+                    errorBuilder: (context, error, stackTrace) {
+                      return Container(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [
+                              _primaryColor.withOpacity(0.05), 
+                              _accentColor.withOpacity(0.05)
+                            ],
+                          ),
+                        ),
+                        child: Center(
+                          child: Icon(
+                            Icons.location_city,
+                            size: _getResponsiveSize(context, 48.0, 56.0),
+                            color: _primaryColor,
+                          ),
+                        ),
+                      );
+                    },
                   ),
-                  
-                  // Content
-                  Positioned(
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
-                    child: Container(
-                      padding: EdgeInsets.all(_getResponsiveSize(context, 20.0, 24.0)),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  title,
-                                  style: TextStyle(
-                                    fontSize: _getResponsiveSize(context, 22.0, 24.0),
-                                    fontWeight: FontWeight.w700,
-                                    color: Colors.white,
-                                    letterSpacing: 0.3,
-                                  ),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  'Toca para seleccionar',
-                                  style: TextStyle(
-                                    fontSize: _getResponsiveSize(context, 14.0, 15.0),
-                                    color: Colors.white.withOpacity(0.9),
-                                    fontWeight: FontWeight.w400,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Container(
-                            padding: EdgeInsets.all(_getResponsiveSize(context, 12.0, 14.0)),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.2),
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: Colors.white.withOpacity(0.3),
-                                width: 1,
-                              ),
-                            ),
-                            child: Icon(
-                              Icons.arrow_forward_ios,
-                              color: Colors.white,
-                              size: _getResponsiveSize(context, 16.0, 18.0),
-                            ),
-                          ),
+                ),
+                
+                // Gradient Overlay
+                Positioned.fill(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Colors.transparent,
+                          Colors.black.withOpacity(0.6),
                         ],
+                        stops: const [0.5, 1.0],
                       ),
                     ),
                   ),
-                ],
-              ),
+                ),
+                
+                // Content
+                Positioned(
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  child: Container(
+                    padding: EdgeInsets.all(_getResponsiveSize(context, 20.0, 24.0)),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                title,
+                                style: TextStyle(
+                                  fontSize: _getResponsiveSize(context, 22.0, 24.0),
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.white,
+                                  letterSpacing: 0.3,
+                                ),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                descripcion?.isNotEmpty == true 
+                                    ? descripcion! 
+                                    : 'Toca para seleccionar',
+                                style: TextStyle(
+                                  fontSize: _getResponsiveSize(context, 14.0, 15.0),
+                                  color: Colors.white.withOpacity(0.9),
+                                  fontWeight: FontWeight.w400,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
+                        ),
+                        Container(
+                          padding: EdgeInsets.all(_getResponsiveSize(context, 12.0, 14.0)),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.2),
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: Colors.white.withOpacity(0.3),
+                              width: 1,
+                            ),
+                          ),
+                          child: Icon(
+                            Icons.arrow_forward_ios,
+                            color: Colors.white,
+                            size: _getResponsiveSize(context, 16.0, 18.0),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
+}
+
 }

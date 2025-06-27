@@ -21,8 +21,7 @@ class HorariosScreen extends StatefulWidget {
   State<HorariosScreen> createState() => _HorariosScreenState();
 }
 
-class _HorariosScreenState extends State<HorariosScreen>
-    with RouteAware, TickerProviderStateMixin {
+class _HorariosScreenState extends State<HorariosScreen> with RouteAware, TickerProviderStateMixin {
   DateTime _selectedDate = DateTime.now();
   List<Horario> horarios = [];
   bool _isLoading = false;
@@ -63,19 +62,47 @@ class _HorariosScreenState extends State<HorariosScreen>
 
     final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
     final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
-    canchaProvider.fetchCanchas(sedeProvider.selectedSede).then((_) {
-      setState(() {
-        _updatedCancha = canchaProvider.canchas.firstWhere(
-          (c) => c.id == widget.cancha.id,
-          orElse: () => widget.cancha,
+
+    sedeProvider.fetchSedes().then((_) {
+      if (!mounted) return;
+      String selectedSede = sedeProvider.selectedSede.isNotEmpty
+          ? sedeProvider.selectedSede
+          : sedeProvider.sedeNames.isNotEmpty
+              ? sedeProvider.sedeNames.first
+              : '';
+      if (selectedSede.isNotEmpty) {
+        sedeProvider.setSede(selectedSede);
+        canchaProvider.fetchCanchas(selectedSede).then((_) {
+          if (!mounted) return;
+          setState(() {
+            _updatedCancha = canchaProvider.canchas.firstWhere(
+              (c) => c.id == widget.cancha.id,
+              orElse: () => widget.cancha,
+            );
+            _loadHorarios();
+          });
+        }).catchError((error) {
+          if (!mounted) return;
+          setState(() {
+            _updatedCancha = widget.cancha;
+            _loadHorarios();
+          });
+        });
+      } else {
+        setState(() {
+          _updatedCancha = widget.cancha;
+          _isLoading = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('No hay sedes disponibles'),
+            backgroundColor: Colors.red.shade800,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            margin: const EdgeInsets.all(12),
+          ),
         );
-        _loadHorarios();
-      });
-    }).catchError((_) {
-      setState(() {
-        _updatedCancha = widget.cancha;
-        _loadHorarios();
-      });
+      }
     });
 
     _fadeController.forward();
@@ -113,8 +140,13 @@ class _HorariosScreenState extends State<HorariosScreen>
 
     final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
     final sedeSeleccionada = sedeProvider.selectedSede;
-    final snapshotKey =
-        '${DateFormat('yyyy-MM-dd').format(_selectedDate)}_${widget.cancha.id}_$sedeSeleccionada';
+    final sede = sedeProvider.sedes.firstWhere(
+      (s) => s['nombre'] == sedeSeleccionada,
+      orElse: () => {'id': '', 'nombre': sedeSeleccionada},
+    );
+    final sedeId = sede['id'] as String;
+
+    final snapshotKey = '${DateFormat('yyyy-MM-dd').format(_selectedDate)}_${widget.cancha.id}_$sedeId';
 
     try {
       QuerySnapshot? reservasSnapshot = _reservasSnapshots[snapshotKey];
@@ -124,9 +156,14 @@ class _HorariosScreenState extends State<HorariosScreen>
             .collection('reservas')
             .where('fecha', isEqualTo: DateFormat('yyyy-MM-dd').format(_selectedDate))
             .where('cancha_id', isEqualTo: widget.cancha.id)
-            .where('sede', isEqualTo: sedeSeleccionada)
+            .where('sede', isEqualTo: sedeId)
             .get();
         _reservasSnapshots[snapshotKey] = reservasSnapshot;
+        print(
+            'Reservas encontradas para sedeId=$sedeId, canchaId=${widget.cancha.id}, fecha=${DateFormat('yyyy-MM-dd').format(_selectedDate)}: ${reservasSnapshot.docs.length}');
+        for (var doc in reservasSnapshot.docs) {
+          print('Reserva ${doc.id}: ${doc.data()}');
+        }
       }
 
       if (!mounted) return;
@@ -134,7 +171,7 @@ class _HorariosScreenState extends State<HorariosScreen>
       final nuevosHorarios = await Horario.generarHorarios(
         fecha: _selectedDate,
         canchaId: widget.cancha.id,
-        sede: sedeSeleccionada,
+        sede: sedeId,
         reservasSnapshot: reservasSnapshot,
       );
 
@@ -413,9 +450,7 @@ class _HorariosScreenState extends State<HorariosScreen>
 
   Widget _buildDateSelector() {
     return GestureDetector(
-      onTap: (_updatedCancha?.disponible ?? widget.cancha.disponible)
-          ? _toggleCalendar
-          : null,
+      onTap: (_updatedCancha?.disponible ?? widget.cancha.disponible) ? _toggleCalendar : null,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         decoration: BoxDecoration(
@@ -709,13 +744,20 @@ class _HorariosScreenState extends State<HorariosScreen>
     );
   }
 
-  Widget _buildHorarioCard(Horario horario, String sede) {
+  Widget _buildHorarioCard(Horario horario, String sedeNombre) {
     final String day = DateFormat('EEEE', 'es').format(_selectedDate).toLowerCase();
     final String horaStr = '${horario.hora.hour}:00';
     final Map<String, double>? dayPrices = (_updatedCancha?.preciosPorHorario ?? widget.cancha.preciosPorHorario)[day];
     final double precio = dayPrices != null && dayPrices.containsKey(horaStr)
         ? dayPrices[horaStr] ?? (_updatedCancha?.precio ?? widget.cancha.precio)
         : _updatedCancha?.precio ?? widget.cancha.precio;
+
+    final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
+    final sede = sedeProvider.sedes.firstWhere(
+      (s) => s['nombre'] == sedeNombre,
+      orElse: () => {'id': '', 'nombre': sedeNombre},
+    );
+    final sedeId = sede['id'] as String;
 
     return AnimatedBuilder(
       animation: _fadeController,
@@ -751,13 +793,13 @@ class _HorariosScreenState extends State<HorariosScreen>
                             cancha: widget.cancha,
                             fecha: _selectedDate,
                             horario: horario,
-                            sede: sede,
+                            sede: sedeId,
                           )
                         : ReservaDetallesScreen(
                             cancha: widget.cancha,
                             fecha: _selectedDate,
                             horario: horario,
-                            sede: sede,
+                            sede: sedeId,
                           ),
                   );
                 },

@@ -15,7 +15,6 @@ import '../../../providers/sede_provider.dart';
 import 'detalles_reserva_screen.dart';
 import 'agregar_reserva_screen.dart';
 
-
 class AdminReservasScreen extends StatefulWidget {
   const AdminReservasScreen({super.key});
 
@@ -25,7 +24,8 @@ class AdminReservasScreen extends StatefulWidget {
 
 class AdminReservasScreenState extends State<AdminReservasScreen>
     with TickerProviderStateMixin {
-  String _selectedSede = 'Sede 1';
+  String _selectedSedeId = '';
+  String _selectedSedeNombre = '';
   Cancha? _selectedCancha;
   DateTime _selectedDate = DateTime.now();
   bool _isLoading = false;
@@ -42,7 +42,6 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
   Timer? _debounceTimer;
 
   final List<int> _hours = List<int>.generate(19, (index) => index + 5);
-  final List<String> _sedes = ['Sede 1', 'Sede 2'];
 
   final Color _primaryColor = const Color(0xFF3C4043);
   final Color _secondaryColor = const Color(0xFF4285F4);
@@ -68,10 +67,22 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
-      setState(() {
-        _selectedSede = sedeProvider.selectedSede;
+      sedeProvider.fetchSedes().then((_) {
+        if (!mounted) return;
+        setState(() {
+          if (sedeProvider.sedes.isNotEmpty) {
+            _selectedSedeId = sedeProvider.sedes.first['id'] as String;
+            _selectedSedeNombre = sedeProvider.sedes.first['nombre'] as String;
+            sedeProvider.setSede(_selectedSedeNombre);
+          } else {
+            _selectedSedeId = '';
+            _selectedSedeNombre = '';
+          }
+        });
+        if (_selectedSedeId.isNotEmpty) {
+          _loadCanchas();
+        }
       });
-      _loadCanchas();
     });
   }
 
@@ -82,7 +93,6 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
     _debounceTimer?.cancel();
     super.dispose();
   }
-
 
   Future<void> _loadCanchas() async {
     final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
@@ -96,16 +106,11 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
     _debounceTimer?.cancel();
     _debounceTimer = Timer(const Duration(milliseconds: 200), () async {
       try {
-        await canchaProvider.fetchCanchas(_selectedSede);
+        await canchaProvider.fetchCanchas(_selectedSedeId);
         if (!mounted) return;
 
-        // Filtrar canchas por sede para garantizar que solo se muestren las correspondientes
-        final canchasFiltradas = canchaProvider.canchas
-            .where((cancha) => cancha.sede == _selectedSede)
-            .toList();
-
         setState(() {
-          _canchas = canchasFiltradas;
+          _canchas = canchaProvider.canchas;
           _selectedCancha = _canchas.isNotEmpty ? _canchas.first : null;
           _isLoading = false;
         });
@@ -130,74 +135,78 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
   }
 
   Future<void> _loadReservas() async {
-  if (_selectedCancha == null) return;
-  setState(() {
-    _isLoading = true;
-    _reservas.clear();
-    _reservedMap.clear();
-    _selectedHours.clear();
-  });
+    if (_selectedCancha == null) return;
+    setState(() {
+      _isLoading = true;
+      _reservas.clear();
+      _reservedMap.clear();
+      _selectedHours.clear();
+    });
 
-  final snapshotKey =
-      '${DateFormat('yyyy-MM-dd').format(_selectedDate)}_${_selectedCancha!.id}_$_selectedSede';
+    final snapshotKey =
+        '${DateFormat('yyyy-MM-dd').format(_selectedDate)}_${_selectedCancha!.id}_$_selectedSedeId';
 
-  try {
-    QuerySnapshot? querySnapshot = _reservasSnapshots[snapshotKey];
+    try {
+      QuerySnapshot? querySnapshot = _reservasSnapshots[snapshotKey];
 
-    if (querySnapshot == null) {
-      for (int i = 0; i < 3; i++) {
-        try {
-          querySnapshot = await FirebaseFirestore.instance
-              .collection('reservas')
-              .where('fecha',
-                  isEqualTo: DateFormat('yyyy-MM-dd').format(_selectedDate))
-              .where('sede', isEqualTo: _selectedSede)
-              .where('cancha_id', isEqualTo: _selectedCancha!.id)
-              .get();
-          break;
-        } catch (e) {
-          if (i == 2) rethrow;
-          await Future.delayed(Duration(milliseconds: 500));
+      if (querySnapshot == null) {
+        for (int i = 0; i < 3; i++) {
+          try {
+            querySnapshot = await FirebaseFirestore.instance
+                .collection('reservas')
+                .where('fecha',
+                    isEqualTo: DateFormat('yyyy-MM-dd').format(_selectedDate))
+                .where('sede', isEqualTo: _selectedSedeId) // Usar el ID de la sede
+                .where('cancha_id', isEqualTo: _selectedCancha!.id)
+                .get();
+            break;
+          } catch (e) {
+            if (i == 2) rethrow;
+            await Future.delayed(Duration(milliseconds: 500));
+          }
+        }
+        if (_reservasSnapshots.length >= 5) {
+          _reservasSnapshots.remove(_reservasSnapshots.keys.first);
+        }
+        _reservasSnapshots[snapshotKey] = querySnapshot!;
+        print(
+            'Reservas encontradas para sedeId=$_selectedSedeId, canchaId=${_selectedCancha!.id}, fecha=${DateFormat('yyyy-MM-dd').format(_selectedDate)}: ${querySnapshot.docs.length}');
+        for (var doc in querySnapshot.docs) {
+          print('Reserva ${doc.id}: ${doc.data()}');
         }
       }
-      if (_reservasSnapshots.length >= 5) {
-        _reservasSnapshots.remove(_reservasSnapshots.keys.first);
-      }
-      _reservasSnapshots[snapshotKey] = querySnapshot!;
-    }
 
-    List<Reserva> reservasTemp = [];
-    for (var doc in querySnapshot.docs) {
-      try {
-        final reserva = await Reserva.fromFirestore(doc);
-        final hour = reserva.horario.hora.hour;
-        _reservedMap[hour] = reserva;
-        reservasTemp.add(reserva);
-      } catch (e) {
-        debugPrint("Error al procesar documento: $e");
+      List<Reserva> reservasTemp = [];
+      for (var doc in querySnapshot.docs) {
+        try {
+          final reserva = await Reserva.fromFirestore(doc);
+          final hour = reserva.horario.hora.hour;
+          _reservedMap[hour] = reserva;
+          reservasTemp.add(reserva);
+        } catch (e) {
+          debugPrint("Error al procesar documento: $e");
+        }
       }
-    }
 
-    if (mounted) {
-      setState(() {
-        _reservas = reservasTemp;
-      });
-    }
-  } catch (e) {
-    if (mounted) {
-      _showErrorSnackBar('Error al cargar reservas: $e');
-    }
-  } finally {
-    if (mounted) {
-      setState(() {
-        _isLoading = false;
-      });
-      _fadeController.reset();
-      _fadeController.forward();
+      if (mounted) {
+        setState(() {
+          _reservas = reservasTemp;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        _showErrorSnackBar('Error al cargar reservas: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+        _fadeController.reset();
+        _fadeController.forward();
+      }
     }
   }
-}
-
 
   void _showErrorSnackBar(String message) {
     if (mounted) {
@@ -267,6 +276,7 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
   }
 
   void _viewReservaDetails(Reserva reserva) {
+    if (!mounted) return;
     Navigator.push(
       context,
       PageRouteBuilder(
@@ -303,7 +313,7 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
         pageBuilder: (context, animation, secondaryAnimation) =>
             AgregarReservaScreen(
           cancha: _selectedCancha!,
-          sede: _selectedSede,
+          sede: _selectedSedeId, // Pasar el ID de la sede
           horarios: horarios,
           fecha: _selectedDate,
         ),
@@ -504,6 +514,9 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
   }
 
   Widget _buildSedeYCanchaSelectors() {
+    final sedeProvider = Provider.of<SedeProvider>(context);
+    final canchaProvider = Provider.of<CanchaProvider>(context);
+
     return Card(
       elevation: 0,
       color: _cardColor,
@@ -536,7 +549,19 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
                     ),
                     child: DropdownButtonHideUnderline(
                       child: DropdownButton<String>(
-                        value: _selectedSede,
+                        value: _selectedSedeId.isNotEmpty &&
+                                sedeProvider.sedes.any(
+                                    (sede) => sede['id'] == _selectedSedeId)
+                            ? _selectedSedeId
+                            : null,
+                        hint: Text(
+                          sedeProvider.sedes.isEmpty
+                              ? 'No hay sedes disponibles'
+                              : 'Selecciona Sede',
+                          style: GoogleFonts.montserrat(
+                            color: const Color.fromRGBO(60, 64, 67, 0.5),
+                          ),
+                        ),
                         icon: Icon(Icons.keyboard_arrow_down,
                             color: _secondaryColor),
                         isExpanded: true,
@@ -545,21 +570,27 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
                           fontWeight: FontWeight.w500,
                           fontSize: 16,
                         ),
-                        items: _sedes
-                            .map((sede) => DropdownMenuItem(
-                                  value: sede,
-                                  child: Text(sede),
+                        items: sedeProvider.sedes
+                            .map((sede) => DropdownMenuItem<String>(
+                                  value: sede['id'] as String,
+                                  child: Text(sede['nombre'] as String),
                                 ))
                             .toList(),
-                        onChanged: (newSede) {
-                          if (newSede != null && newSede != _selectedSede) {
+                        onChanged: (newSedeId) async {
+                          if (newSedeId != null && newSedeId != _selectedSedeId) {
+                            final selectedSede = sedeProvider.sedes.firstWhere(
+                                (sede) => sede['id'] == newSedeId,
+                                orElse: () => {'nombre': ''});
                             setState(() {
-                              _selectedSede = newSede;
+                              _selectedSedeId = newSedeId;
+                              _selectedSedeNombre =
+                                  selectedSede['nombre'] as String;
                               _selectedCancha = null;
                               _selectedHours.clear();
                               _isLoading = true;
                             });
-                            _loadCanchas();
+                            sedeProvider.setSede(_selectedSedeNombre);
+                            await _loadCanchas();
                           }
                         },
                       ),
@@ -593,9 +624,11 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
                       child: DropdownButton<Cancha>(
                         value: _selectedCancha,
                         hint: Text(
-                          _canchas.isEmpty
-                              ? 'No hay canchas disponibles'
-                              : 'Selecciona Cancha',
+                          canchaProvider.isLoading
+                              ? 'Cargando canchas...'
+                              : _canchas.isEmpty
+                                  ? 'No hay canchas disponibles'
+                                  : 'Selecciona Cancha',
                           style: GoogleFonts.montserrat(
                             color: const Color.fromRGBO(60, 64, 67, 0.5),
                           ),
@@ -609,21 +642,24 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
                           fontSize: 16,
                         ),
                         items: _canchas
+                            .where((cancha) => cancha.sedeId == _selectedSedeId)
                             .map((cancha) => DropdownMenuItem<Cancha>(
                                   value: cancha,
                                   child: Text(cancha.nombre),
                                 ))
                             .toList(),
-                        onChanged: (newCancha) {
-                          if (newCancha != null) {
-                            setState(() {
-                              _selectedCancha = newCancha;
-                              _selectedHours.clear();
-                              _isLoading = true;
-                            });
-                            _loadReservas();
-                          }
-                        },
+                        onChanged: canchaProvider.isLoading
+                            ? null
+                            : (newCancha) {
+                                if (newCancha != null) {
+                                  setState(() {
+                                    _selectedCancha = newCancha;
+                                    _selectedHours.clear();
+                                    _isLoading = true;
+                                  });
+                                  _loadReservas();
+                                }
+                              },
                       ),
                     ),
                   ),
@@ -750,28 +786,23 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
                 final isSelected = _selectedHours.contains(hour);
                 final reserva = isReserved ? _reservedMap[hour] : null;
 
-                Color bgColor;
                 Color textColor;
                 IconData statusIcon;
                 String statusText;
 
                 if (isPast) {
-                  bgColor = const Color.fromRGBO(218, 220, 224, 0.5);
                   textColor = Colors.grey;
                   statusIcon = Icons.history;
                   statusText = 'Pasado';
                 } else if (isReserved) {
-                  bgColor = const Color.fromRGBO(76, 175, 80, 0.2);
                   textColor = _reservedColor;
                   statusIcon = Icons.event_busy;
                   statusText = 'Reservado';
                 } else if (isSelected) {
-                  bgColor = _selectedHourColor.withOpacity(0.3);
                   textColor = _selectedHourColor;
                   statusIcon = Icons.check_circle;
                   statusText = 'Seleccionado';
                 } else {
-                  bgColor = _availableColor;
                   textColor = _primaryColor;
                   statusIcon = Icons.event_available;
                   statusText = 'Disponible';
@@ -814,7 +845,6 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
                         child: AnimatedContainer(
                           duration: const Duration(milliseconds: 300),
                           decoration: BoxDecoration(
-                            color: bgColor,
                             borderRadius: BorderRadius.circular(12),
                             border: Border.all(
                               color: isPast
@@ -878,7 +908,7 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                'COP ${precio.toStringAsFixed(0)}',
+                                'COP ${precio.toInt()}',
                                 style: GoogleFonts.montserrat(
                                   fontSize: 12,
                                   fontWeight: FontWeight.w500,
@@ -951,28 +981,23 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
                 final isSelected = _selectedHours.contains(hour);
                 final reserva = isReserved ? _reservedMap[hour] : null;
 
-                Color bgColor;
                 Color textColor;
                 IconData statusIcon;
                 String statusText;
 
                 if (isPast) {
-                  bgColor = const Color.fromRGBO(218, 220, 224, 0.5);
                   textColor = Colors.grey;
                   statusIcon = Icons.history;
                   statusText = 'Pasado';
                 } else if (isReserved) {
-                  bgColor = const Color.fromRGBO(76, 175, 80, 0.1);
                   textColor = _reservedColor;
                   statusIcon = Icons.event_busy;
                   statusText = 'Reservado';
                 } else if (isSelected) {
-                  bgColor = _selectedHourColor.withOpacity(0.3);
                   textColor = _selectedHourColor;
                   statusIcon = Icons.check_circle;
                   statusText = 'Seleccionado';
                 } else {
-                  bgColor = Colors.white;
                   textColor = _primaryColor;
                   statusIcon = Icons.event_available;
                   statusText = 'Disponible';
@@ -982,7 +1007,6 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
                     .format(_selectedDate)
                     .toLowerCase();
                 final String horaStr = '$hour:00';
-                // ignore: unused_local_variable
                 final double precio = _selectedCancha != null
                     ? (_selectedCancha!.preciosPorHorario[day]?[horaStr] ??
                         _selectedCancha!.precio)
@@ -1011,7 +1035,6 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
                         child: AnimatedContainer(
                           duration: const Duration(milliseconds: 300),
                           decoration: BoxDecoration(
-                            color: bgColor,
                             borderRadius: BorderRadius.circular(12),
                             border: Border.all(
                               color: isPast
@@ -1066,7 +1089,6 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
                                         ? const Color.fromRGBO(76, 175, 80, 0.2)
                                         : isSelected
                                             ? _selectedHourColor
-                                                .withOpacity(0.2)
                                             : _availableColor,
                                 borderRadius: BorderRadius.circular(8),
                               ),
@@ -1087,11 +1109,15 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
                               ),
                             ),
                             subtitle: Text(
-                              '$statusText${isReserved ? ' por: ${reserva?.nombre ?? "Cliente"}' : isSelected ? '' : isPast ? '' : ' para reservar'}',
+                              '$statusText${isReserved ? ' por: ${reserva?.nombre ?? "Cliente"}' : isSelected ? '' : isPast ? '' : ' para reservar'} - COP ${precio.toInt()}',
                               style: GoogleFonts.montserrat(
                                 fontSize: 14,
-                                color: Color.fromRGBO(textColor.red,
-                                    textColor.green, textColor.blue, 0.8),
+                                color: Color.fromRGBO(
+                                  (textColor.r * 255.0).round() & 0xff,
+                                  (textColor.g * 255.0).round() & 0xff,
+                                  (textColor.b * 255.0).round() & 0xff,
+                                  0.8,
+                                ),
                               ),
                             ),
                             trailing: isReserved && !isPast
@@ -1117,8 +1143,12 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
                                 : Icon(
                                     Icons.arrow_forward_ios_rounded,
                                     size: 16,
-                                    color: Color.fromRGBO(textColor.red,
-                                        textColor.green, textColor.blue, 0.5),
+                                    color: Color.fromRGBO(
+                                      (textColor.r * 255.0).round() & 0xff,
+                                      (textColor.g * 255.0).round() & 0xff,
+                                      (textColor.b * 255.0).round() & 0xff,
+                                      0.5,
+                                    ),
                                   ),
                             titleAlignment: ListTileTitleAlignment.center,
                           ),

@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
+import 'package:reserva_canchas/providers/sede_provider.dart';
 import '../models/cancha.dart';
 import '../models/horario.dart';
 import '../models/reserva.dart';
@@ -10,6 +12,7 @@ class ReservaDetallesScreen extends StatelessWidget {
   final DateTime fecha;
   final Horario horario;
   final String sede;
+  
 
   const ReservaDetallesScreen({
     super.key,
@@ -334,7 +337,12 @@ class ReservaDetallesScreen extends StatelessWidget {
                       _buildInfoRow(
                         icon: Icons.location_on,
                         label: 'Sede',
-                        value: reserva.sede,
+                        value: Provider.of<SedeProvider>(context, listen: false)
+                            .sedes
+                            .firstWhere(
+                              (sede) => sede['id'] == reserva.sede,
+                              orElse: () => {'nombre': reserva.sede}, // Fallback al ID si no se encuentra
+                            )['nombre'] as String,
                       ),
                     ],
                   ),

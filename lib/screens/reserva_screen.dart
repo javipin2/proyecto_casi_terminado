@@ -361,50 +361,52 @@ class _ReservaScreenState extends State<ReservaScreen>
 
   // Guardar reserva final
   Future<void> _guardarReservaFinal() async {
-    // Actualizar los datos de la reserva
-    widget.reserva.nombre = _nombreController.text;
-    widget.reserva.telefono = _telefonoController.text;
-    widget.reserva.email = _emailController.text;
-    widget.reserva.montoPagado = _montoPagado;
-    widget.reserva.tipoAbono = _montoPagado >= widget.reserva.montoTotal
-        ? TipoAbono.completo
-        : TipoAbono.parcial;
-    widget.reserva.confirmada = true;
+  // Actualizar los datos de la reserva
+  widget.reserva.nombre = _nombreController.text;
+  widget.reserva.telefono = _telefonoController.text;
+  widget.reserva.email = _emailController.text;
+  widget.reserva.montoPagado = _montoPagado;
+  widget.reserva.tipoAbono = _montoPagado >= widget.reserva.montoTotal
+      ? TipoAbono.completo
+      : TipoAbono.parcial;
+  widget.reserva.confirmada = true;
+  widget.reserva.sede = widget.reserva.cancha.sedeId; // Usar el ID de la sede
 
-    try {
-      // Guardar reserva confirmada
+  try {
+    // Guardar reserva confirmada
+    await FirebaseFirestore.instance
+        .collection('reservas')
+        .add(widget.reserva.toFirestore());
+
+    // Eliminar documento temporal
+    if (_referenciaActual != null) {
       await FirebaseFirestore.instance
-          .collection('reservas')
-          .add(widget.reserva.toFirestore());
+          .collection('reservas_temporales')
+          .doc(_referenciaActual!)
+          .delete();
+    }
 
-      // Eliminar documento temporal
-      if (_referenciaActual != null) {
-        await FirebaseFirestore.instance
-            .collection('reservas_temporales')
-            .doc(_referenciaActual!)
-            .delete();
-      }
+    if (!mounted) return;
 
-      if (!mounted) return;
+    // Cerrar diálogo y mostrar éxito
+    Navigator.of(context).pop(); // Cerrar diálogo de verificación
 
-      // Cerrar diálogo y mostrar éxito
-      Navigator.of(context).pop(); // Cerrar diálogo de verificación
+    _mostrarExito();
 
-      _mostrarExito();
-
-      // Navegar de vuelta después de un momento
-      Future.delayed(const Duration(seconds: 2), () {
-        if (mounted) {
-          Navigator.popUntil(context, (route) => route.isFirst);
-        }
-      });
-    } catch (e) {
+    // Navegar de vuelta después de un momento
+    Future.delayed(const Duration(seconds: 2), () {
       if (mounted) {
-        Navigator.of(context).pop(); // Cerrar diálogo
-        _mostrarError('Error al guardar la reserva: $e');
+        Navigator.popUntil(context, (route) => route.isFirst);
       }
+    });
+  } catch (e) {
+    if (mounted) {
+      Navigator.of(context).pop(); // Cerrar diálogo
+      _mostrarError('Error al guardar la reserva: $e');
     }
   }
+}
+
 
   // Diálogos y mensajes mejorados
   void _mostrarDialogoVerificacionAutomatica() {

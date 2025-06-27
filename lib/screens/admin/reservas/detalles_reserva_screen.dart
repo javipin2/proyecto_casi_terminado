@@ -5,7 +5,9 @@ import 'package:intl/intl.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:provider/provider.dart';
 import 'package:reserva_canchas/models/cancha.dart';
+import 'package:reserva_canchas/providers/sede_provider.dart';
 
 import '../../../models/reserva.dart';
 import '../../../models/horario.dart';
@@ -588,7 +590,10 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        'Sede: ${reserva.sede}',
+                        'Sede: ${Provider.of<SedeProvider>(context, listen: false).sedes.firstWhere(
+                              (sede) => sede['id'] == reserva.sede,
+                              orElse: () => {'nombre': reserva.sede},
+                            )['nombre'] as String}',
                         style: GoogleFonts.montserrat(
                           fontSize: 16,
                           color: _primaryColor,

@@ -1,3 +1,4 @@
+import 'dart:developer' as developer; // Importar para usar log
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -6,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../../../models/reserva.dart';
 import '../../../models/cancha.dart';
 import '../../../providers/cancha_provider.dart';
+import '../../../providers/sede_provider.dart';
 
 class GraficasScreen extends StatefulWidget {
   const GraficasScreen({super.key});
@@ -16,7 +18,7 @@ class GraficasScreen extends StatefulWidget {
 
 class GraficasScreenState extends State<GraficasScreen> {
   DateTime? _selectedDate;
-  String? _selectedSede;
+  String? _selectedSedeId;
   String? _selectedCanchaId;
   List<Reserva> _reservas = [];
   List<Reserva> _filteredReservas = [];
@@ -30,24 +32,26 @@ class GraficasScreenState extends State<GraficasScreen> {
   }
 
   Future<void> _loadData() async {
-    if (!mounted) {
-      return;
-    }
+    if (!mounted) return;
     setState(() => _isLoading = true);
 
     try {
       final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
-      await canchaProvider.fetchAllCanchas();
-      await canchaProvider.fetchHorasReservadas();
-
-      final canchasMap = {
-        for (var cancha in canchaProvider.canchas) cancha.id: cancha
-      };
+      final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
+      await Future.wait([
+        canchaProvider.fetchAllCanchas(),
+        canchaProvider.fetchHorasReservadas(),
+        sedeProvider.fetchSedes(),
+      ]);
 
       final querySnapshot = await FirebaseFirestore.instance
           .collection('reservas')
           .get()
           .timeout(const Duration(seconds: 10));
+
+      final canchasMap = {
+        for (var cancha in canchaProvider.canchas) cancha.id: cancha
+      };
 
       _reservas = querySnapshot.docs
           .map((doc) => Reserva.fromFirestoreWithCanchas(doc, canchasMap))
@@ -59,7 +63,7 @@ class GraficasScreenState extends State<GraficasScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error al cargar datos: $e'),
-            backgroundColor: const Color(0xFFD32F2F), // red.shade600
+            backgroundColor: const Color(0xFFD32F2F),
             behavior: SnackBarBehavior.floating,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             margin: const EdgeInsets.all(16),
@@ -77,19 +81,33 @@ class GraficasScreenState extends State<GraficasScreen> {
   void _applyFilters() {
     List<Reserva> filtered = List.from(_reservas);
 
-    if (_selectedSede?.isNotEmpty == true) {
-      filtered = filtered.where((reserva) => reserva.sede == _selectedSede).toList();
+    // Aplicar filtro de sede
+    if (_selectedSedeId != null && _selectedSedeId!.isNotEmpty) {
+      filtered = filtered.where((reserva) {
+        // Comparar con el sedeId de la cancha de la reserva
+        return reserva.cancha.sedeId == _selectedSedeId;
+      }).toList();
+      
+      developer.log('Filtro por sede aplicado. Sede: $_selectedSedeId, Reservas: ${filtered.length}', name: 'GraficasScreen');
     }
 
-    if (_selectedCanchaId?.isNotEmpty == true) {
+    // Aplicar filtro de cancha
+    if (_selectedCanchaId != null && _selectedCanchaId!.isNotEmpty) {
       filtered = filtered.where((reserva) => reserva.cancha.id == _selectedCanchaId).toList();
+      
+      developer.log('Filtro por cancha aplicado. Cancha: $_selectedCanchaId, Reservas: ${filtered.length}', name: 'GraficasScreen');
     }
 
+    // Aplicar filtro de fecha
     if (_selectedDate != null) {
       filtered = filtered.where((reserva) => _isSameDay(reserva.fecha, _selectedDate!)).toList();
+      
+      developer.log('Filtro por fecha aplicado. Fecha: $_selectedDate, Reservas: ${filtered.length}', name: 'GraficasScreen');
     }
 
     setState(() => _filteredReservas = filtered);
+    
+    developer.log('Filtros aplicados. Total reservas filtradas: ${_filteredReservas.length}', name: 'GraficasScreen');
   }
 
   bool _isSameDay(DateTime date1, DateTime date2) {
@@ -111,7 +129,7 @@ class GraficasScreenState extends State<GraficasScreen> {
   void _clearFilters() {
     setState(() {
       _selectedDate = null;
-      _selectedSede = null;
+      _selectedSedeId = null;
       _selectedCanchaId = null;
       _filterType = 'Mes';
     });
@@ -119,44 +137,41 @@ class GraficasScreenState extends State<GraficasScreen> {
   }
 
   Future<void> _selectDate(BuildContext context) async {
-  final DateTime? picked = await showDatePicker(
-    context: context,
-    initialDate: _selectedDate ?? DateTime.now(),
-    firstDate: DateTime(2020),
-    lastDate: DateTime.now(),
-    builder: (context, child) {
-      return Theme(
-        data: Theme.of(context).copyWith(
-          colorScheme: const ColorScheme.light(
-            primary: Color(0xFF1976D2), // blue.shade700
-            onPrimary: Colors.white,
-            surface: Colors.white,
-            onSurface: Color(0xFF424242), // grey.shade800
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate ?? DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now(),
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: const ColorScheme.light(
+              primary: Color(0xFF1976D2),
+              onPrimary: Colors.white,
+              surface: Colors.white,
+              onSurface: Color(0xFF424242),
+            ),
+            dialogTheme: const DialogThemeData(
+              backgroundColor: Colors.white,
+            ),
           ),
-          dialogTheme: const DialogThemeData(
-            backgroundColor: Colors.white,
-          ),
-        ),
-        child: child!,
-      );
-    },
-  );
+          child: child!,
+        );
+      },
+    );
 
-  if (picked != null && mounted) {
-    setState(() => _selectedDate = picked);
-    _applyFilters();
+    if (picked != null && mounted) {
+      setState(() => _selectedDate = picked);
+      _applyFilters();
+    }
   }
-}
-
 
   Map<String, dynamic> _getStats() {
     final currentDate = DateTime.now();
-    final totalCanchas = Provider.of<CanchaProvider>(context, listen: false).canchas.length;
-    final totalSedes = Provider.of<CanchaProvider>(context, listen: false)
-        .canchas
-        .map((c) => c.sede)
-        .toSet()
-        .length;
+    final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
+    final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
+    final totalCanchas = canchaProvider.canchas.length;
+    final totalSedes = sedeProvider.sedes.length;
 
     final periodFilteredReservas = _filteredReservas.where((reserva) {
       switch (_filterType) {
@@ -184,19 +199,17 @@ class GraficasScreenState extends State<GraficasScreen> {
 
       for (var reserva in periodFilteredReservas) {
         canchaCount[reserva.cancha.nombre] = (canchaCount[reserva.cancha.nombre] ?? 0) + 1;
-        sedeCount[reserva.sede] = (sedeCount[reserva.sede] ?? 0) + 1;
+        final sede = sedeProvider.sedes.firstWhere(
+          (s) => s['id'] == reserva.sede,
+          orElse: () => {'nombre': 'Desconocida'},
+        );
+        sedeCount[sede['nombre'] as String] = (sedeCount[sede['nombre'] as String] ?? 0) + 1;
         horaCount[reserva.horario.horaFormateada] = (horaCount[reserva.horario.horaFormateada] ?? 0) + 1;
       }
 
-      if (canchaCount.isNotEmpty) {
-        canchaMasPedida = canchaCount.entries.reduce((a, b) => a.value > b.value ? a : b).key;
-      }
-      if (sedeCount.isNotEmpty) {
-        sedeMasPedida = sedeCount.entries.reduce((a, b) => a.value > b.value ? a : b).key;
-      }
-      if (horaCount.isNotEmpty) {
-        horaMasPedida = horaCount.entries.reduce((a, b) => a.value > b.value ? a : b).key;
-      }
+      canchaMasPedida = canchaCount.entries.reduce((a, b) => a.value > b.value ? a : b).key;
+      sedeMasPedida = sedeCount.entries.reduce((a, b) => a.value > b.value ? a : b).key;
+      horaMasPedida = horaCount.entries.reduce((a, b) => a.value > b.value ? a : b).key;
     }
 
     return {
@@ -213,6 +226,7 @@ class GraficasScreenState extends State<GraficasScreen> {
     if (_filteredReservas.isEmpty) return [];
 
     final currentDate = DateTime.now();
+    final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
     final periodFilteredReservas = _filteredReservas.where((reserva) {
       switch (_filterType) {
         case 'Día':
@@ -228,7 +242,12 @@ class GraficasScreenState extends State<GraficasScreen> {
 
     final sedeCount = <String, int>{};
     for (var reserva in periodFilteredReservas) {
-      sedeCount[reserva.sede] = (sedeCount[reserva.sede] ?? 0) + 1;
+      final sede = sedeProvider.sedes.firstWhere(
+        (s) => s['id'] == reserva.sede,
+        orElse: () => {'nombre': 'Desconocida'},
+      );
+      final nombreSede = sede['nombre'] as String;
+      sedeCount[nombreSede] = (sedeCount[nombreSede] ?? 0) + 1;
     }
 
     final sedes = sedeCount.keys.toList();
@@ -239,7 +258,7 @@ class GraficasScreenState extends State<GraficasScreen> {
           BarChartRodData(
             toY: sedeCount[sedes[index]]!.toDouble(),
             gradient: const LinearGradient(
-              colors: [Color(0xFF42A5F5), Color(0xFF1976D2)], // blue.shade400, blue.shade800
+              colors: [Color(0xFF42A5F5), Color(0xFF1976D2)],
               begin: Alignment.bottomCenter,
               end: Alignment.topCenter,
             ),
@@ -248,7 +267,7 @@ class GraficasScreenState extends State<GraficasScreen> {
             backDrawRodData: BackgroundBarChartRodData(
               show: true,
               toY: 0,
-              color: const Color(0xFFEEEEEE), // grey.shade200
+              color: const Color(0xFFEEEEEE),
             ),
           ),
         ],
@@ -260,6 +279,7 @@ class GraficasScreenState extends State<GraficasScreen> {
     if (_filteredReservas.isEmpty) return [];
 
     final currentDate = DateTime.now();
+    final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
     final periodFilteredReservas = _filteredReservas.where((reserva) {
       switch (_filterType) {
         case 'Día':
@@ -275,18 +295,19 @@ class GraficasScreenState extends State<GraficasScreen> {
 
     final canchaCount = <String, int>{};
     for (var reserva in periodFilteredReservas) {
-      canchaCount[reserva.cancha.nombre] = (canchaCount[reserva.cancha.nombre] ?? 0) + 1;
+      canchaCount[reserva.cancha.id] = (canchaCount[reserva.cancha.id] ?? 0) + 1;
     }
 
-    final canchas = canchaCount.keys.toList();
+    final canchas = canchaCount.keys.map((id) => canchaProvider.canchas.firstWhere((c) => c.id == id).nombre).toList();
     return List.generate(canchas.length, (index) {
+      final canchaId = canchaCount.keys.elementAt(index);
       return BarChartGroupData(
         x: index,
         barRods: [
           BarChartRodData(
-            toY: canchaCount[canchas[index]]!.toDouble(),
+            toY: canchaCount[canchaId]!.toDouble(),
             gradient: const LinearGradient(
-              colors: [Color(0xFFFFA726), Color(0xFFF57C00)], // orange.shade400, orange.shade800
+              colors: [Color(0xFFFFA726), Color(0xFFF57C00)],
               begin: Alignment.bottomCenter,
               end: Alignment.topCenter,
             ),
@@ -295,7 +316,7 @@ class GraficasScreenState extends State<GraficasScreen> {
             backDrawRodData: BackgroundBarChartRodData(
               show: true,
               toY: 0,
-              color: const Color(0xFFEEEEEE), // grey.shade200
+              color: const Color(0xFFEEEEEE),
             ),
           ),
         ],
@@ -333,7 +354,7 @@ class GraficasScreenState extends State<GraficasScreen> {
           BarChartRodData(
             toY: horaCount[horas[index]]!.toDouble(),
             gradient: const LinearGradient(
-              colors: [Color(0xFF66BB6A), Color(0xFF2E7D32)], // green.shade400, green.shade800
+              colors: [Color(0xFF66BB6A), Color(0xFF2E7D32)],
               begin: Alignment.bottomCenter,
               end: Alignment.topCenter,
             ),
@@ -342,7 +363,7 @@ class GraficasScreenState extends State<GraficasScreen> {
             backDrawRodData: BackgroundBarChartRodData(
               show: true,
               toY: 0,
-              color: const Color(0xFFEEEEEE), // grey.shade200
+              color: const Color(0xFFEEEEEE),
             ),
           ),
         ],
@@ -351,8 +372,9 @@ class GraficasScreenState extends State<GraficasScreen> {
   }
 
   Map<String, dynamic> _getReservasTemporalesData() {
-    if (_filteredReservas.isEmpty)
+    if (_filteredReservas.isEmpty) {
       return {'spots': <FlSpot>[], 'labels': <String>[]};
+    }
 
     final currentDate = DateTime.now();
     final reservasData = <String, int>{};
@@ -416,14 +438,14 @@ class GraficasScreenState extends State<GraficasScreen> {
   @override
   Widget build(BuildContext context) {
     final canchaProvider = Provider.of<CanchaProvider>(context);
-    final canchas = canchaProvider.canchas
-        .where((cancha) => _selectedSede == null || cancha.sede == _selectedSede)
-        .toList();
+    final sedeProvider = Provider.of<SedeProvider>(context);
+  
     final stats = _getStats();
     final isWide = MediaQuery.of(context).size.width > 800;
+    
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F5), // grey.shade100
+      backgroundColor: const Color(0xFFF5F5F5),
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
@@ -432,13 +454,13 @@ class GraficasScreenState extends State<GraficasScreen> {
           style: TextStyle(
             fontSize: 20,
             fontWeight: FontWeight.w600,
-            color: Color(0xFF212121), // black87
+            color: Color(0xFF212121),
           ),
         ),
         centerTitle: true,
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh, color: Color(0xFF1976D2)), // blue.shade700
+            icon: const Icon(Icons.refresh, color: Color(0xFF1976D2)),
             onPressed: _loadData,
             tooltip: 'Actualizar datos',
           ),
@@ -449,15 +471,15 @@ class GraficasScreenState extends State<GraficasScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  CircularProgressIndicator(
-                    valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF1976D2)), // blue.shade700
+                  const CircularProgressIndicator(
+                    valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF1976D2)),
                   ),
                   const SizedBox(height: 16),
                   Text(
                     'Cargando datos...',
                     style: TextStyle(
                       fontSize: 16,
-                      color: const Color(0xFF616161), // grey.shade600
+                      color: const Color(0xFF616161),
                       fontWeight: FontWeight.w500,
                     ),
                   ),
@@ -474,15 +496,7 @@ class GraficasScreenState extends State<GraficasScreen> {
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(16),
                     ),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(16),
-                        gradient: const LinearGradient(
-                          colors: [Colors.white, Color(0xFFFAFAFA)], // grey.shade50
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        ),
-                      ),
+                    child: Padding(
                       padding: const EdgeInsets.all(20.0),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -492,34 +506,34 @@ class GraficasScreenState extends State<GraficasScreen> {
                             style: TextStyle(
                               fontSize: 20,
                               fontWeight: FontWeight.w700,
-                              color: const Color(0xFF212121), // black87
+                              color: const Color(0xFF212121),
                             ),
                           ),
                           const SizedBox(height: 20),
                           isWide
-                              ? Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Expanded(child: _buildFilterDropdown()),
-                                    const SizedBox(width: 16),
-                                    Expanded(child: _buildDateSelector()),
-                                    const SizedBox(width: 16),
-                                    Expanded(child: _buildSedeDropdown(canchaProvider)),
-                                    const SizedBox(width: 16),
-                                    Expanded(child: _buildCanchaDropdown(canchas)),
-                                  ],
-                                )
-                              : Column(
-                                  children: [
-                                    _buildFilterDropdown(),
-                                    const SizedBox(height: 16),
-                                    _buildDateSelector(),
-                                    const SizedBox(height: 16),
-                                    _buildSedeDropdown(canchaProvider),
-                                    const SizedBox(height: 16),
-                                    _buildCanchaDropdown(canchas),
-                                  ],
-                                ),
+                            ? Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Expanded(child: _buildFilterDropdown()),
+                                  const SizedBox(width: 16),
+                                  Expanded(child: _buildDateSelector()),
+                                  const SizedBox(width: 16),
+                                  Expanded(child: _buildSedeDropdown(sedeProvider)),
+                                  const SizedBox(width: 16),
+                                  Expanded(child: _buildCanchaDropdown(canchaProvider)),
+                                ],
+                              )
+                            : Column(
+                                children: [
+                                  _buildFilterDropdown(),
+                                  const SizedBox(height: 16),
+                                  _buildDateSelector(),
+                                  const SizedBox(height: 16),
+                                  _buildSedeDropdown(sedeProvider),
+                                  const SizedBox(height: 16),
+                                  _buildCanchaDropdown(canchaProvider),
+                                ],
+                              ),
                           const SizedBox(height: 20),
                           Center(
                             child: ElevatedButton.icon(
@@ -527,7 +541,7 @@ class GraficasScreenState extends State<GraficasScreen> {
                               icon: const Icon(Icons.clear, size: 18),
                               label: const Text('Limpiar Filtros'),
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFFD32F2F), // red.shade600
+                                backgroundColor: const Color(0xFFD32F2F),
                                 foregroundColor: Colors.white,
                                 padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                                 shape: RoundedRectangleBorder(
@@ -551,15 +565,7 @@ class GraficasScreenState extends State<GraficasScreen> {
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(16),
                     ),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(16),
-                        gradient: const LinearGradient(
-                          colors: [Colors.white, Color(0xFFFAFAFA)], // grey.shade50
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        ),
-                      ),
+                    child: Padding(
                       padding: const EdgeInsets.all(20.0),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -569,7 +575,7 @@ class GraficasScreenState extends State<GraficasScreen> {
                             style: TextStyle(
                               fontSize: 20,
                               fontWeight: FontWeight.w700,
-                              color: const Color(0xFF212121), // black87
+                              color: const Color(0xFF212121),
                             ),
                           ),
                           const SizedBox(height: 20),
@@ -617,18 +623,14 @@ class GraficasScreenState extends State<GraficasScreen> {
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(16),
                       ),
-                      child: Container(
+                      child: Padding(
                         padding: const EdgeInsets.all(20.0),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(16),
-                          color: Colors.white,
-                        ),
                         child: Column(
                           children: [
                             Icon(
                               Icons.info_outline,
                               size: 64,
-                              color: const Color(0xFFB0BEC5), // grey.shade400
+                              color: const Color(0xFFB0BEC5),
                             ),
                             const SizedBox(height: 16),
                             Text(
@@ -636,7 +638,7 @@ class GraficasScreenState extends State<GraficasScreen> {
                               style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.w500,
-                                color: const Color(0xFF616161), // grey.shade600
+                                color: const Color(0xFF616161),
                               ),
                             ),
                           ],
@@ -650,190 +652,268 @@ class GraficasScreenState extends State<GraficasScreen> {
   }
 
   Widget _buildFilterDropdown() {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      child: DropdownButtonFormField<String>(
-        value: _filterType,
-        decoration: InputDecoration(
-          labelText: 'Período',
-          labelStyle: const TextStyle(color: Color(0xFF1976D2)), // blue.shade700
-          filled: true,
-          fillColor: const Color(0xFFE3F2FD), // blue.shade50
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide.none,
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: Color(0xFFBBDEFB), width: 1.5), // blue.shade200
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: Color(0xFF1976D2), width: 2), // blue.shade700
-          ),
-          prefixIcon: const Icon(Icons.filter_list, color: Color(0xFF1976D2)), // blue.shade700
+    return DropdownButtonFormField<String>(
+      value: _filterType,
+      decoration: InputDecoration(
+        labelText: 'Período',
+        labelStyle: const TextStyle(color: Color(0xFF1976D2)),
+        filled: true,
+        fillColor: const Color(0xFFE3F2FD),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
         ),
-        items: ['Día', 'Semana', 'Mes']
-            .map((type) => DropdownMenuItem(value: type, child: Text(type)))
-            .toList(),
-        onChanged: (value) {
-          if (value != null && value != _filterType) {
-            setState(() {
-              _filterType = value;
-              _selectedDate = null;
-            });
-            _applyFilters();
-          }
-        },
-        style: const TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w500,
-          color: Color(0xFF212121), // black87
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xFFBBDEFB), width: 1.5),
         ),
-        dropdownColor: Colors.white,
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xFF1976D2), width: 2),
+        ),
+        prefixIcon: const Icon(Icons.filter_list, color: Color(0xFF1976D2)),
       ),
+      items: ['Día', 'Semana', 'Mes']
+          .map((type) => DropdownMenuItem(value: type, child: Text(type)))
+          .toList(),
+      onChanged: (value) {
+        if (value != null && value != _filterType) {
+          setState(() {
+            _filterType = value;
+            _selectedDate = null;
+          });
+          _applyFilters();
+        }
+      },
+      style: const TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.w500,
+        color: Color(0xFF212121),
+      ),
+      dropdownColor: Colors.white,
     );
   }
 
   Widget _buildDateSelector() {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      child: InkWell(
-        onTap: () => _selectDate(context),
-        child: InputDecorator(
-          decoration: InputDecoration(
-            labelText: 'Fecha',
-            labelStyle: const TextStyle(color: Color(0xFF1976D2)), // blue.shade700
-            filled: true,
-            fillColor: const Color(0xFFE3F2FD), // blue.shade50
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: BorderSide.none,
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFFBBDEFB), width: 1.5), // blue.shade200
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFF1976D2), width: 2), // blue.shade700
-            ),
-            prefixIcon: const Icon(Icons.calendar_today, color: Color(0xFF1976D2)), // blue.shade700
-          ),
-          child: Text(
-            _selectedDate == null
-                ? 'Todas las fechas'
-                : DateFormat('dd/MM/yyyy').format(_selectedDate!),
-            style: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w500,
-              color: Color(0xFF212121), // black87
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSedeDropdown(CanchaProvider canchaProvider) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      child: DropdownButtonFormField<String>(
-        value: _selectedSede,
+    return InkWell(
+      onTap: () => _selectDate(context),
+      child: InputDecorator(
         decoration: InputDecoration(
-          labelText: 'Sede',
-          labelStyle: const TextStyle(color: Color(0xFF1976D2)), // blue.shade700
+          labelText: 'Fecha',
+          labelStyle: const TextStyle(color: Color(0xFF1976D2)),
           filled: true,
-          fillColor: const Color(0xFFE3F2FD), // blue.shade50
+          fillColor: const Color(0xFFE3F2FD),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
             borderSide: BorderSide.none,
           ),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: Color(0xFFBBDEFB), width: 1.5), // blue.shade200
+            borderSide: const BorderSide(color: Color(0xFFBBDEFB), width: 1.5),
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: Color(0xFF1976D2), width: 2), // blue.shade700
+            borderSide: const BorderSide(color: Color(0xFF1976D2), width: 2),
           ),
-          prefixIcon: const Icon(Icons.location_on, color: Color(0xFF1976D2)), // blue.shade700
+          prefixIcon: const Icon(Icons.calendar_today, color: Color(0xFF1976D2)),
         ),
-        items: [
-          const DropdownMenuItem(value: null, child: Text('Todas las sedes')),
-          ...canchaProvider.canchas
-              .map((c) => c.sede)
-              .toSet()
-              .map((sede) => DropdownMenuItem(value: sede, child: Text(sede)))
-        ],
-        onChanged: (value) {
+        child: Text(
+          _selectedDate == null
+              ? 'Todas las fechas'
+              : DateFormat('dd/MM/yyyy').format(_selectedDate!),
+          style: const TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w500,
+            color: Color(0xFF212121),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSedeDropdown(SedeProvider sedeProvider) {
+    return DropdownButtonFormField<String>(
+      value: _selectedSedeId,
+      decoration: InputDecoration(
+        labelText: 'Sede',
+        labelStyle: const TextStyle(color: Color(0xFF1976D2)),
+        filled: true,
+        fillColor: const Color(0xFFE3F2FD),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xFFBBDEFB), width: 1.5),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xFF1976D2), width: 2),
+        ),
+        prefixIcon: const Icon(Icons.location_on, color: Color(0xFF1976D2)),
+      ),
+      items: [
+        const DropdownMenuItem(value: null, child: Text('Todas las sedes')),
+        ...sedeProvider.sedes.map((sede) => DropdownMenuItem(
+              value: sede['id'] as String,
+              child: Text(sede['nombre'] as String),
+            )),
+      ],
+      onChanged: (value) {
+        if (value != _selectedSedeId) {
           setState(() {
-            _selectedSede = value;
-            _selectedCanchaId = null;
+            _selectedSedeId = value;
+            _selectedCanchaId = null; // Resetear cancha al cambiar sede
           });
           _applyFilters();
-        },
-        style: const TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w500,
-          color: Color(0xFF212121), // black87
-        ),
-        dropdownColor: Colors.white,
+        }
+      },
+      style: const TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.w500,
+        color: Color(0xFF212121),
       ),
+      dropdownColor: Colors.white,
     );
   }
 
-  Widget _buildCanchaDropdown(List<Cancha> canchas) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      child: DropdownButtonFormField<String>(
-        value: _selectedCanchaId,
-        decoration: InputDecoration(
-          labelText: 'Cancha',
-          labelStyle: const TextStyle(color: Color(0xFF1976D2)), // blue.shade700
-          filled: true,
-          fillColor: const Color(0xFFE3F2FD), // blue.shade50
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide.none,
+  Widget _buildCanchaDropdown(CanchaProvider canchaProvider) {
+    // Filtrar canchas según la sede seleccionada
+    final canchas = _selectedSedeId != null && _selectedSedeId!.isNotEmpty
+        ? canchaProvider.canchas.where((cancha) => cancha.sedeId == _selectedSedeId).toList()
+        : canchaProvider.canchas;
+
+    // Depuración mejorada
+    developer.log('Sede seleccionada: $_selectedSedeId', name: 'GraficasScreen');
+    developer.log('Total canchas: ${canchaProvider.canchas.length}', name: 'GraficasScreen');
+    developer.log('Canchas filtradas: ${canchas.length}', name: 'GraficasScreen');
+    developer.log('Detalle canchas disponibles: ${canchas.map((c) => "ID: ${c.id}, Nombre: ${c.nombre}, SedeId: ${c.sedeId}").toList()}', name: 'GraficasScreen');
+
+    // Si no hay canchas disponibles para la sede seleccionada, resetear la cancha seleccionada
+    if (_selectedCanchaId != null && !canchas.any((cancha) => cancha.id == _selectedCanchaId)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        setState(() {
+          _selectedCanchaId = null;
+        });
+      });
+    }
+
+    // Mostrar mensaje si no hay canchas disponibles y hay una sede seleccionada
+    if (canchas.isEmpty && _selectedSedeId != null && _selectedSedeId!.isNotEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Cancha',
+            style: TextStyle(color: Color(0xFF1976D2), fontSize: 16),
           ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: Color(0xFFBBDEFB), width: 1.5), // blue.shade200
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFE3F2FD),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFBBDEFB), width: 1.5),
+            ),
+            child: const Text(
+              'No hay canchas disponibles para esta sede',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF616161),
+              ),
+            ),
           ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: Color(0xFF1976D2), width: 2), // blue.shade700
-          ),
-          prefixIcon: const Icon(Icons.sports_soccer, color: Color(0xFF1976D2)), // blue.shade700
-        ),
-        items: [
-          const DropdownMenuItem(value: null, child: Text('Todas las canchas')),
-          ...canchas.map((cancha) =>
-              DropdownMenuItem(value: cancha.id, child: Text(cancha.nombre)))
         ],
-        onChanged: (value) {
+      );
+    }
+
+    // Si no hay sede seleccionada y no hay canchas, mostrar mensaje general
+    if (canchas.isEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Cancha',
+            style: TextStyle(color: Color(0xFF1976D2), fontSize: 16),
+          ),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFE3F2FD),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFBBDEFB), width: 1.5),
+            ),
+            child: const Text(
+              'No hay canchas disponibles',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF616161),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    return DropdownButtonFormField<String>(
+      value: _selectedCanchaId,
+      decoration: InputDecoration(
+        labelText: 'Cancha',
+        labelStyle: const TextStyle(color: Color(0xFF1976D2)),
+        filled: true,
+        fillColor: const Color(0xFFE3F2FD),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xFFBBDEFB), width: 1.5),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xFF1976D2), width: 2),
+        ),
+        prefixIcon: const Icon(Icons.sports_soccer, color: Color(0xFF1976D2)),
+      ),
+      items: [
+        // Solo mostrar "Todas las canchas" si no hay sede seleccionada
+        if (_selectedSedeId == null || _selectedSedeId!.isEmpty)
+          const DropdownMenuItem(value: null, child: Text('Todas las canchas'))
+        else
+          const DropdownMenuItem(value: null, child: Text('Todas las canchas de esta sede')),
+        ...canchas.map((cancha) => DropdownMenuItem(
+              value: cancha.id,
+              child: Text(cancha.nombre),
+            )),
+      ],
+      onChanged: (value) {
+        if (value != _selectedCanchaId) {
           setState(() => _selectedCanchaId = value);
           _applyFilters();
-        },
-        style: const TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w500,
-          color: Color(0xFF212121), // black87
-        ),
-        dropdownColor: Colors.white,
+        }
+      },
+      style: const TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.w500,
+        color: Color(0xFF212121),
       ),
+      dropdownColor: Colors.white,
     );
   }
 
   Widget _buildStatsColumn(Map<String, dynamic> stats, int column) {
     final items = [
-      ['Total Reservas', '${stats['totalReservas']}', Icons.book_online, const Color(0xFF1976D2)], // blue.shade700
-      ['Total Canchas', '${stats['totalCanchas']}', Icons.sports_soccer, const Color(0xFF2E7D32)], // green.shade700
-      ['Total Sedes', '${stats['totalSedes']}', Icons.location_on, const Color(0xFFD32F2F)], // red.shade700
-      ['Cancha Popular', stats['canchaMasPedida'], Icons.star, const Color(0xFFF57C00)], // orange.shade700
-      ['Sede Popular', stats['sedeMasPedida'], Icons.place, const Color(0xFF7B1FA2)], // purple.shade700
-      ['Hora Popular', stats['horaMasPedida'], Icons.access_time, const Color(0xFF00897B)], // teal.shade700
+      ['Total Reservas', '${stats['totalReservas']}', Icons.book_online, const Color(0xFF1976D2)],
+      ['Total Canchas', '${stats['totalCanchas']}', Icons.sports_soccer, const Color(0xFF2E7D32)],
+      ['Total Sedes', '${stats['totalSedes']}', Icons.location_on, const Color(0xFFD32F2F)],
+      ['Cancha Popular', stats['canchaMasPedida'], Icons.star, const Color(0xFFF57C00)],
+      ['Sede Popular', stats['sedeMasPedida'], Icons.place, const Color(0xFF7B1FA2)],
+      ['Hora Popular', stats['horaMasPedida'], Icons.access_time, const Color(0xFF00897B)],
     ];
 
     if (column == -1) {
@@ -853,51 +933,54 @@ class GraficasScreenState extends State<GraficasScreen> {
   }
 
   Widget _buildStatItem(String title, String value, IconData icon, Color iconColor) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      margin: const EdgeInsets.symmetric(vertical: 6),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0xFF000000).withOpacity(0.1),
-            blurRadius: 6,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Icon(icon, color: iconColor, size: 24),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: const Color(0xFF616161), // grey.shade600
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  value,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
-                    color: Color(0xFF212121), // black87
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [
+            BoxShadow(
+              color: Color.fromRGBO(0, 0, 0, 0.1),
+              blurRadius: 6,
+              offset: const Offset(0, 3),
             ),
+          ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              Icon(icon, color: iconColor, size: 24),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: const Color(0xFF616161),
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      value,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF212121),
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -908,15 +991,7 @@ class GraficasScreenState extends State<GraficasScreen> {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
       ),
-      child: Container(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(16),
-          gradient: const LinearGradient(
-            colors: [Colors.white, Color(0xFFFAFAFA)], // grey.shade50
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-        ),
+      child: Padding(
         padding: const EdgeInsets.all(20.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -926,7 +1001,7 @@ class GraficasScreenState extends State<GraficasScreen> {
               style: TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.w700,
-                color: const Color(0xFF212121), // black87
+                color: const Color(0xFF212121),
               ),
             ),
             const SizedBox(height: 20),
@@ -941,6 +1016,10 @@ class GraficasScreenState extends State<GraficasScreen> {
   }
 
   Widget _buildSedeChart() {
+    final sedeProvider = Provider.of<SedeProvider>(context);
+    final sedes = sedeProvider.sedes.map((s) => s['id'] as String).toSet().toList();
+    final sedeMap = {for (var s in sedeProvider.sedes) s['id']: s['nombre']};
+
     return BarChart(
       BarChartData(
         barGroups: _getSedeReservasData(),
@@ -950,22 +1029,24 @@ class GraficasScreenState extends State<GraficasScreen> {
               showTitles: true,
               reservedSize: 40,
               getTitlesWidget: (value, meta) {
-                final sedes = _filteredReservas.map((r) => r.sede).toSet().toList();
-                return value.toInt() >= 0 && value.toInt() < sedes.length
-                    ? Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text(
-                          sedes[value.toInt()],
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                            color: const Color(0xFF424242), // grey.shade800
-                          ),
-                          textAlign: TextAlign.center,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      )
-                    : const Text('');
+                if (value.toInt() >= 0 && value.toInt() < sedes.length) {
+                  final sedeId = sedes[value.toInt()];
+                  final nombreSede = sedeMap[sedeId] ?? 'Desconocida';
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      nombreSede,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: const Color(0xFF424242),
+                      ),
+                      textAlign: TextAlign.center,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  );
+                }
+                return const Text('');
               },
             ),
           ),
@@ -978,7 +1059,7 @@ class GraficasScreenState extends State<GraficasScreen> {
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w500,
-                  color: const Color(0xFF424242), // grey.shade800
+                  color: const Color(0xFF424242),
                 ),
               ),
             ),
@@ -994,7 +1075,7 @@ class GraficasScreenState extends State<GraficasScreen> {
               : 1,
           getDrawingHorizontalLine: (value) {
             return FlLine(
-              color: const Color(0xFFEEEEEE), // grey.shade200
+              color: const Color(0xFFEEEEEE),
               strokeWidth: 1,
             );
           },
@@ -1002,26 +1083,29 @@ class GraficasScreenState extends State<GraficasScreen> {
         borderData: FlBorderData(
           show: true,
           border: Border.all(
-            color: const Color(0xFFEEEEEE), // grey.shade200
+            color: const Color(0xFFEEEEEE),
             width: 1,
           ),
         ),
         barTouchData: BarTouchData(
           enabled: true,
           touchTooltipData: BarTouchTooltipData(
-            getTooltipColor: (_) => const Color(0xFF1976D2).withOpacity(0.9), // blue.shade700
+            getTooltipColor: (_) => const Color.fromRGBO(25, 118, 210, 0.9),
             tooltipPadding: const EdgeInsets.all(8),
             tooltipMargin: 8,
             getTooltipItem: (group, groupIndex, rod, rodIndex) {
-              final sedes = _filteredReservas.map((r) => r.sede).toSet().toList();
-              return BarTooltipItem(
-                '${sedes[group.x.toInt()]}: ${rod.toY.toInt()} reservas',
-                const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 12,
-                ),
-              );
+              if (group.x.toInt() >= 0 && group.x.toInt() < sedes.length) {
+                final nombreSede = sedeMap[sedes[group.x.toInt()]] ?? 'Desconocida';
+                return BarTooltipItem(
+                  '$nombreSede: ${rod.toY.toInt()} reservas',
+                  const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12,
+                  ),
+                );
+              }
+              return null;
             },
           ),
         ),
@@ -1030,6 +1114,9 @@ class GraficasScreenState extends State<GraficasScreen> {
   }
 
   Widget _buildCanchaChart() {
+    final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
+    final canchaIds = canchaProvider.canchas.map((c) => c.id).toSet().toList();
+
     return BarChart(
       BarChartData(
         barGroups: _getCanchaReservasData(),
@@ -1039,22 +1126,37 @@ class GraficasScreenState extends State<GraficasScreen> {
               showTitles: true,
               reservedSize: 40,
               getTitlesWidget: (value, meta) {
-                final canchas = _filteredReservas.map((r) => r.cancha.nombre).toSet().toList();
-                return value.toInt() >= 0 && value.toInt() < canchas.length
-                    ? Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text(
-                          canchas[value.toInt()],
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                            color: const Color(0xFF424242), // grey.shade800
-                          ),
-                          textAlign: TextAlign.center,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      )
-                    : const Text('');
+                if (value.toInt() >= 0 && value.toInt() < canchaIds.length) {
+                  final canchaId = canchaIds[value.toInt()];
+                  final nombreCancha = canchaProvider.canchas.firstWhere(
+                    (c) => c.id == canchaId,
+                    orElse: () => Cancha(
+                      id: '',
+                      nombre: 'Desconocida',
+                      descripcion: '',
+                      imagen: '',
+                      techada: false,
+                      ubicacion: '',
+                      precio: 0,
+                      sedeId: '',
+                      preciosPorHorario: {},
+                    ),
+                  ).nombre;
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      nombreCancha,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: const Color(0xFF424242),
+                      ),
+                      textAlign: TextAlign.center,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  );
+                }
+                return const Text('');
               },
             ),
           ),
@@ -1067,7 +1169,7 @@ class GraficasScreenState extends State<GraficasScreen> {
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w500,
-                  color: const Color(0xFF424242), // grey.shade800
+                  color: const Color(0xFF424242),
                 ),
               ),
             ),
@@ -1083,7 +1185,7 @@ class GraficasScreenState extends State<GraficasScreen> {
               : 1,
           getDrawingHorizontalLine: (value) {
             return FlLine(
-              color: const Color(0xFFEEEEEE), // grey.shade200
+              color: const Color(0xFFEEEEEE),
               strokeWidth: 1,
             );
           },
@@ -1091,26 +1193,43 @@ class GraficasScreenState extends State<GraficasScreen> {
         borderData: FlBorderData(
           show: true,
           border: Border.all(
-            color: const Color(0xFFEEEEEE), // grey.shade200
+            color: const Color(0xFFEEEEEE),
             width: 1,
           ),
         ),
         barTouchData: BarTouchData(
           enabled: true,
           touchTooltipData: BarTouchTooltipData(
-            getTooltipColor: (_) => const Color(0xFFF57C00).withOpacity(0.9), // orange.shade700
+            getTooltipColor: (_) => const Color.fromRGBO(245, 124, 0, 0.9),
             tooltipPadding: const EdgeInsets.all(8),
             tooltipMargin: 8,
             getTooltipItem: (group, groupIndex, rod, rodIndex) {
-              final canchas = _filteredReservas.map((r) => r.cancha.nombre).toSet().toList();
-              return BarTooltipItem(
-                '${canchas[group.x.toInt()]}: ${rod.toY.toInt()} reservas',
-                const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 12,
-                ),
-              );
+              if (group.x.toInt() >= 0 && group.x.toInt() < canchaIds.length) {
+                final canchaId = canchaIds[group.x.toInt()];
+                final nombreCancha = canchaProvider.canchas.firstWhere(
+                  (c) => c.id == canchaId,
+                  orElse: () => Cancha(
+                    id: '',
+                    nombre: 'Desconocida',
+                    descripcion: '',
+                    imagen: '',
+                    techada: false,
+                    ubicacion: '',
+                    precio: 0,
+                    sedeId: '',
+                    preciosPorHorario: {},
+                  ),
+                ).nombre;
+                return BarTooltipItem(
+                  '$nombreCancha: ${rod.toY.toInt()} reservas',
+                  const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12,
+                  ),
+                );
+              }
+              return null;
             },
           ),
         ),
@@ -1137,7 +1256,7 @@ class GraficasScreenState extends State<GraficasScreen> {
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w500,
-                            color: const Color(0xFF424242), // grey.shade800
+                            color: const Color(0xFF424242),
                           ),
                           textAlign: TextAlign.center,
                           overflow: TextOverflow.ellipsis,
@@ -1156,7 +1275,7 @@ class GraficasScreenState extends State<GraficasScreen> {
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w500,
-                  color: const Color(0xFF424242), // grey.shade800
+                  color: const Color(0xFF424242),
                 ),
               ),
             ),
@@ -1172,7 +1291,7 @@ class GraficasScreenState extends State<GraficasScreen> {
               : 1,
           getDrawingHorizontalLine: (value) {
             return FlLine(
-              color: const Color(0xFFEEEEEE), // grey.shade200
+              color: const Color(0xFFEEEEEE),
               strokeWidth: 1,
             );
           },
@@ -1180,14 +1299,14 @@ class GraficasScreenState extends State<GraficasScreen> {
         borderData: FlBorderData(
           show: true,
           border: Border.all(
-            color: const Color(0xFFEEEEEE), // grey.shade200
+            color: const Color(0xFFEEEEEE),
             width: 1,
           ),
         ),
         barTouchData: BarTouchData(
           enabled: true,
           touchTooltipData: BarTouchTooltipData(
-            getTooltipColor: (_) => const Color(0xFF2E7D32).withOpacity(0.9), // green.shade700
+            getTooltipColor: (_) => const Color.fromRGBO(46, 125, 50, 0.9),
             tooltipPadding: const EdgeInsets.all(8),
             tooltipMargin: 8,
             getTooltipItem: (group, groupIndex, rod, rodIndex) {
@@ -1220,7 +1339,7 @@ class GraficasScreenState extends State<GraficasScreen> {
             Icon(
               Icons.show_chart,
               size: 48,
-              color: const Color(0xFFB0BEC5), // grey.shade400
+              color: const Color(0xFFB0BEC5),
             ),
             const SizedBox(height: 8),
             Text(
@@ -1228,7 +1347,7 @@ class GraficasScreenState extends State<GraficasScreen> {
               style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w500,
-                color: const Color(0xFF616161), // grey.shade600
+                color: const Color(0xFF616161),
               ),
               textAlign: TextAlign.center,
             ),
@@ -1244,7 +1363,7 @@ class GraficasScreenState extends State<GraficasScreen> {
             spots: spots,
             isCurved: true,
             gradient: const LinearGradient(
-              colors: [Color(0xFF42A5F5), Color(0xFF1976D2)], // blue.shade400, blue.shade800
+              colors: [Color(0xFF42A5F5), Color(0xFF1976D2)],
               begin: Alignment.bottomCenter,
               end: Alignment.topCenter,
             ),
@@ -1255,7 +1374,7 @@ class GraficasScreenState extends State<GraficasScreen> {
               getDotPainter: (spot, percent, barData, index) =>
                   FlDotCirclePainter(
                     radius: 6,
-                    color: const Color(0xFF1976D2), // blue.shade700
+                    color: const Color(0xFF1976D2),
                     strokeWidth: 2,
                     strokeColor: Colors.white,
                   ),
@@ -1264,8 +1383,8 @@ class GraficasScreenState extends State<GraficasScreen> {
               show: true,
               gradient: const LinearGradient(
                 colors: [
-                  Color(0xFF42A5F5), // blue.shade400 with opacity
-                  Color(0xFF1976D2), // blue.shade800 with opacity
+                  Color.fromRGBO(66, 165, 245, 0.5),
+                  Color.fromRGBO(25, 118, 210, 0.5),
                 ],
                 begin: Alignment.bottomCenter,
                 end: Alignment.topCenter,
@@ -1289,7 +1408,7 @@ class GraficasScreenState extends State<GraficasScreen> {
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w500,
-                        color: const Color(0xFF424242), // grey.shade800
+                        color: const Color(0xFF424242),
                       ),
                       textAlign: TextAlign.center,
                       overflow: TextOverflow.ellipsis,
@@ -1310,7 +1429,7 @@ class GraficasScreenState extends State<GraficasScreen> {
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w500,
-                    color: const Color(0xFF424242), // grey.shade800
+                    color: const Color(0xFF424242),
                   ),
                 );
               },
@@ -1328,7 +1447,7 @@ class GraficasScreenState extends State<GraficasScreen> {
               : 1,
           getDrawingHorizontalLine: (value) {
             return FlLine(
-              color: const Color(0xFFEEEEEE), // grey.shade200
+              color: const Color(0xFFEEEEEE),
               strokeWidth: 1,
             );
           },
@@ -1336,7 +1455,7 @@ class GraficasScreenState extends State<GraficasScreen> {
         borderData: FlBorderData(
           show: true,
           border: Border.all(
-            color: const Color(0xFFEEEEEE), // grey.shade200
+            color: const Color(0xFFEEEEEE),
             width: 1,
           ),
         ),
@@ -1349,7 +1468,7 @@ class GraficasScreenState extends State<GraficasScreen> {
         lineTouchData: LineTouchData(
           enabled: true,
           touchTooltipData: LineTouchTooltipData(
-            getTooltipColor: (_) => const Color(0xFF1976D2).withOpacity(0.9), // blue.shade700
+            getTooltipColor: (_) => const Color.fromRGBO(25, 118, 210, 0.9),
             tooltipPadding: const EdgeInsets.all(8),
             tooltipMargin: 8,
             getTooltipItems: (touchedSpots) {

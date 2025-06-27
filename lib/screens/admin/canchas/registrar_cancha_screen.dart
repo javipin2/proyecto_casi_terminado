@@ -1,13 +1,15 @@
 import 'dart:io' show File;
-import 'dart:typed_data'; // Para manejar bytes en web
+import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:provider/provider.dart';
+import 'package:reserva_canchas/providers/sede_provider.dart';
 
 class RegistrarCanchaScreen extends StatefulWidget {
-  const RegistrarCanchaScreen({Key? key}) : super(key: key);
+  const RegistrarCanchaScreen({super.key});
 
   @override
   State<RegistrarCanchaScreen> createState() => _RegistrarCanchaScreenState();
@@ -19,20 +21,15 @@ class _RegistrarCanchaScreenState extends State<RegistrarCanchaScreen> {
   final TextEditingController _descripcionController = TextEditingController();
   final TextEditingController _ubicacionController = TextEditingController();
   final TextEditingController _precioController = TextEditingController();
-  final TextEditingController _serviciosController = TextEditingController();
 
-  // Usar XFile para compatibilidad con todas las plataformas
   XFile? _imagenSeleccionada;
-  Uint8List? _imagenBytes; // Para almacenar bytes en web
+  Uint8List? _imagenBytes;
   final ImagePicker _picker = ImagePicker();
-  bool _cargandoImagen =
-      false; // Nueva variable para controlar el estado de carga
-
+  bool _cargandoImagen = false;
   bool _techada = false;
   String _sede = "";
   bool _isLoading = false;
 
-  // Función para seleccionar imagen
   Future<void> _seleccionarImagen() async {
     showModalBottomSheet(
       context: context,
@@ -75,14 +72,13 @@ class _RegistrarCanchaScreenState extends State<RegistrarCanchaScreen> {
       if (image != null) {
         setState(() {
           _imagenSeleccionada = image;
-          _cargandoImagen = kIsWeb; // Solo mostrar carga en web
+          _cargandoImagen = kIsWeb;
           if (!kIsWeb) {
-            _imagenBytes = null; // Limpiar bytes en móvil
+            _imagenBytes = null;
           }
         });
 
         if (kIsWeb) {
-          // En web, leer los bytes de la imagen
           try {
             final bytes = await image.readAsBytes();
             setState(() {
@@ -116,14 +112,13 @@ class _RegistrarCanchaScreenState extends State<RegistrarCanchaScreen> {
     }
   }
 
-  // Widget para mostrar la imagen seleccionada
   Widget _buildImageSelector() {
     return Container(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
+            color: Color.fromRGBO(0, 0, 0, 0.05),
             blurRadius: 10,
             offset: const Offset(0, 2),
           ),
@@ -151,7 +146,7 @@ class _RegistrarCanchaScreenState extends State<RegistrarCanchaScreen> {
                       right: 8,
                       child: Container(
                         decoration: const BoxDecoration(
-                          color: Colors.black54,
+                          color: Color.fromRGBO(0, 0, 0, 0.54),
                           shape: BoxShape.circle,
                         ),
                         child: IconButton(
@@ -217,7 +212,6 @@ class _RegistrarCanchaScreenState extends State<RegistrarCanchaScreen> {
     );
   }
 
-  // Método para decidir cómo mostrar la imagen según la plataforma
   Widget _buildImageWidget() {
     if (kIsWeb && _imagenBytes != null) {
       return Image.memory(
@@ -247,27 +241,20 @@ class _RegistrarCanchaScreenState extends State<RegistrarCanchaScreen> {
         String imagenUrl = "";
 
         if (_imagenSeleccionada != null) {
-          // Generar un nombre único para la imagen
           String fileName = 'canchas/${DateTime.now().toIso8601String()}.jpg';
           Reference storageRef = FirebaseStorage.instance.ref().child(fileName);
 
-          // Subir la imagen según la plataforma
           if (kIsWeb && _imagenBytes != null) {
-            // En web, subir los bytes
             await storageRef.putData(_imagenBytes!);
           } else {
-            // En móvil, subir el archivo
             await storageRef.putFile(File(_imagenSeleccionada!.path));
           }
 
-          // Obtener la URL de descarga
           imagenUrl = await storageRef.getDownloadURL();
         } else {
-          // Si no hay imagen seleccionada, usar una por defecto
           imagenUrl = 'assets/cancha_demo.png';
         }
 
-        // Guardar los datos en Firestore con la URL de la imagen
         await FirebaseFirestore.instance.collection('canchas').add({
           'nombre': _nombreController.text.trim(),
           'descripcion': _descripcionController.text.trim(),
@@ -275,45 +262,49 @@ class _RegistrarCanchaScreenState extends State<RegistrarCanchaScreen> {
           'ubicacion': _ubicacionController.text.trim(),
           'precio': double.tryParse(_precioController.text.trim()) ?? 0,
           'techada': _techada,
-          'sede': _sede,
+          'sedeId': _sede,
         });
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Row(
-              children: [
-                Icon(Icons.check_circle, color: Colors.white),
-                SizedBox(width: 8),
-                Text("Cancha registrada correctamente"),
-              ],
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Row(
+                children: [
+                  Icon(Icons.check_circle, color: Colors.white),
+                  SizedBox(width: 8),
+                  Text("Cancha registrada correctamente"),
+                ],
+              ),
+              backgroundColor: Colors.green,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
             ),
-            backgroundColor: Colors.green,
-            behavior: SnackBarBehavior.floating,
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-        );
-        Navigator.pop(context);
+          );
+          Navigator.pop(context);
+        }
       } catch (error) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                const Icon(Icons.error, color: Colors.white),
-                const SizedBox(width: 8),
-                Expanded(child: Text("Error al registrar cancha: $error")),
-              ],
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  const Icon(Icons.error, color: Colors.white),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text("Error al registrar cancha: $error")),
+                ],
+              ),
+              backgroundColor: Colors.red,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
             ),
-            backgroundColor: Colors.red,
-            behavior: SnackBarBehavior.floating,
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-        );
+          );
+        }
       } finally {
-        setState(() {
-          _isLoading = false;
-        });
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+          });
+        }
       }
     }
   }
@@ -324,7 +315,6 @@ class _RegistrarCanchaScreenState extends State<RegistrarCanchaScreen> {
     _descripcionController.dispose();
     _ubicacionController.dispose();
     _precioController.dispose();
-    _serviciosController.dispose();
     super.dispose();
   }
 
@@ -342,7 +332,7 @@ class _RegistrarCanchaScreenState extends State<RegistrarCanchaScreen> {
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
+            color: Color.fromRGBO(0, 0, 0, 0.05),
             blurRadius: 10,
             offset: const Offset(0, 2),
           ),
@@ -376,8 +366,7 @@ class _RegistrarCanchaScreenState extends State<RegistrarCanchaScreen> {
             borderSide: const BorderSide(color: Colors.red),
           ),
           labelStyle: TextStyle(color: Colors.grey.shade700),
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
         ),
       ),
     );
@@ -406,6 +395,55 @@ class _RegistrarCanchaScreenState extends State<RegistrarCanchaScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildDropdownSede() {
+    final sedeProvider = Provider.of<SedeProvider>(context);
+
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Color.fromRGBO(0, 0, 0, 0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: DropdownButtonFormField<String>(
+        decoration: InputDecoration(
+          labelText: "Sede",
+          prefixIcon: Icon(Icons.business, color: Colors.green.shade600),
+          filled: true,
+          fillColor: Colors.white,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide.none,
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.grey.shade200),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.green.shade600, width: 2),
+          ),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+        ),
+        value: _sede.isNotEmpty ? _sede : null,
+        items: sedeProvider.sedes.map((sede) => DropdownMenuItem(
+              value: sede['id'] as String,
+              child: Text(sede['nombre'] as String),
+            )).toList(),
+        validator: (value) => value == null || value.isEmpty ? "Seleccione la sede" : null,
+        onChanged: (value) {
+          setState(() {
+            _sede = value ?? "";
+          });
+        },
       ),
     );
   }
@@ -454,8 +492,7 @@ class _RegistrarCanchaScreenState extends State<RegistrarCanchaScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _buildSectionTitle(
-                        "Información Básica", Icons.info_outline),
+                    _buildSectionTitle("Información Básica", Icons.info_outline),
                     _buildTextField(
                       controller: _nombreController,
                       label: "Nombre de la Cancha",
@@ -492,7 +529,7 @@ class _RegistrarCanchaScreenState extends State<RegistrarCanchaScreen> {
                         borderRadius: BorderRadius.circular(12),
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withOpacity(0.05),
+                            color: Color.fromRGBO(0, 0, 0, 0.05),
                             blurRadius: 10,
                             offset: const Offset(0, 2),
                           ),
@@ -533,57 +570,7 @@ class _RegistrarCanchaScreenState extends State<RegistrarCanchaScreen> {
                       hint: "Ej: 50000",
                     ),
                     const SizedBox(height: 20),
-                    Container(
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.05),
-                            blurRadius: 10,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: DropdownButtonFormField<String>(
-                        decoration: InputDecoration(
-                          labelText: "Sede",
-                          prefixIcon: Icon(Icons.business,
-                              color: Colors.green.shade600),
-                          filled: true,
-                          fillColor: Colors.white,
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide.none,
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide(color: Colors.grey.shade200),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide(
-                                color: Colors.green.shade600, width: 2),
-                          ),
-                          contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 16),
-                        ),
-                        value: _sede.isNotEmpty ? _sede : null,
-                        items: const [
-                          DropdownMenuItem(
-                              value: "Sede 1", child: Text("Sede 1")),
-                          DropdownMenuItem(
-                              value: "Sede 2", child: Text("Sede 2")),
-                        ],
-                        validator: (value) => value == null || value.isEmpty
-                            ? "Seleccione la sede"
-                            : null,
-                        onChanged: (value) {
-                          setState(() {
-                            _sede = value ?? "";
-                          });
-                        },
-                      ),
-                    ),
+                    _buildDropdownSede(),
                     const SizedBox(height: 40),
                     SizedBox(
                       width: double.infinity,

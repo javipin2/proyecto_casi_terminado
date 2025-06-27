@@ -2,13 +2,13 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:reserva_canchas/screens/admin/sedes/admin_sedes_screen.dart';
 import 'clientes/clientes_screen.dart';
 import 'canchas/canchas_screen.dart';
 import 'graficas/graficas_screen.dart';
 import 'reservas/admin_reservas_horarios_screen.dart';
 import 'registro/admin_registro_reservas_screen.dart';
 import '../sede_screen.dart';
-import 'sedes/admin_sedes_screen.dart'; // Nueva importación
 
 class AdminDashboardScreen extends StatefulWidget {
   const AdminDashboardScreen({super.key});

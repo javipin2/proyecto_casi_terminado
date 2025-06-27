@@ -170,7 +170,7 @@ class EncargadoRegistroReservasScreenState
       techada: false,
       ubicacion: '',
       precio: 0.0,
-      sede: data['sede'] ?? '',
+      sedeId: data['sedeId'] ?? '',
     );
   }
 

@@ -16,26 +16,55 @@ class AdminSedesScreen extends StatefulWidget {
   State<AdminSedesScreen> createState() => _AdminSedesScreenState();
 }
 
-class _AdminSedesScreenState extends State<AdminSedesScreen> {
+class _AdminSedesScreenState extends State<AdminSedesScreen> with SingleTickerProviderStateMixin {
   final _formKey = GlobalKey<FormState>();
   final _sedeController = TextEditingController();
-  
   File? _selectedImageFile;
   Uint8List? _selectedImageBytes;
   bool _isLoading = false;
+  bool _isFormVisible = false; // Controla la visibilidad del formulario
+  late AnimationController _animationController;
+  late Animation<double> _fadeAnimation;
 
-  // Tema de colores
   static const _primaryColor = Color(0xFF2196F3);
-  static const _secondaryColor = Color(0xFF1976D2);
   static const _backgroundColor = Color(0xFFF8F9FA);
   static const _cardColor = Colors.white;
   static const _textPrimary = Color(0xFF212121);
   static const _textSecondary = Color(0xFF757575);
 
   @override
+  void initState() {
+    super.initState();
+    _animationController = AnimationController(
+      duration: const Duration(milliseconds: 300),
+      vsync: this,
+    );
+    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _animationController, curve: Curves.easeInOut),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Provider.of<SedeProvider>(context, listen: false).fetchSedes();
+    });
+  }
+
+  @override
   void dispose() {
     _sedeController.dispose();
+    _animationController.dispose();
     super.dispose();
+  }
+
+  void _toggleFormVisibility() {
+    setState(() {
+      _isFormVisible = !_isFormVisible;
+      if (_isFormVisible) {
+        _animationController.forward();
+      } else {
+        _animationController.reverse();
+        _sedeController.clear();
+        _clearSelectedImage();
+      }
+    });
   }
 
   Future<String?> _uploadImage(String sede) async {
@@ -43,9 +72,9 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
       final storageRef = FirebaseStorage.instance
           .ref()
           .child('sedes/${sede}_${DateTime.now().millisecondsSinceEpoch}.jpg');
-      
+
       UploadTask uploadTask;
-      
+
       if (kIsWeb) {
         if (_selectedImageBytes != null) {
           uploadTask = storageRef.putData(_selectedImageBytes!);
@@ -59,7 +88,7 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
           return null;
         }
       }
-      
+
       await uploadTask;
       final downloadUrl = await storageRef.getDownloadURL();
       debugPrint('Imagen subida exitosamente a: $downloadUrl');
@@ -79,7 +108,7 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
       maxHeight: 600,
       imageQuality: 80,
     );
-    
+
     if (pickedFile != null) {
       setState(() {
         if (kIsWeb) {
@@ -107,9 +136,8 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
     });
   }
 
-  bool get _hasSelectedImage => 
-      (kIsWeb && _selectedImageBytes != null) || 
-      (!kIsWeb && _selectedImageFile != null);
+  bool get _hasSelectedImage =>
+      (kIsWeb && _selectedImageBytes != null) || (!kIsWeb && _selectedImageFile != null);
 
   void _showSnackBar(String message, {bool isError = false}) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -124,26 +152,33 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
 
   void _addSede() async {
     if (_formKey.currentState!.validate()) {
+      if (!_hasSelectedImage) {
+        _showSnackBar('Por favor, selecciona una imagen para la sede', isError: true);
+        return;
+      }
       setState(() {
         _isLoading = true;
       });
       final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
       final sedeName = _sedeController.text.trim();
 
-      String? imageUrl;
-      if (_hasSelectedImage) {
-        imageUrl = await _uploadImage(sedeName);
+      String? imageUrl = await _uploadImage(sedeName);
+      if (imageUrl == null) {
+        _showSnackBar('Error al subir la imagen. Intenta de nuevo.', isError: true);
+        setState(() {
+          _isLoading = false;
+        });
+        return;
       }
 
       try {
         await sedeProvider.crearSede(sedeName, imageUrl: imageUrl);
-        
+
         if (sedeProvider.errorMessage.isNotEmpty) {
           _showSnackBar(sedeProvider.errorMessage, isError: true);
         } else {
-          _sedeController.clear();
-          _clearSelectedImage();
           _showSnackBar('Sede $sedeName añadida con éxito');
+          _toggleFormVisibility(); // Ocultar el formulario tras guardar
         }
       } catch (e) {
         _showSnackBar('Error al añadir sede: $e', isError: true);
@@ -155,11 +190,17 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
     }
   }
 
-  void _editSede(String oldSede) async {
-    _sedeController.text = oldSede;
-    String? currentImageUrl = Provider.of<SedeProvider>(context, listen: false)
-        .sedeImages[oldSede];
-    
+  void _editSede(String sedeId) async {
+    final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
+    final sede = sedeProvider.sedes.firstWhere(
+      (s) => s['id'] == sedeId,
+      orElse: () => {'nombre': '', 'imagen': ''},
+    );
+    final currentName = sede['nombre'] as String;
+    final currentImageUrl = sede['imagen'] as String?;
+
+    _sedeController.text = currentName;
+
     File? tempImageFile;
     Uint8List? tempImageBytes;
 
@@ -168,9 +209,8 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
-            bool hasTempImage = (kIsWeb && tempImageBytes != null) || 
-                               (!kIsWeb && tempImageFile != null);
-            
+            bool hasTempImage = (kIsWeb && tempImageBytes != null) || (!kIsWeb && tempImageFile != null);
+
             return AlertDialog(
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
               title: Row(
@@ -213,7 +253,7 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
                           maxHeight: 600,
                           imageQuality: 80,
                         );
-                        
+
                         if (pickedFile != null) {
                           setDialogState(() {
                             if (kIsWeb) {
@@ -250,7 +290,7 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
                                 )
                               : currentImageUrl != null && currentImageUrl.isNotEmpty
                                   ? Image.network(
-                                      currentImageUrl, 
+                                      currentImageUrl,
                                       fit: BoxFit.cover,
                                       errorBuilder: (context, error, stackTrace) {
                                         debugPrint('Error mostrando imagen de sede: $error');
@@ -275,13 +315,33 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
                 ),
                 ElevatedButton(
                   onPressed: () {
-                    if (_sedeController.text.isNotEmpty) {
-                      Navigator.pop(context, {
-                        'newSede': _sedeController.text.trim(),
-                        'imageFile': tempImageFile,
-                        'imageBytes': tempImageBytes,
-                      });
+                    if (_sedeController.text.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Por favor, ingrese un nombre para la sede'),
+                          backgroundColor: Colors.red[600],
+                          behavior: SnackBarBehavior.floating,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                      );
+                      return;
                     }
+                    if (!hasTempImage && (currentImageUrl == null || currentImageUrl.isEmpty)) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Por favor, selecciona una imagen para la sede'),
+                          backgroundColor: Colors.red[600],
+                          behavior: SnackBarBehavior.floating,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                      );
+                      return;
+                    }
+                    Navigator.pop(context, {
+                      'newSede': _sedeController.text.trim(),
+                      'imageFile': tempImageFile,
+                      'imageBytes': tempImageBytes,
+                    });
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: _primaryColor,
@@ -307,36 +367,51 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
 
       try {
         final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
+
+        if (newSede != currentName) {
+          await sedeProvider.renombrarSede(sedeId, newSede);
+          if (sedeProvider.errorMessage.isNotEmpty) {
+            _showSnackBar(sedeProvider.errorMessage, isError: true);
+            setState(() {
+              _isLoading = false;
+            });
+            return;
+          }
+        }
+
         String? newImageUrl = currentImageUrl;
-        
-        bool hasNewImage = (kIsWeb && newImageBytes != null) || 
-                          (!kIsWeb && newImageFile != null);
-        
+        bool hasNewImage = (kIsWeb && newImageBytes != null) || (!kIsWeb && newImageFile != null);
+
         if (hasNewImage) {
           final oldImageFile = _selectedImageFile;
           final oldImageBytes = _selectedImageBytes;
-          
+
           _selectedImageFile = newImageFile;
           _selectedImageBytes = newImageBytes;
-          
+
           newImageUrl = await _uploadImage(newSede);
-          
+
           _selectedImageFile = oldImageFile;
           _selectedImageBytes = oldImageBytes;
-        }
 
-        await sedeProvider.renombrarSede(oldSede, newSede);
-        
-        if (newImageUrl != null && newImageUrl != currentImageUrl) {
-          await sedeProvider.actualizarImagenSede(newSede, newImageUrl);
+          if (newImageUrl != null && newImageUrl != currentImageUrl) {
+            await sedeProvider.actualizarImagenSede(sedeId, newImageUrl);
+            if (sedeProvider.errorMessage.isNotEmpty) {
+              _showSnackBar(sedeProvider.errorMessage, isError: true);
+              setState(() {
+                _isLoading = false;
+              });
+              return;
+            }
+          }
         }
 
         await sedeProvider.fetchSedes();
-        
+
         setState(() {
           _sedeController.clear();
         });
-        
+
         _showSnackBar('Sede actualizada con éxito');
       } catch (e) {
         _showSnackBar('Error al actualizar sede: $e', isError: true);
@@ -348,7 +423,14 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
     }
   }
 
-  void _deleteSede(String sede) async {
+  void _deleteSede(String sedeId) async {
+    final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
+    final sede = sedeProvider.sedes.firstWhere(
+      (s) => s['id'] == sedeId,
+      orElse: () => {'nombre': 'Desconocida'},
+    );
+    final sedeName = sede['nombre'] as String;
+
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -373,11 +455,11 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('¿Estás seguro de eliminar la sede "$sede"?',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+              Text('¿Estás seguro de eliminar la sede "$sedeName"?',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
               SizedBox(height: 12),
               Text('Esta acción eliminará:',
-                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red[800])),
+                  style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red[800])),
               _buildWarningItem('Todas las canchas de esta sede'),
               _buildWarningItem('Todas las reservas asociadas'),
               SizedBox(height: 8),
@@ -427,9 +509,9 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
       });
       try {
         final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
-        
-        await sedeProvider.eliminarSede(sede);
-        
+
+        await sedeProvider.eliminarSede(sedeId);
+
         if (sedeProvider.errorMessage.isNotEmpty) {
           _showSnackBar(sedeProvider.errorMessage, isError: true);
         } else {
@@ -439,8 +521,8 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
           } catch (e) {
             debugPrint('CanchaProvider no disponible: $e');
           }
-          
-          _showSnackBar('Sede "$sede" y todas sus canchas eliminadas con éxito');
+
+          _showSnackBar('Sede "$sedeName" y todas sus canchas eliminadas con éxito');
         }
       } catch (e) {
         _showSnackBar('Error al eliminar sede: $e', isError: true);
@@ -496,11 +578,10 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
         children: [
           Icon(Icons.add_photo_alternate, size: 40, color: _primaryColor),
           SizedBox(height: 8),
-          Text('Seleccionar imagen', 
-            style: TextStyle(color: _textSecondary, fontSize: 12, fontWeight: FontWeight.w500)),
+          Text('Seleccionar imagen (obligatorio)',
+              style: TextStyle(color: _textSecondary, fontSize: 12, fontWeight: FontWeight.w500)),
           if (kIsWeb)
-            Text('(Compatible con web)', 
-              style: TextStyle(color: Colors.grey[400], fontSize: 10)),
+            Text('(Compatible con web)', style: TextStyle(color: Colors.grey[400], fontSize: 10)),
         ],
       ),
     );
@@ -513,7 +594,7 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
         height: 120,
         width: double.infinity,
         decoration: BoxDecoration(
-          border: Border.all(color: _primaryColor.withOpacity(0.3), width: 2),
+          border: Border.all(color: _hasSelectedImage ? _primaryColor.withOpacity(0.3) : Colors.red.withOpacity(0.5), width: 2),
           borderRadius: BorderRadius.circular(16),
           color: _hasSelectedImage ? null : Colors.grey[50],
           boxShadow: [
@@ -563,6 +644,126 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
     );
   }
 
+  Widget _buildForm() {
+    return FadeTransition(
+      opacity: _fadeAnimation,
+      child: Container(
+        margin: EdgeInsets.all(16),
+        padding: EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: _cardColor,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 20,
+              offset: Offset(0, 10),
+            ),
+          ],
+        ),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.add_business, color: _primaryColor, size: 28),
+                  SizedBox(width: 12),
+                  Text('Nueva Sede',
+                      style: GoogleFonts.montserrat(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w600,
+                        color: _textPrimary,
+                      )),
+                ],
+              ),
+              SizedBox(height: 20),
+              TextFormField(
+                controller: _sedeController,
+                decoration: InputDecoration(
+                  labelText: 'Nombre de la sede',
+                  hintText: 'Ej: Sede Norte, Sede Centro...',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: _primaryColor, width: 2),
+                  ),
+                  prefixIcon: Icon(Icons.location_city, color: _primaryColor),
+                  filled: true,
+                  fillColor: Colors.grey[50],
+                ),
+                validator: (value) =>
+                    value == null || value.trim().isEmpty ? 'Ingrese un nombre' : null,
+              ),
+              SizedBox(height: 20),
+              _buildImageContainer(),
+              SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: _isLoading ? null : _addSede,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _primaryColor,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        elevation: 4,
+                      ),
+                      child: _isLoading
+                          ? SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.add_circle_outline),
+                                SizedBox(width: 8),
+                                Text('Añadir Sede',
+                                    style: GoogleFonts.montserrat(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 16,
+                                    )),
+                              ],
+                            ),
+                    ),
+                  ),
+                  SizedBox(width: 12),
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: _isLoading ? null : _toggleFormVisibility,
+                      style: OutlinedButton.styleFrom(
+                        side: BorderSide(color: _textSecondary),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: Text('Cancelar',
+                          style: GoogleFonts.montserrat(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 16,
+                            color: _textSecondary,
+                          )),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final sedeProvider = Provider.of<SedeProvider>(context);
@@ -570,10 +771,11 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
     return Scaffold(
       backgroundColor: _backgroundColor,
       appBar: AppBar(
-        title: Text('Gestión de Sedes', style: GoogleFonts.montserrat(
-          fontWeight: FontWeight.w600,
-          color: Colors.white,
-        )),
+        title: Text('Gestión de Sedes',
+            style: GoogleFonts.montserrat(
+              fontWeight: FontWeight.w600,
+              color: Colors.white,
+            )),
         backgroundColor: _primaryColor,
         foregroundColor: Colors.white,
         elevation: 0,
@@ -583,111 +785,15 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
           onPressed: () => Navigator.pop(context),
         ),
       ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _toggleFormVisibility,
+        backgroundColor: _primaryColor,
+        child: Icon(_isFormVisible ? Icons.close : Icons.add, color: Colors.white),
+        tooltip: _isFormVisible ? 'Ocultar formulario' : 'Agregar sede',
+      ),
       body: Column(
         children: [
-          // Header con degradado
-          Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [_primaryColor, _secondaryColor],
-              ),
-            ),
-            child: Container(
-              margin: EdgeInsets.all(16),
-              padding: EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: _cardColor,
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.1),
-                    blurRadius: 20,
-                    offset: Offset(0, 10),
-                  ),
-                ],
-              ),
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(Icons.add_business, color: _primaryColor, size: 28),
-                        SizedBox(width: 12),
-                        Text('Nueva Sede', style: GoogleFonts.montserrat(
-                          fontSize: 20,
-                          fontWeight: FontWeight.w600,
-                          color: _textPrimary,
-                        )),
-                      ],
-                    ),
-                    SizedBox(height: 20),
-                    TextFormField(
-                      controller: _sedeController,
-                      decoration: InputDecoration(
-                        labelText: 'Nombre de la sede',
-                        hintText: 'Ej: Sede Norte, Sede Centro...',
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: _primaryColor, width: 2),
-                        ),
-                        prefixIcon: Icon(Icons.location_city, color: _primaryColor),
-                        filled: true,
-                        fillColor: Colors.grey[50],
-                      ),
-                      validator: (value) =>
-                          value == null || value.trim().isEmpty ? 'Ingrese un nombre' : null,
-                    ),
-                    SizedBox(height: 20),
-                    _buildImageContainer(),
-                    SizedBox(height: 20),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child: ElevatedButton(
-                        onPressed: _isLoading ? null : _addSede,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: _primaryColor,
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          elevation: 4,
-                        ),
-                        child: _isLoading
-                            ? SizedBox(
-                                height: 20,
-                                width: 20,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(Icons.add_circle_outline),
-                                  SizedBox(width: 8),
-                                  Text('Añadir Sede', style: GoogleFonts.montserrat(
-                                    fontWeight: FontWeight.w600,
-                                    fontSize: 16,
-                                  )),
-                                ],
-                              ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          // Lista de sedes
+          if (_isFormVisible) _buildForm(),
           Expanded(
             child: Container(
               margin: EdgeInsets.symmetric(horizontal: 16),
@@ -699,14 +805,14 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
                           Icon(Icons.business_outlined, size: 80, color: Colors.grey[400]),
                           SizedBox(height: 16),
                           Text('No hay sedes registradas',
-                            style: GoogleFonts.montserrat(
-                              fontSize: 18,
-                              color: _textSecondary,
-                              fontWeight: FontWeight.w500,
-                            )),
+                              style: GoogleFonts.montserrat(
+                                fontSize: 18,
+                                color: _textSecondary,
+                                fontWeight: FontWeight.w500,
+                              )),
                           SizedBox(height: 8),
                           Text('Agrega tu primera sede para comenzar',
-                            style: TextStyle(color: Colors.grey[500])),
+                              style: TextStyle(color: Colors.grey[500])),
                         ],
                       ),
                     )
@@ -715,8 +821,7 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
                       itemCount: sedeProvider.sedes.length,
                       itemBuilder: (context, index) {
                         final sede = sedeProvider.sedes[index];
-                        final imageUrl = sedeProvider.sedeImages[sede];
-                        
+                        final imageUrl = sede['imagen'] as String?;
                         return Container(
                           margin: EdgeInsets.symmetric(vertical: 6),
                           decoration: BoxDecoration(
@@ -724,7 +829,7 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
                             borderRadius: BorderRadius.circular(16),
                             boxShadow: [
                               BoxShadow(
-                                color: Colors.black.withOpacity(0.08),
+                                color: Color.fromRGBO(0, 0, 0, 0.08),
                                 blurRadius: 15,
                                 offset: Offset(0, 5),
                               ),
@@ -737,7 +842,7 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
                               height: 56,
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(14),
-                                border: Border.all(color: _primaryColor.withOpacity(0.2)),
+                                border: Border.all(color: Color.fromRGBO(33, 150, 243, 0.2)),
                               ),
                               child: ClipRRect(
                                 borderRadius: BorderRadius.circular(13),
@@ -749,25 +854,26 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
                                           debugPrint('Error cargando imagen de sede: $error');
                                           return Container(
                                             color: Colors.grey[100],
-                                            child: Icon(Icons.business, 
-                                              color: _primaryColor, size: 28),
+                                            child: Icon(Icons.business,
+                                                color: _primaryColor, size: 28),
                                           );
                                         },
                                       )
                                     : Container(
                                         color: Colors.grey[100],
-                                        child: Icon(Icons.business, 
-                                          color: _primaryColor, size: 28),
+                                        child: Icon(Icons.business,
+                                            color: _primaryColor, size: 28),
                                       ),
                               ),
                             ),
-                            title: Text(sede, style: GoogleFonts.montserrat(
-                              fontWeight: FontWeight.w600,
-                              fontSize: 16,
-                              color: _textPrimary,
-                            )),
+                            title: Text(sede['nombre'] as String,
+                                style: GoogleFonts.montserrat(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 16,
+                                  color: _textPrimary,
+                                )),
                             subtitle: Text('Toca para gestionar canchas',
-                              style: TextStyle(color: _textSecondary, fontSize: 13)),
+                                style: TextStyle(color: _textSecondary, fontSize: 13)),
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
@@ -778,7 +884,7 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
                                   ),
                                   child: IconButton(
                                     icon: Icon(Icons.edit_outlined, color: Colors.blue[600]),
-                                    onPressed: () => _editSede(sede),
+                                    onPressed: () => _editSede(sede['id'] as String),
                                     tooltip: 'Editar sede',
                                   ),
                                 ),
@@ -790,7 +896,7 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> {
                                   ),
                                   child: IconButton(
                                     icon: Icon(Icons.delete_outline, color: Colors.red[600]),
-                                    onPressed: () => _deleteSede(sede),
+                                    onPressed: () => _deleteSede(sede['id'] as String),
                                     tooltip: 'Eliminar sede',
                                   ),
                                 ),

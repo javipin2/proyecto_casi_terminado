@@ -7,7 +7,6 @@ import 'package:provider/provider.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../../../models/reserva.dart';
-import '../../../../models/cancha.dart';
 import '../../../../providers/cancha_provider.dart';
 import '../../../../providers/sede_provider.dart';
 
@@ -23,7 +22,7 @@ class AdminRegistroReservasScreenState
     extends State<AdminRegistroReservasScreen> with TickerProviderStateMixin {
   List<Reserva> _reservas = [];
   DateTime? _selectedDate;
-  String? _selectedSede;
+  String? _selectedSedeId;
   String? _selectedCanchaId;
   bool _isLoading = false;
   bool _viewTable = true;
@@ -77,29 +76,31 @@ class AdminRegistroReservasScreenState
     });
     try {
       final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
-      await canchaProvider.fetchAllCanchas();
-      await canchaProvider.fetchHorasReservadas();
+      final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
+      await Future.wait([
+        canchaProvider.fetchAllCanchas(),
+        canchaProvider.fetchHorasReservadas(),
+        sedeProvider.fetchSedes(),
+      ]);
+
       final canchasMap = {
         for (var cancha in canchaProvider.canchas) cancha.id: cancha
       };
 
-      debugPrint('Canchas cargadas: ${canchasMap.keys.toList()}');
-
       Query<Map<String, dynamic>> query =
           FirebaseFirestore.instance.collection('reservas');
 
-      final String dateStr = DateFormat('yyyy-MM-dd').format(
-          _selectedDate ?? DateTime.now());
-      query = query.where('fecha', isEqualTo: dateStr);
-
-      if (_selectedSede != null && _selectedSede!.isNotEmpty) {
-        query = query.where('sede', isEqualTo: _selectedSede!.trim());
-        debugPrint('Aplicando filtro de sede: ${_selectedSede!.trim()}');
+      if (_selectedDate != null) {
+        final String dateStr = DateFormat('yyyy-MM-dd').format(_selectedDate!);
+        query = query.where('fecha', isEqualTo: dateStr);
       }
 
-      if (_selectedCanchaId != null && _selectedCanchaId!.isNotEmpty) {
-        query = query.where('cancha_id', isEqualTo: _selectedCanchaId!.trim());
-        debugPrint('Aplicando filtro de cancha: ${_selectedCanchaId!.trim()}');
+      if (_selectedSedeId != null) {
+        query = query.where('sede', isEqualTo: _selectedSedeId);
+      }
+
+      if (_selectedCanchaId != null) {
+        query = query.where('cancha_id', isEqualTo: _selectedCanchaId);
       }
 
       QuerySnapshot querySnapshot = await query
@@ -107,6 +108,12 @@ class AdminRegistroReservasScreenState
           .timeout(const Duration(seconds: 10), onTimeout: () {
             throw TimeoutException('La consulta a Firestore tardó demasiado');
           });
+
+      print(
+          'Reservas encontradas para sedeId=$_selectedSedeId, canchaId=$_selectedCanchaId, fecha=${_selectedDate != null ? DateFormat('yyyy-MM-dd').format(_selectedDate!) : "todas"}: ${querySnapshot.docs.length}');
+      for (var doc in querySnapshot.docs) {
+        print('Reserva ${doc.id}: ${doc.data()}');
+      }
 
       List<Reserva> reservasTemp = [];
       for (var doc in querySnapshot.docs) {
@@ -117,34 +124,26 @@ class AdminRegistroReservasScreenState
               !data.containsKey('cancha_id') ||
               !data.containsKey('sede') ||
               !data.containsKey('horario')) {
-            debugPrint('Documento inválido: ${doc.id}, datos: $data');
             continue;
           }
 
-          debugPrint(
-              'Procesando reserva ${doc.id}: fecha=${data['fecha']}, sede=${data['sede']}, cancha_id=${data['cancha_id']}');
-
           final reserva = Reserva.fromFirestoreWithCanchas(doc, canchasMap);
-          reservasTemp.add(reserva);
+          if (reserva.cancha.id.isNotEmpty) {
+            reservasTemp.add(reserva);
+          }
         } catch (e) {
-          debugPrint('Error al procesar documento ${doc.id}: $e');
+          debugPrint('Error al procesar documento: $e');
         }
       }
 
       if (mounted) {
         setState(() {
           _reservas = reservasTemp;
-          debugPrint(
-              'Se cargaron ${_reservas.length} reservas con filtros: fecha=$dateStr, sede=${_selectedSede ?? 'ninguna'}, cancha=${_selectedCanchaId ?? 'ninguna'}');
-          if (_reservas.isEmpty) {
-            debugPrint('No se encontraron reservas con los filtros aplicados');
-          }
         });
       }
     } catch (e) {
       if (mounted) {
         _showErrorSnackBar('Error al cargar reservas: $e');
-        debugPrint('Error en _loadReservasWithFilters: $e');
       }
     } finally {
       if (mounted) {
@@ -174,6 +173,7 @@ class AdminRegistroReservasScreenState
   }
 
   void _toggleView() {
+    if (!mounted) return;
     setState(() {
       _viewTable = !_viewTable;
     });
@@ -208,20 +208,31 @@ class AdminRegistroReservasScreenState
     if (newDate != null && mounted) {
       setState(() {
         _selectedDate = newDate;
+        _selectedCanchaId = null;
       });
       await _loadReservasWithFilters();
     }
   }
 
-  void _selectSede(String? sede) {
+  void _selectSede(String? sedeId) {
+    if (!mounted) return;
     setState(() {
-      _selectedSede = sede;
-      _selectedCanchaId = null;
+      _selectedSedeId = sedeId;
+      // Resetear cancha si no pertenece a la nueva sede
+      if (_selectedCanchaId != null) {
+        final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
+        final canchaExists = canchaProvider.canchas
+            .any((c) => c.id == _selectedCanchaId && c.sedeId == sedeId);
+        if (!canchaExists) {
+          _selectedCanchaId = null;
+        }
+      }
     });
     _loadReservasWithFilters();
   }
 
   void _selectCancha(String? canchaId) {
+    if (!mounted) return;
     setState(() {
       _selectedCanchaId = canchaId;
     });
@@ -229,21 +240,23 @@ class AdminRegistroReservasScreenState
   }
 
   void _clearFilters() {
+    if (!mounted) return;
     setState(() {
       _selectedDate = null;
-      _selectedSede = null;
+      _selectedSedeId = null;
       _selectedCanchaId = null;
     });
     _loadReservasWithFilters();
   }
 
   Future<void> _editReserva(Reserva reserva) async {
+    if (!mounted) return;
     final nombreController = TextEditingController(text: reserva.nombre ?? '');
     final telefonoController =
         TextEditingController(text: reserva.telefono ?? '');
     final emailController = TextEditingController(text: reserva.email ?? '');
 
-    await showDialog(
+    final result = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: Text('Editar Reserva', style: GoogleFonts.montserrat()),
@@ -267,37 +280,42 @@ class AdminRegistroReservasScreenState
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(context, false),
             child: Text('Cancelar', style: GoogleFonts.montserrat()),
           ),
           TextButton(
-            onPressed: () async {
-              if (!mounted) return;
-              try {
-                await FirebaseFirestore.instance
-                    .collection('reservas')
-                    .doc(reserva.id)
-                    .update({
-                  'nombre': nombreController.text.trim(),
-                  'telefono': telefonoController.text.trim(),
-                  'correo': emailController.text.trim(),
-                });
-                await _loadReservasWithFilters();
-                if (mounted) {
-                  Navigator.pop(context);
-                }
-              } catch (e) {
-                _showErrorSnackBar('Error al editar reserva: $e');
-              }
-            },
+            onPressed: () => Navigator.pop(context, true),
             child: Text('Guardar', style: GoogleFonts.montserrat()),
           ),
         ],
       ),
     );
+
+    if (result == true && mounted) {
+      try {
+        await FirebaseFirestore.instance
+            .collection('reservas')
+            .doc(reserva.id)
+            .update({
+          'nombre': nombreController.text.trim(),
+          'telefono': telefonoController.text.trim(),
+          'correo': emailController.text.trim(),
+        });
+        await _loadReservasWithFilters();
+      } catch (e) {
+        if (mounted) {
+          _showErrorSnackBar('Error al editar reserva: $e');
+        }
+      }
+    }
+
+    nombreController.dispose();
+    telefonoController.dispose();
+    emailController.dispose();
   }
 
   Future<void> _deleteReserva(String reservaId) async {
+    if (!mounted) return;
     final confirm = await showDialog<bool>(
           context: context,
           builder: (context) => AlertDialog(
@@ -324,7 +342,9 @@ class AdminRegistroReservasScreenState
             .delete();
         await _loadReservasWithFilters();
       } catch (e) {
-        _showErrorSnackBar('Error al eliminar reserva: $e');
+        if (mounted) {
+          _showErrorSnackBar('Error al eliminar reserva: $e');
+        }
       }
     }
   }
@@ -396,7 +416,7 @@ class AdminRegistroReservasScreenState
                         ? Center(
                             child: Text(
                               _selectedDate == null &&
-                                      _selectedSede == null &&
+                                      _selectedSedeId == null &&
                                       _selectedCanchaId == null
                                   ? 'No hay reservas para hoy. Verifica los datos en Firestore.'
                                   : 'No hay reservas que coincidan con los filtros seleccionados.',
@@ -429,9 +449,35 @@ class AdminRegistroReservasScreenState
   Widget _buildFilterSection() {
     final canchaProvider = Provider.of<CanchaProvider>(context);
     final sedeProvider = Provider.of<SedeProvider>(context);
-    final List<Cancha> canchas = canchaProvider.canchas
-        .where((cancha) => _selectedSede == null || cancha.sede == _selectedSede)
-        .toList();
+    final canchas = _selectedSedeId == null
+        ? canchaProvider.canchas
+        : canchaProvider.canchas
+            .where((cancha) => cancha.sedeId == _selectedSedeId)
+            .toList();
+
+    if (canchas.isEmpty && _selectedSedeId != null) {
+      return Card(
+        elevation: 0,
+        color: _cardColor,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'No hay canchas disponibles para la sede seleccionada',
+                style: GoogleFonts.montserrat(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w500,
+                  color: _primaryColor,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
 
     return Card(
       elevation: 0,
@@ -496,19 +542,20 @@ class AdminRegistroReservasScreenState
                               color: Color.fromRGBO(60, 64, 67, 0.6))),
                       const SizedBox(height: 4),
                       DropdownButton<String>(
-                        value: _selectedSede,
+                        value: _selectedSedeId,
                         hint: Text('Todas las sedes',
                             style: GoogleFonts.montserrat(color: _primaryColor)),
                         items: [
                           DropdownMenuItem(
-                              value: null,
-                              child: Text('Todas las sedes',
-                                  style: GoogleFonts.montserrat())),
-                          ...sedeProvider.sedes
-                              .map((sede) => DropdownMenuItem(
-                                  value: sede,
-                                  child: Text(sede,
-                                      style: GoogleFonts.montserrat()))),
+                            value: null,
+                            child: Text('Todas las sedes',
+                                style: GoogleFonts.montserrat()),
+                          ),
+                          ...sedeProvider.sedes.map((sede) => DropdownMenuItem(
+                                value: sede['id'] as String,
+                                child: Text(sede['nombre'] as String,
+                                    style: GoogleFonts.montserrat()),
+                              )),
                         ],
                         onChanged: _selectSede,
                         style: GoogleFonts.montserrat(color: _primaryColor),
@@ -520,7 +567,7 @@ class AdminRegistroReservasScreenState
                     ],
                   ),
                 ),
-                if (_selectedSede != null)
+                if (_selectedSedeId != null)
                   IconButton(
                       icon: Icon(Icons.clear, color: Colors.redAccent),
                       onPressed: _clearFilters,
@@ -583,6 +630,7 @@ class AdminRegistroReservasScreenState
     final currencyFormat =
         NumberFormat.currency(symbol: "\$", decimalDigits: 0);
     final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
+    final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: SingleChildScrollView(
@@ -611,32 +659,21 @@ class AdminRegistroReservasScreenState
           rows: _reservas.asMap().entries.map((entry) {
             final reserva = entry.value;
             final montoRestante = reserva.montoTotal - reserva.montoPagado;
+            final horaReserva = reserva.horario.hora;
             final horasReservadas =
                 canchaProvider.horasReservadasPorCancha(reserva.cancha.id);
-            bool isReserved = false;
-            final horas = horasReservadas[reserva.fecha];
-            if (horas != null) {
-              final horaStrFull = reserva.horario.horaFormateada;
-              final horaStr = horaStrFull.split(' ')[0];
-              final is12HourFormat =
-                  horaStrFull.contains(RegExp(r'(AM|PM)', caseSensitive: false));
-              int hour = int.parse(horaStr.split(':')[0]);
-              final minute = int.parse(horaStr.split(':')[1]);
-              if (is12HourFormat) {
-                final period = horaStrFull.toUpperCase().contains('PM') ? 'PM' : 'AM';
-                if (period == 'PM' && hour != 12) {
-                  hour += 12;
-                } else if (period == 'AM' && hour == 12) {
-                  hour = 0;
-                }
-              }
-              final horaReserva = TimeOfDay(hour: hour, minute: minute);
-              isReserved = horas.contains(horaReserva);
-            }
+            final isReserved =
+                horasReservadas[reserva.fecha]?.contains(horaReserva) ?? false;
+
             return DataRow(
               cells: [
                 DataCell(Text(reserva.cancha.nombre)),
-                DataCell(Text(reserva.sede)),
+                DataCell(Text(
+                  sedeProvider.sedes.firstWhere(
+                    (sede) => sede['id'] == reserva.sede,
+                    orElse: () => {'nombre': reserva.sede},
+                  )['nombre'] as String,
+                )),
                 DataCell(Text(DateFormat('dd/MM/yyyy').format(reserva.fecha))),
                 DataCell(Text(
                     '${reserva.horario.horaFormateada} ${isReserved ? '(Reservada)' : ''}',
@@ -660,6 +697,7 @@ class AdminRegistroReservasScreenState
                             ? _reservedColor
                             : Colors.orange))),
                 DataCell(Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     IconButton(
                         icon: Icon(Icons.edit, color: _secondaryColor),
@@ -680,35 +718,19 @@ class AdminRegistroReservasScreenState
   Widget _buildListView() {
     final currencyFormat =
         NumberFormat.currency(symbol: "\$", decimalDigits: 0);
+    final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
+    final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
     return ListView.builder(
       itemCount: _reservas.length,
       itemBuilder: (context, index) {
         final reserva = _reservas[index];
         final montoRestante = reserva.montoTotal - reserva.montoPagado;
-        final canchaProvider =
-            Provider.of<CanchaProvider>(context, listen: false);
+        final horaReserva = reserva.horario.hora;
         final horasReservadas =
             canchaProvider.horasReservadasPorCancha(reserva.cancha.id);
-        bool isReserved = false;
-        final horas = horasReservadas[reserva.fecha];
-        if (horas != null) {
-          final horaStrFull = reserva.horario.horaFormateada;
-          final horaStr = horaStrFull.split(' ')[0];
-          final is12HourFormat =
-              horaStrFull.contains(RegExp(r'(AM|PM)', caseSensitive: false));
-          int hour = int.parse(horaStr.split(':')[0]);
-          final minute = int.parse(horaStr.split(':')[1]);
-          if (is12HourFormat) {
-            final period = horaStrFull.toUpperCase().contains('PM') ? 'PM' : 'AM';
-            if (period == 'PM' && hour != 12) {
-              hour += 12;
-            } else if (period == 'AM' && hour == 12) {
-              hour = 0;
-            }
-          }
-          final horaReserva = TimeOfDay(hour: hour, minute: minute);
-          isReserved = horas.contains(horaReserva);
-        }
+        final isReserved =
+            horasReservadas[reserva.fecha]?.contains(horaReserva) ?? false;
+
         return Animate(
           effects: [
             FadeEffect(
@@ -729,11 +751,16 @@ class AdminRegistroReservasScreenState
             margin: const EdgeInsets.only(bottom: 12),
             child: ListTile(
               contentPadding: const EdgeInsets.all(16),
-              title: Text('${reserva.cancha.nombre} - ${reserva.sede}',
-                  style: GoogleFonts.montserrat(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: _primaryColor)),
+              title: Text(
+                '${reserva.cancha.nombre} - ${sedeProvider.sedes.firstWhere(
+                      (sede) => sede['id'] == reserva.sede,
+                      orElse: () => {'nombre': reserva.sede},
+                    )['nombre'] as String}',
+                style: GoogleFonts.montserrat(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: _primaryColor),
+              ),
               subtitle: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [

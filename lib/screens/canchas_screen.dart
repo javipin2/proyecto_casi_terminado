@@ -3,7 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:flutter_staggered_animations/flutter_staggered_animations.dart';
 import '../providers/sede_provider.dart';
 import '../providers/cancha_provider.dart';
-import '../widgets/cancha_card.dart';
+import 'cancha_card.dart';
 import 'horarios_screen.dart';
 import 'sede_screen.dart';
 
@@ -25,7 +25,6 @@ class _CanchasScreenState extends State<CanchasScreen>
     super.initState();
     _futureCanchas = _loadCanchas();
 
-    // Configuración de animaciones
     _animationController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 800),
@@ -50,10 +49,51 @@ class _CanchasScreenState extends State<CanchasScreen>
 
   Future<void> _loadCanchas() async {
     try {
-      final sede = Provider.of<SedeProvider>(context, listen: false).selectedSede;
-      debugPrint('📌 Cargando canchas para la sede: $sede');
-      await Provider.of<CanchaProvider>(context, listen: false)
-          .fetchCanchas(sede);
+      final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
+      await sedeProvider.fetchSedes();
+      if (!mounted) return;
+
+      String selectedSedeName = sedeProvider.selectedSede.isNotEmpty
+          ? sedeProvider.selectedSede
+          : sedeProvider.sedeNames.isNotEmpty
+              ? sedeProvider.sedeNames.first
+              : '';
+      
+      if (selectedSedeName.isNotEmpty) {
+        String sedeId = sedeProvider.sedes.firstWhere(
+          (sede) => sede['nombre'] == selectedSedeName,
+          orElse: () => {'id': ''},
+        )['id'] ?? '';
+        if (sedeId.isNotEmpty) {
+          sedeProvider.setSede(selectedSedeName);
+          debugPrint('📌 Cargando canchas para la sedeId: $sedeId');
+          await Provider.of<CanchaProvider>(context, listen: false).fetchCanchas(sedeId);
+        } else {
+          debugPrint('❌ No se encontró sedeId para $selectedSedeName');
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('Sede no encontrada'),
+              backgroundColor: Colors.red.shade800,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              margin: const EdgeInsets.all(12),
+            ),
+          );
+        }
+      } else {
+        debugPrint('❌ No hay sedes disponibles');
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('No hay sedes disponibles'),
+            backgroundColor: Colors.red.shade800,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            margin: const EdgeInsets.all(12),
+          ),
+        );
+      }
     } catch (e) {
       debugPrint('❌ Error al cargar canchas: $e');
       if (!mounted) return;
@@ -62,8 +102,7 @@ class _CanchasScreenState extends State<CanchasScreen>
           content: Text('Error al cargar canchas: $e'),
           backgroundColor: Colors.red.shade800,
           behavior: SnackBarBehavior.floating,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           margin: const EdgeInsets.all(12),
         ),
       );
@@ -73,16 +112,19 @@ class _CanchasScreenState extends State<CanchasScreen>
   @override
   Widget build(BuildContext context) {
     final sedeProvider = Provider.of<SedeProvider>(context);
+    final canchaProvider = Provider.of<CanchaProvider>(context);
+
+    // Recargar canchas al regresar a la pantalla
+    if (canchaProvider.canchas.isEmpty && !canchaProvider.isLoading) {
+      _futureCanchas = _loadCanchas();
+    }
 
     return Container(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [
-            Color(0xFFF5F5F5),
-            Colors.white,
-          ],
+          colors: [Color(0xFFF5F5F5), Colors.white],
         ),
       ),
       child: Scaffold(
@@ -123,7 +165,7 @@ class _CanchasScreenState extends State<CanchasScreen>
             child: IconButton(
               icon: const Icon(Icons.arrow_back, color: Color(0xFF424242)),
               onPressed: () {
-                Navigator.pushReplacement(
+                Navigator.push(
                   context,
                   PageRouteBuilder(
                     pageBuilder: (_, animation, __) {
@@ -145,8 +187,7 @@ class _CanchasScreenState extends State<CanchasScreen>
               child: Chip(
                 label: Text(
                   'Sede: ${sedeProvider.selectedSede}',
-                  style:
-                      const TextStyle(fontSize: 12, color: Color(0xFF424242)),
+                  style: const TextStyle(fontSize: 12, color: Color(0xFF424242)),
                 ),
                 backgroundColor: Colors.grey.shade100,
                 padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -157,8 +198,6 @@ class _CanchasScreenState extends State<CanchasScreen>
         body: FutureBuilder<void>(
           future: _futureCanchas,
           builder: (context, snapshot) {
-            final canchaProvider = Provider.of<CanchaProvider>(context);
-
             if (snapshot.connectionState == ConnectionState.waiting ||
                 canchaProvider.isLoading) {
               return Center(
@@ -170,8 +209,7 @@ class _CanchasScreenState extends State<CanchasScreen>
                       height: 50,
                       child: CircularProgressIndicator(
                         strokeWidth: 3,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                            Colors.green.shade300),
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.green.shade300),
                       ),
                     ),
                     const SizedBox(height: 20),
@@ -223,8 +261,7 @@ class _CanchasScreenState extends State<CanchasScreen>
 
             return AnimationLimiter(
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -265,8 +302,7 @@ class _CanchasScreenState extends State<CanchasScreen>
                                   verticalOffset: 50.0,
                                   child: FadeInAnimation(
                                     child: Padding(
-                                      padding:
-                                          const EdgeInsets.only(bottom: 16.0),
+                                      padding: const EdgeInsets.only(bottom: 16.0),
                                       child: CanchaCard(
                                         cancha: cancha,
                                         onTap: () {
@@ -276,13 +312,10 @@ class _CanchasScreenState extends State<CanchasScreen>
                                               pageBuilder: (_, animation, __) {
                                                 return FadeTransition(
                                                   opacity: animation,
-                                                  child: HorariosScreen(
-                                                      cancha: cancha),
+                                                  child: HorariosScreen(cancha: cancha),
                                                 );
                                               },
-                                              transitionDuration:
-                                                  const Duration(
-                                                      milliseconds: 300),
+                                              transitionDuration: const Duration(milliseconds: 300),
                                             ),
                                           );
                                         },
