@@ -50,9 +50,10 @@ class _CanchaCardState extends State<CanchaCard>
       CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic),
     );
     
-    print('🏟️ CanchaCard iniciada para: ${widget.cancha.nombre}');
-    print('🖼️ URL de imagen: ${widget.cancha.imagen}');
-    print('🔗 Es URL de red: ${widget.cancha.imagen.startsWith('http')}');
+    // Solo para debug, se puede remover en producción
+    debugPrint('🏟️ CanchaCard iniciada para: ${widget.cancha.nombre}');
+    debugPrint('🖼️ URL de imagen: ${widget.cancha.imagen}');
+    debugPrint('🔗 Es URL de red: ${widget.cancha.imagen.startsWith('http')}');
   }
 
   @override
@@ -81,7 +82,7 @@ class _CanchaCardState extends State<CanchaCard>
             borderRadius: BorderRadius.circular(_cardBorderRadius),
             boxShadow: [
               BoxShadow(
-                color: _isHovering ? _cardShadowColor.withOpacity(0.15) : _cardShadowColor,
+                color: _isHovering ? _cardShadowColor.withValues(alpha: 0.15) : _cardShadowColor,
                 blurRadius: _isHovering ? 20 : 8,
                 offset: Offset(0, _isHovering ? 8 : 4),
                 spreadRadius: 0,
@@ -95,15 +96,15 @@ class _CanchaCardState extends State<CanchaCard>
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(_cardBorderRadius),
               side: BorderSide(
-                color: _isHovering ? _primaryColor.withOpacity(0.1) : Colors.transparent,
+                color: _isHovering ? _primaryColor.withValues(alpha: 0.1) : Colors.transparent,
                 width: 1.5,
               ),
             ),
             child: InkWell(
               onTap: widget.onTap,
               borderRadius: BorderRadius.circular(_cardBorderRadius),
-              splashColor: _primaryColor.withOpacity(0.08),
-              highlightColor: _primaryColor.withOpacity(0.04),
+              splashColor: _primaryColor.withValues(alpha: 0.08),
+              highlightColor: _primaryColor.withValues(alpha: 0.04),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -123,7 +124,7 @@ class _CanchaCardState extends State<CanchaCard>
     
     return ClipRRect(
       borderRadius: const BorderRadius.vertical(top: Radius.circular(_imageBorderRadius)),
-      child: Container(
+      child: SizedBox(
         height: imageHeight,
         width: double.infinity,
         child: Stack(
@@ -150,9 +151,9 @@ class _CanchaCardState extends State<CanchaCard>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildHeader(isCompact),
-          SizedBox(height: _contentSpacing),
+          const SizedBox(height: _contentSpacing),
           _buildTimeInfo(),
-          SizedBox(height: _contentSpacing),
+          const SizedBox(height: _contentSpacing),
           _buildDescription(isCompact),
           SizedBox(height: isCompact ? 16 : 20),
           _buildFooter(isCompact),
@@ -180,9 +181,9 @@ class _CanchaCardState extends State<CanchaCard>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: _primaryColor.withOpacity(0.08),
+        color: _primaryColor.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: _primaryColor.withOpacity(0.15)),
+        border: Border.all(color: _primaryColor.withValues(alpha: 0.15)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -190,7 +191,7 @@ class _CanchaCardState extends State<CanchaCard>
           Icon(
             Icons.schedule_rounded,
             size: 16,
-            color: _primaryColor.withOpacity(0.8),
+            color: _primaryColor.withValues(alpha: 0.8),
           ),
           const SizedBox(width: 6),
           Text(
@@ -228,14 +229,14 @@ class _CanchaCardState extends State<CanchaCard>
         Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
-              colors: [_primaryColor, _primaryColor.withOpacity(0.8)],
+              colors: [_primaryColor, _primaryColor.withValues(alpha: 0.8)],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
             borderRadius: BorderRadius.circular(_buttonBorderRadius),
             boxShadow: [
               BoxShadow(
-                color: _primaryColor.withOpacity(0.3),
+                color: _primaryColor.withValues(alpha: 0.3),
                 blurRadius: 8,
                 offset: const Offset(0, 4),
               ),
@@ -267,7 +268,7 @@ class _CanchaCardState extends State<CanchaCard>
                   ),
                 ),
                 const SizedBox(width: 8),
-                Icon(
+                const Icon(
                   Icons.arrow_forward_rounded,
                   size: 18,
                   color: Colors.white,
@@ -287,12 +288,12 @@ class _CanchaCardState extends State<CanchaCard>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.95),
+        color: Colors.white.withValues(alpha: 0.95),
         borderRadius: BorderRadius.circular(_chipBorderRadius),
-        border: Border.all(color: color.withOpacity(0.2)),
+        border: Border.all(color: color.withValues(alpha: 0.2)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.1),
+            color: Colors.black.withValues(alpha: 0.1),
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
@@ -303,7 +304,7 @@ class _CanchaCardState extends State<CanchaCard>
         children: [
           Icon(
             isTechada ? Icons.home_rounded : Icons.wb_sunny_rounded,
-            color: color.withOpacity(0.8),
+            color: color.withValues(alpha: 0.8),
             size: 16,
           ),
           const SizedBox(width: 6),
@@ -328,9 +329,9 @@ class _CanchaCardState extends State<CanchaCard>
       child: Container(
         height: double.infinity,
         width: double.infinity,
-        decoration: BoxDecoration(
+        decoration: const BoxDecoration(
           color: Colors.white,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(_imageBorderRadius)),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(_imageBorderRadius)),
         ),
       ),
     );
@@ -345,31 +346,40 @@ class _CanchaCardState extends State<CanchaCard>
               fit: BoxFit.cover,
               loadingBuilder: (context, child, loadingProgress) {
                 if (loadingProgress == null) {
-                  print('✅ Imagen cargada para: ${widget.cancha.nombre}');
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (mounted) {
-                      setState(() {
-                        _imageLoaded = true;
-                        _imageError = false;
-                      });
-                    }
-                  });
+                  // Solo actualizar estado si no se ha cargado antes
+                  if (!_imageLoaded && !_imageError) {
+                    debugPrint('✅ Imagen cargada para: ${widget.cancha.nombre}');
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted) {
+                        setState(() {
+                          _imageLoaded = true;
+                          _imageError = false;
+                        });
+                      }
+                    });
+                  }
                   return child;
                 } else {
-                  print('⏳ Cargando imagen para: ${widget.cancha.nombre}');
+                  // Solo mostrar mensaje de carga la primera vez
+                  if (!_imageLoaded && !_imageError) {
+                    debugPrint('⏳ Cargando imagen para: ${widget.cancha.nombre}');
+                  }
                   return const SizedBox.shrink();
                 }
               },
               errorBuilder: (context, error, stackTrace) {
-                print('❌ Error cargando imagen para ${widget.cancha.nombre}: $error');
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (mounted) {
-                    setState(() {
-                      _imageError = true;
-                      _imageLoaded = false;
-                    });
-                  }
-                });
+                // Solo actualizar estado si no se ha marcado error antes
+                if (!_imageError) {
+                  debugPrint('❌ Error cargando imagen para ${widget.cancha.nombre}: $error');
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) {
+                      setState(() {
+                        _imageError = true;
+                        _imageLoaded = false;
+                      });
+                    }
+                  });
+                }
                 return _buildErrorImage('Error al cargar imagen', Icons.cloud_off_rounded);
               },
             )
@@ -379,7 +389,7 @@ class _CanchaCardState extends State<CanchaCard>
                   : 'assets/cancha_demo.png',
               fit: BoxFit.cover,
               errorBuilder: (context, error, stackTrace) {
-                print('❌ Error cargando asset para ${widget.cancha.nombre}: $error');
+                debugPrint('❌ Error cargando asset para ${widget.cancha.nombre}: $error');
                 return _buildErrorImage('Imagen no disponible', Icons.image_not_supported_rounded);
               },
             ),
@@ -423,7 +433,7 @@ class _CanchaCardState extends State<CanchaCard>
           end: Alignment.bottomCenter,
           colors: [
             Colors.transparent,
-            Colors.black.withOpacity(0.15),
+            Colors.black.withValues(alpha: 0.15),
           ],
           stops: const [0.7, 1.0],
         ),

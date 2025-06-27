@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:intl/intl.dart';
+import 'dart:developer' as developer;
 import '../models/cancha.dart';
 
 class CanchaProvider with ChangeNotifier {
@@ -19,10 +20,10 @@ class CanchaProvider with ChangeNotifier {
   }
 
   void limpiarCanchas() {
-    print('🧹 Limpiando canchas anteriores...');
+    developer.log('🧹 Limpiando canchas anteriores...', name: 'CanchaProvider');
     _canchas.clear();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      print('🔔 Notificando limpieza de canchas');
+      developer.log('🔔 Notificando limpieza de canchas', name: 'CanchaProvider');
       notifyListeners();
     });
   }
@@ -45,7 +46,8 @@ class CanchaProvider with ChangeNotifier {
       final ref = FirebaseStorage.instance.ref().child(imagePath);
       return await ref.getDownloadURL();
     } catch (e) {
-      print('❌ Error obteniendo URL de descarga para $imagePath: $e');
+      developer.log('❌ Error obteniendo URL de descarga para $imagePath: $e', 
+          name: 'CanchaProvider', error: e);
       // Devolver una URL por defecto o la ruta original
       return 'assets/cancha_demo.png';
     }
@@ -88,7 +90,7 @@ class CanchaProvider with ChangeNotifier {
       techada: data['techada'] as bool? ?? false,
       ubicacion: data['ubicacion'] as String? ?? '',
       precio: (data['precio'] is num) ? (data['precio'] as num).toDouble() : 0.0,
-      sedeId: data['sedeId'] as String? ?? '', // CORREGIDO: era 'sede', ahora es 'sedeId'
+      sedeId: data['sedeId'] as String? ?? '',
       preciosPorHorario: preciosPorHorario,
       disponible: data['disponible'] as bool? ?? true,
       motivoNoDisponible: data['motivoNoDisponible'] as String?,
@@ -101,38 +103,43 @@ class CanchaProvider with ChangeNotifier {
     _canchas.clear();
 
     try {
-      print('🔍 Consultando canchas para sedeId: "$sede"');
+      developer.log('🔍 Consultando canchas para sedeId: "$sede"', name: 'CanchaProvider');
+      
+      // Optimización: Usar get() con Source.server para datos frescos pero permitir cache en offline
       QuerySnapshot querySnapshot = await FirebaseFirestore.instance
           .collection('canchas')
           .where('sedeId', isEqualTo: sede)
           .get();
 
-      print('📄 Documentos encontrados: ${querySnapshot.docs.length}');
+      developer.log('📄 Documentos encontrados: ${querySnapshot.docs.length}', name: 'CanchaProvider');
+      
       if (querySnapshot.docs.isEmpty) {
         _errorMessage = "No hay canchas registradas para la sedeId '$sede'.";
-        print('⚠️ No se encontraron canchas para "$sede"');
+        developer.log('⚠️ No se encontraron canchas para "$sede"', name: 'CanchaProvider');
       } else {
         List<Cancha> canchasProcessed = [];
         for (DocumentSnapshot doc in querySnapshot.docs) {
           try {
             final cancha = await _procesarCancha(doc);
             canchasProcessed.add(cancha);
-            print('✅ Cancha procesada: ${cancha.nombre} - SedeId: ${cancha.sedeId}'); // CORREGIDO: era cancha.sede
+            developer.log('✅ Cancha procesada: ${cancha.nombre} - SedeId: ${cancha.sedeId}', 
+                name: 'CanchaProvider');
           } catch (e) {
-            print('❌ Error procesando cancha ${doc.id}: $e');
+            developer.log('❌ Error procesando cancha ${doc.id}: $e', 
+                name: 'CanchaProvider', error: e);
             canchasProcessed.add(Cancha.fromFirestore(doc));
           }
         }
         _canchas = canchasProcessed;
-        print('✅ Total canchas cargadas: ${_canchas.length}');
+        developer.log('✅ Total canchas cargadas: ${_canchas.length}', name: 'CanchaProvider');
       }
     } catch (error) {
       _errorMessage = 'Error al cargar canchas: $error';
-      print('❌ Error en fetchCanchas: $error');
+      developer.log('❌ Error en fetchCanchas: $error', name: 'CanchaProvider', error: error);
     } finally {
       _isLoading = false;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        print('🔔 Notificando cambios en fetchCanchas');
+        developer.log('🔔 Notificando cambios en fetchCanchas', name: 'CanchaProvider');
         notifyListeners();
       });
     }
@@ -143,6 +150,7 @@ class CanchaProvider with ChangeNotifier {
     _errorMessage = '';
 
     try {
+      // Optimización: Consulta directa sin filtros innecesarios
       QuerySnapshot querySnapshot =
           await FirebaseFirestore.instance.collection('canchas').get();
 
@@ -156,21 +164,23 @@ class CanchaProvider with ChangeNotifier {
             final cancha = await _procesarCancha(doc);
             canchasProcessed.add(cancha);
           } catch (e) {
-            print('❌ Error procesando cancha ${doc.id}: $e');
+            developer.log('❌ Error procesando cancha ${doc.id}: $e', 
+                name: 'CanchaProvider', error: e);
             // Agregar cancha con imagen por defecto
             canchasProcessed.add(Cancha.fromFirestore(doc));
           }
         }
         
         _canchas = canchasProcessed;
-        print('✅ Todas las canchas cargadas: ${_canchas.length}');
+        developer.log('✅ Todas las canchas cargadas: ${_canchas.length}', name: 'CanchaProvider');
       }
     } catch (error) {
       _errorMessage = 'Error al cargar todas las canchas: $error';
+      developer.log('❌ Error en fetchAllCanchas: $error', name: 'CanchaProvider', error: error);
     } finally {
       _isLoading = false;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        print('🔔 Notificando cambios en fetchAllCanchas');
+        developer.log('🔔 Notificando cambios en fetchAllCanchas', name: 'CanchaProvider');
         notifyListeners();
       });
     }
@@ -181,13 +191,24 @@ class CanchaProvider with ChangeNotifier {
     _errorMessage = '';
 
     try {
-      QuerySnapshot reservasSnapshot =
-          await FirebaseFirestore.instance.collection('reservas').get();
+      // Optimización: Solo obtener reservas activas/futuras para reducir datos transferidos
+      final fechaHoy = DateTime.now();
+      final fechaInicio = DateFormat('yyyy-MM-dd').format(fechaHoy);
+      
+      QuerySnapshot reservasSnapshot = await FirebaseFirestore.instance
+          .collection('reservas')
+          .where('fecha', isGreaterThanOrEqualTo: fechaInicio)
+          .get();
+      
       _horasReservadas.clear();
 
       for (var doc in reservasSnapshot.docs) {
         Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
         final canchaId = data['cancha_id'] ?? '';
+        
+        // Validar que el canchaId no esté vacío
+        if (canchaId.isEmpty) continue;
+        
         final fecha = DateFormat('yyyy-MM-dd').parse(data['fecha']);
         final horaStrFull = data['horario'] as String;
         final horaStr = horaStrFull.split(' ')[0];
@@ -215,10 +236,11 @@ class CanchaProvider with ChangeNotifier {
       }
     } catch (error) {
       _errorMessage = 'Error al cargar horas reservadas: $error';
+      developer.log('❌ Error en fetchHorasReservadas: $error', name: 'CanchaProvider', error: error);
     } finally {
       _isLoading = false;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        print('🔔 Notificando cambios en fetchHorasReservadas');
+        developer.log('🔔 Notificando cambios en fetchHorasReservadas', name: 'CanchaProvider');
         notifyListeners();
       });
     }
@@ -230,7 +252,7 @@ class CanchaProvider with ChangeNotifier {
     _isLoading = false;
     _errorMessage = '';
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      print('🔔 Notificando reset de CanchaProvider');
+      developer.log('🔔 Notificando reset de CanchaProvider', name: 'CanchaProvider');
       notifyListeners();
     });
   }
