@@ -138,10 +138,7 @@ class EditarClienteScreenState extends State<EditarClienteScreen>
         leading: IconButton(
           icon: Icon(Icons.arrow_back, color: _secondaryColor),
           onPressed: () {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (context) => const ClientesScreen()),
-            );
+            Navigator.pop(context); // Cambiar pushReplacement por pop
           },
           tooltip: 'Volver a Clientes',
         ),

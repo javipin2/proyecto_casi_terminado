@@ -9,6 +9,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:reserva_canchas/providers/sede_provider.dart';
 import '../../../models/cancha.dart';
+import '../../../models/horario.dart';
 
 class EditarCanchaScreen extends StatefulWidget {
   final String canchaId;
@@ -37,7 +38,8 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
   late TextEditingController _ubicacionController;
   late TextEditingController _precioController;
   late TextEditingController _motivoNoDisponibleController;
-  Map<String, Map<String, TextEditingController>> _precioControllers = {};
+  final Map<String, Map<String, TextEditingController>> _precioControllers = {};
+  final Map<String, Map<String, bool>> _habilitadaHorario = {};
 
   // State variables
   bool _techada = false;
@@ -47,7 +49,7 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
   bool _disponible = true;
   XFile? _imagenSeleccionada;
   Uint8List? _imagenBytes;
-  late Map<String, Map<String, double>> _preciosPorHorario;
+  late Map<String, Map<String, Map<String, dynamic>>> _preciosPorHorario;
   bool _isLoading = false;
   bool _isUploadingImage = false;
 
@@ -61,8 +63,10 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
     'sábado',
     'domingo'
   ];
-  final List<String> _horarios =
-      List.generate(19, (index) => '${5 + index}:00').where((h) => int.parse(h.split(':')[0]) <= 23).toList();
+  final List<String> _horarios = List.generate(24, (index) {
+    final timeOfDay = TimeOfDay(hour: (index + 1) % 24, minute: 0);
+    return Horario(hora: timeOfDay).horaFormateada;
+  }).toList();
 
   @override
   void initState() {
@@ -91,33 +95,56 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
     _imagenUrl = widget.cancha.imagen;
     _disponible = widget.cancha.disponible;
 
-    // Inicializar controladores para precios por horario
     for (var day in _daysOfWeek) {
       _precioControllers[day] = {};
+      _habilitadaHorario[day] = {};
       for (var hora in _horarios) {
-        _precioControllers[day]![hora] = TextEditingController(
-          text: widget.cancha.preciosPorHorario[day]?[hora]?.toString() ?? widget.cancha.precio.toString(),
-        );
+        final horaNormalizada = Horario.normalizarHora(hora);
+        final preciosDay = widget.cancha.preciosPorHorario[day];
+        final precio = preciosDay != null && preciosDay[horaNormalizada] != null
+            ? (preciosDay[horaNormalizada] is Map
+                ? ((preciosDay[horaNormalizada] as Map<String, dynamic>)['precio']?.toString() ?? widget.cancha.precio.toString())
+                : preciosDay[horaNormalizada]?.toString() ?? widget.cancha.precio.toString())
+            : widget.cancha.precio.toString();
+        final habilitada = preciosDay != null && preciosDay[horaNormalizada] != null
+            ? (preciosDay[horaNormalizada] is Map ? (preciosDay[horaNormalizada] as Map<String, dynamic>)['habilitada'] ?? true : true)
+            : true;
+        _precioControllers[day]![horaNormalizada] = TextEditingController(text: precio);
+        _habilitadaHorario[day]![horaNormalizada] = habilitada;
       }
     }
   }
 
   void _initializePreciosPorHorario() {
-    _preciosPorHorario = Map.from(widget.cancha.preciosPorHorario);
+    _preciosPorHorario = {};
     for (var day in _daysOfWeek) {
-      if (!_preciosPorHorario.containsKey(day)) {
-        _preciosPorHorario[day] = {};
-        for (var hora in _horarios) {
-          _preciosPorHorario[day]![hora] = widget.cancha.precio;
-        }
+      _preciosPorHorario[day] = {};
+      for (var hora in _horarios) {
+        final horaNormalizada = Horario.normalizarHora(hora);
+        final preciosDay = widget.cancha.preciosPorHorario[day];
+        final precio = preciosDay != null && preciosDay[horaNormalizada] != null
+            ? (preciosDay[horaNormalizada] is Map
+                ? (preciosDay[horaNormalizada] as Map<String, dynamic>)['precio'] ?? widget.cancha.precio
+                : preciosDay[horaNormalizada] ?? widget.cancha.precio)
+            : widget.cancha.precio;
+        final habilitada = preciosDay != null && preciosDay[horaNormalizada] != null
+            ? (preciosDay[horaNormalizada] is Map ? (preciosDay[horaNormalizada] as Map<String, dynamic>)['habilitada'] ?? true : true)
+            : true;
+        _preciosPorHorario[day]![horaNormalizada] = {
+          'precio': precio,
+          'habilitada': habilitada,
+        };
       }
     }
   }
 
   void _updatePrecioControllers(String day) {
     for (var hora in _horarios) {
-      _precioControllers[day]![hora]?.text =
-          _preciosPorHorario[day]![hora]?.toString() ?? widget.cancha.precio.toString();
+      final horaNormalizada = Horario.normalizarHora(hora);
+      final precio = _preciosPorHorario[day]![horaNormalizada]?['precio']?.toString() ?? widget.cancha.precio.toString();
+      final habilitada = _preciosPorHorario[day]![horaNormalizada]?['habilitada'] ?? true;
+      _precioControllers[day]![horaNormalizada]?.text = precio;
+      _habilitadaHorario[day]![horaNormalizada] = habilitada;
     }
   }
 
@@ -314,7 +341,7 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
                 ),
                 const SizedBox(width: 12),
                 Text(
-                  "Imagen de la Cancha",
+                  "Imagen de la Canal",
                   style: GoogleFonts.montserrat(
                     fontWeight: FontWeight.w600,
                     fontSize: 16,
@@ -516,11 +543,15 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
         }
       }
 
-      // Actualizar precios desde los controladores
+      // Actualizar precios y habilitada desde los controladores
       for (var day in _daysOfWeek) {
         for (var hora in _horarios) {
-          final value = _precioControllers[day]![hora]!.text;
-          _preciosPorHorario[day]![hora] = double.tryParse(value) ?? 0.0;
+          final horaNormalizada = Horario.normalizarHora(hora);
+          final value = _precioControllers[day]![horaNormalizada]!.text;
+          _preciosPorHorario[day]![horaNormalizada] = {
+            'precio': double.tryParse(value) ?? 0.0,
+            'habilitada': _habilitadaHorario[day]![horaNormalizada]!,
+          };
         }
       }
 
@@ -533,7 +564,7 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
         'techada': _techada,
         'sedeId': _sede,
         'preciosPorHorario': _preciosPorHorario,
-        'disionalble': _disponible,
+        'disponible': _disponible,
         'motivoNoDisponible': _disponible ? null : _motivoNoDisponibleController.text.trim(),
       });
 
@@ -595,7 +626,7 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
     _motivoNoDisponibleController.dispose();
     for (var day in _daysOfWeek) {
       for (var hora in _horarios) {
-        _precioControllers[day]![hora]!.dispose();
+        _precioControllers[day]![Horario.normalizarHora(hora)]!.dispose();
       }
     }
     super.dispose();
@@ -952,7 +983,7 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              "Configuración de Precios",
+              "Configuración de Precios y Disponibilidad",
               style: GoogleFonts.montserrat(
                 fontWeight: FontWeight.w600,
                 fontSize: 16,
@@ -962,7 +993,7 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
             const SizedBox(height: 20),
             DropdownButtonFormField<String>(
               decoration: InputDecoration(
-                labelText: "Día para editar precios",
+                labelText: "Día para editar precios y disponibilidad",
                 prefixIcon: const Icon(Icons.calendar_today, color: Color(0xFF4F46E5)),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
@@ -1034,7 +1065,7 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
                 Icon(Icons.access_time, color: Colors.blue[700], size: 20),
                 const SizedBox(width: 8),
                 Text(
-                  "Precios para ${_selectedDay!}",
+                  "Precios y disponibilidad para ${_selectedDay!}",
                   style: GoogleFonts.montserrat(
                     fontWeight: FontWeight.w600,
                     fontSize: 14,
@@ -1044,7 +1075,14 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
               ],
             ),
             const SizedBox(height: 16),
-            ..._horarios.map((hora) => _buildHorarioPrecio(hora)),
+            SizedBox(
+              height: 400,
+              child: SingleChildScrollView(
+                child: Column(
+                  children: _horarios.map((hora) => _buildHorarioPrecio(hora)).toList(),
+                ),
+              ),
+            ),
           ],
         ),
       ),
@@ -1052,6 +1090,7 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
   }
 
   Widget _buildHorarioPrecio(String hora) {
+    final horaNormalizada = Horario.normalizarHora(hora);
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(
@@ -1080,7 +1119,7 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
           const SizedBox(width: 12),
           Expanded(
             child: TextFormField(
-              controller: _precioControllers[_selectedDay]![hora],
+              controller: _precioControllers[_selectedDay]![horaNormalizada],
               decoration: InputDecoration(
                 prefixText: "\$ ",
                 border: OutlineInputBorder(
@@ -1103,12 +1142,30 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
               keyboardType: TextInputType.number,
               style: GoogleFonts.montserrat(fontSize: 14),
               onChanged: (value) {
-                _preciosPorHorario[_selectedDay]![hora] = double.tryParse(value) ?? 0.0;
+                _preciosPorHorario[_selectedDay]![horaNormalizada]!['precio'] = double.tryParse(value) ?? 0.0;
               },
               validator: (value) {
                 final parsed = double.tryParse(value ?? '');
                 return parsed == null || parsed < 0 ? "Precio inválido" : null;
               },
+            ),
+          ),
+          const SizedBox(width: 12),
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.grey[50],
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.grey[200]!),
+            ),
+            child: Switch(
+              value: _habilitadaHorario[_selectedDay]![horaNormalizada]!,
+              onChanged: (value) {
+                setState(() {
+                  _habilitadaHorario[_selectedDay]![horaNormalizada] = value;
+                  _preciosPorHorario[_selectedDay]![horaNormalizada]!['habilitada'] = value;
+                });
+              },
+              activeColor: const Color(0xFF4F46E5),
             ),
           ),
         ],

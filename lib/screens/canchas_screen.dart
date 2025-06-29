@@ -14,11 +14,11 @@ class CanchasScreen extends StatefulWidget {
   State<CanchasScreen> createState() => _CanchasScreenState();
 }
 
-class _CanchasScreenState extends State<CanchasScreen>
-    with SingleTickerProviderStateMixin {
+class _CanchasScreenState extends State<CanchasScreen> with SingleTickerProviderStateMixin {
   late Future<void> _futureCanchas;
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
+  bool _hasInitiallyLoaded = false;
 
   @override
   void initState() {
@@ -58,7 +58,7 @@ class _CanchasScreenState extends State<CanchasScreen>
           : sedeProvider.sedeNames.isNotEmpty
               ? sedeProvider.sedeNames.first
               : '';
-      
+
       if (selectedSedeName.isNotEmpty) {
         String sedeId = sedeProvider.sedes.firstWhere(
           (sede) => sede['nombre'] == selectedSedeName,
@@ -106,18 +106,28 @@ class _CanchasScreenState extends State<CanchasScreen>
           margin: const EdgeInsets.all(12),
         ),
       );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _hasInitiallyLoaded = true;
+        });
+      }
     }
+  }
+
+  void _reloadCanchas() {
+    setState(() {
+      _hasInitiallyLoaded = false;
+      _futureCanchas = _loadCanchas();
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final sedeProvider = Provider.of<SedeProvider>(context);
     final canchaProvider = Provider.of<CanchaProvider>(context);
-
-    // Recargar canchas al regresar a la pantalla
-    if (canchaProvider.canchas.isEmpty && !canchaProvider.isLoading) {
-      _futureCanchas = _loadCanchas();
-    }
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isWeb = screenWidth > 600; // Considerar web si el ancho es > 600px
 
     return Container(
       decoration: const BoxDecoration(
@@ -141,16 +151,6 @@ class _CanchasScreenState extends State<CanchasScreen>
                 Hero(
                   tag: 'logo',
                   child: Image.asset('assets/img1.png', height: 40, width: 40),
-                ),
-                const SizedBox(width: 12),
-                const Text(
-                  'La jugada',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontFamily: "Pacifico",
-                    fontWeight: FontWeight.w500,
-                    color: Color(0xFF424242),
-                  ),
                 ),
               ],
             ),
@@ -226,7 +226,7 @@ class _CanchasScreenState extends State<CanchasScreen>
               );
             }
 
-            if (canchaProvider.canchas.isEmpty) {
+            if (canchaProvider.canchas.isEmpty && _hasInitiallyLoaded) {
               return Center(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -244,11 +244,7 @@ class _CanchasScreenState extends State<CanchasScreen>
                     ),
                     const SizedBox(height: 10),
                     TextButton(
-                      onPressed: () {
-                        setState(() {
-                          _futureCanchas = _loadCanchas();
-                        });
-                      },
+                      onPressed: _reloadCanchas,
                       child: Text(
                         "Reintentar",
                         style: TextStyle(color: Colors.green.shade700),
@@ -261,7 +257,10 @@ class _CanchasScreenState extends State<CanchasScreen>
 
             return AnimationLimiter(
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                padding: EdgeInsets.symmetric(
+                  horizontal: isWeb ? screenWidth * 0.05 : 20,
+                  vertical: 16,
+                ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -270,9 +269,9 @@ class _CanchasScreenState extends State<CanchasScreen>
                       child: FadeTransition(
                         opacity: _fadeAnimation,
                         child: Text(
-                          'Canchas disponibles',
+                          'Canchas Disponibles',
                           style: TextStyle(
-                            fontSize: 20,
+                            fontSize: isWeb ? 24 : 20,
                             fontWeight: FontWeight.w600,
                             color: Colors.grey.shade800,
                             letterSpacing: 0.5,
@@ -283,50 +282,91 @@ class _CanchasScreenState extends State<CanchasScreen>
                     Expanded(
                       child: RefreshIndicator(
                         onRefresh: () async {
-                          setState(() {
-                            _futureCanchas = _loadCanchas();
-                          });
+                          _reloadCanchas();
                         },
                         color: Colors.green.shade400,
                         backgroundColor: Colors.white,
-                        child: AnimationLimiter(
-                          child: ListView.builder(
-                            itemCount: canchaProvider.canchas.length,
-                            physics: const BouncingScrollPhysics(),
-                            itemBuilder: (context, index) {
-                              final cancha = canchaProvider.canchas[index];
-                              return AnimationConfiguration.staggeredList(
-                                position: index,
-                                duration: const Duration(milliseconds: 375),
-                                child: SlideAnimation(
-                                  verticalOffset: 50.0,
-                                  child: FadeInAnimation(
-                                    child: Padding(
-                                      padding: const EdgeInsets.only(bottom: 16.0),
-                                      child: CanchaCard(
-                                        cancha: cancha,
-                                        onTap: () {
-                                          Navigator.push(
-                                            context,
-                                            PageRouteBuilder(
-                                              pageBuilder: (_, animation, __) {
-                                                return FadeTransition(
-                                                  opacity: animation,
-                                                  child: HorariosScreen(cancha: cancha),
-                                                );
-                                              },
-                                              transitionDuration: const Duration(milliseconds: 300),
-                                            ),
-                                          );
-                                        },
+                        child: isWeb
+                            ? GridView.builder(
+                                gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                                  maxCrossAxisExtent: 450,
+                                  mainAxisSpacing: 16,
+                                  crossAxisSpacing: 16,
+                                  childAspectRatio: 0.75,
+                                ),
+                                physics: const BouncingScrollPhysics(),
+                                itemCount: canchaProvider.canchas.length,
+                                itemBuilder: (context, index) {
+                                  final cancha = canchaProvider.canchas[index];
+                                  return AnimationConfiguration.staggeredGrid(
+                                    position: index,
+                                    duration: const Duration(milliseconds: 375),
+                                    columnCount: (screenWidth / 450).floor(),
+                                    child: SlideAnimation(
+                                      verticalOffset: 50.0,
+                                      child: FadeInAnimation(
+                                        child: CanchaCard(
+                                          cancha: cancha,
+                                          onTap: () async {
+                                            await Navigator.push(
+                                              context,
+                                              PageRouteBuilder(
+                                                pageBuilder: (_, animation, __) {
+                                                  return FadeTransition(
+                                                    opacity: animation,
+                                                    child: HorariosScreen(cancha: cancha),
+                                                  );
+                                                },
+                                                transitionDuration:
+                                                    const Duration(milliseconds: 300),
+                                              ),
+                                            );
+                                            _reloadCanchas();
+                                          },
+                                        ),
                                       ),
                                     ),
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                        ),
+                                  );
+                                },
+                              )
+                            : ListView.builder(
+                                itemCount: canchaProvider.canchas.length,
+                                physics: const BouncingScrollPhysics(),
+                                itemBuilder: (context, index) {
+                                  final cancha = canchaProvider.canchas[index];
+                                  return AnimationConfiguration.staggeredList(
+                                    position: index,
+                                    duration: const Duration(milliseconds: 375),
+                                    child: SlideAnimation(
+                                      verticalOffset: 50.0,
+                                      child: FadeInAnimation(
+                                        child: Padding(
+                                          padding: const EdgeInsets.only(bottom: 16.0),
+                                          child: CanchaCard(
+                                            cancha: cancha,
+                                            onTap: () async {
+                                              await Navigator.push(
+                                                context,
+                                                PageRouteBuilder(
+                                                  pageBuilder: (_, animation, __) {
+                                                    return FadeTransition(
+                                                      opacity: animation,
+                                                      child: HorariosScreen(cancha: cancha),
+                                                    );
+                                                  },
+                                                  transitionDuration:
+                                                      const Duration(milliseconds: 300),
+                                                ),
+                                              );
+                                              _reloadCanchas();
+                                            },
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
                       ),
                     ),
                   ],

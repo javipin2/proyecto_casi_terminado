@@ -16,8 +16,7 @@ class CanchaCard extends StatefulWidget {
   State<CanchaCard> createState() => _CanchaCardState();
 }
 
-class _CanchaCardState extends State<CanchaCard>
-    with SingleTickerProviderStateMixin {
+class _CanchaCardState extends State<CanchaCard> with SingleTickerProviderStateMixin {
   late AnimationController _controller;
   late Animation<double> _scaleAnimation;
   bool _isHovering = false;
@@ -29,9 +28,9 @@ class _CanchaCardState extends State<CanchaCard>
   static const _imageBorderRadius = 16.0;
   static const _chipBorderRadius = 20.0;
   static const _buttonBorderRadius = 16.0;
-  static const _cardPadding = 20.0;
+  static const _cardPadding = 20.0; // Agregada para corregir el error
   static const _contentSpacing = 12.0;
-  
+
   // Colores unificados
   static const _primaryColor = Color(0xFF2E7D32);
   static const _surfaceColor = Color(0xFFFAFAFA);
@@ -49,8 +48,7 @@ class _CanchaCardState extends State<CanchaCard>
     _scaleAnimation = Tween<double>(begin: 1.0, end: 1.02).animate(
       CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic),
     );
-    
-    // Solo para debug, se puede remover en producción
+
     debugPrint('🏟️ CanchaCard iniciada para: ${widget.cancha.nombre}');
     debugPrint('🖼️ URL de imagen: ${widget.cancha.imagen}');
     debugPrint('🔗 Es URL de red: ${widget.cancha.imagen.startsWith('http')}');
@@ -71,46 +69,58 @@ class _CanchaCardState extends State<CanchaCard>
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
     final isCompact = screenWidth < 400;
-    
+    final maxCardWidth = screenWidth > 600 ? 400.0 : screenWidth * 0.9;
+
     return MouseRegion(
       onEnter: (_) => _onHoverChanged(true),
       onExit: (_) => _onHoverChanged(false),
       child: ScaleTransition(
         scale: _scaleAnimation,
-        child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(_cardBorderRadius),
-            boxShadow: [
-              BoxShadow(
-                color: _isHovering ? _cardShadowColor.withValues(alpha: 0.15) : _cardShadowColor,
-                blurRadius: _isHovering ? 20 : 8,
-                offset: Offset(0, _isHovering ? 8 : 4),
-                spreadRadius: 0,
+        child: Center(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: maxCardWidth),
+            child: Container(
+              margin: EdgeInsets.symmetric(
+                horizontal: screenWidth * 0.02,
+                vertical: 8.0,
               ),
-            ],
-          ),
-          child: Card(
-            elevation: 0,
-            margin: EdgeInsets.zero,
-            color: _surfaceColor,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(_cardBorderRadius),
-              side: BorderSide(
-                color: _isHovering ? _primaryColor.withValues(alpha: 0.1) : Colors.transparent,
-                width: 1.5,
-              ),
-            ),
-            child: InkWell(
-              onTap: widget.onTap,
-              borderRadius: BorderRadius.circular(_cardBorderRadius),
-              splashColor: _primaryColor.withValues(alpha: 0.08),
-              highlightColor: _primaryColor.withValues(alpha: 0.04),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildImageSection(isCompact),
-                  _buildContentSection(isCompact),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(_cardBorderRadius),
+                boxShadow: [
+                  BoxShadow(
+                    color: _isHovering
+                        ? _cardShadowColor.withValues(alpha: 0.15)
+                        : _cardShadowColor,
+                    blurRadius: _isHovering ? 20 : 8,
+                    offset: Offset(0, _isHovering ? 8 : 4),
+                    spreadRadius: 0,
+                  ),
                 ],
+              ),
+              child: Card(
+                elevation: 0,
+                margin: EdgeInsets.zero,
+                color: _surfaceColor,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(_cardBorderRadius),
+                  side: BorderSide(
+                    color: _isHovering ? _primaryColor.withValues(alpha: 0.1) : Colors.transparent,
+                    width: 1.5,
+                  ),
+                ),
+                child: InkWell(
+                  onTap: widget.onTap,
+                  borderRadius: BorderRadius.circular(_cardBorderRadius),
+                  splashColor: _primaryColor.withValues(alpha: 0.08),
+                  highlightColor: _primaryColor.withValues(alpha: 0.04),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildImageSection(isCompact, maxCardWidth),
+                      _buildContentSection(isCompact),
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
@@ -119,14 +129,11 @@ class _CanchaCardState extends State<CanchaCard>
     );
   }
 
-  Widget _buildImageSection(bool isCompact) {
-    final imageHeight = isCompact ? 160.0 : 200.0;
-    
+  Widget _buildImageSection(bool isCompact, double maxCardWidth) {
     return ClipRRect(
       borderRadius: const BorderRadius.vertical(top: Radius.circular(_imageBorderRadius)),
-      child: SizedBox(
-        height: imageHeight,
-        width: double.infinity,
+      child: AspectRatio(
+        aspectRatio: 16 / 9,
         child: Stack(
           fit: StackFit.expand,
           children: [
@@ -284,7 +291,7 @@ class _CanchaCardState extends State<CanchaCard>
   Widget _buildTipoChip() {
     final isTechada = widget.cancha.techada;
     final color = isTechada ? Colors.indigo : Colors.orange;
-    
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
@@ -327,8 +334,6 @@ class _CanchaCardState extends State<CanchaCard>
       baseColor: Colors.grey.shade200,
       highlightColor: Colors.grey.shade50,
       child: Container(
-        height: double.infinity,
-        width: double.infinity,
         decoration: const BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.vertical(top: Radius.circular(_imageBorderRadius)),
@@ -346,7 +351,6 @@ class _CanchaCardState extends State<CanchaCard>
               fit: BoxFit.cover,
               loadingBuilder: (context, child, loadingProgress) {
                 if (loadingProgress == null) {
-                  // Solo actualizar estado si no se ha cargado antes
                   if (!_imageLoaded && !_imageError) {
                     debugPrint('✅ Imagen cargada para: ${widget.cancha.nombre}');
                     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -360,7 +364,6 @@ class _CanchaCardState extends State<CanchaCard>
                   }
                   return child;
                 } else {
-                  // Solo mostrar mensaje de carga la primera vez
                   if (!_imageLoaded && !_imageError) {
                     debugPrint('⏳ Cargando imagen para: ${widget.cancha.nombre}');
                   }
@@ -368,7 +371,6 @@ class _CanchaCardState extends State<CanchaCard>
                 }
               },
               errorBuilder: (context, error, stackTrace) {
-                // Solo actualizar estado si no se ha marcado error antes
                 if (!_imageError) {
                   debugPrint('❌ Error cargando imagen para ${widget.cancha.nombre}: $error');
                   WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -384,8 +386,8 @@ class _CanchaCardState extends State<CanchaCard>
               },
             )
           : Image.asset(
-              widget.cancha.imagen.isNotEmpty 
-                  ? widget.cancha.imagen 
+              widget.cancha.imagen.isNotEmpty
+                  ? widget.cancha.imagen
                   : 'assets/cancha_demo.png',
               fit: BoxFit.cover,
               errorBuilder: (context, error, stackTrace) {
@@ -398,8 +400,6 @@ class _CanchaCardState extends State<CanchaCard>
 
   Widget _buildErrorImage(String message, IconData icon) {
     return Container(
-      height: double.infinity,
-      width: double.infinity,
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,

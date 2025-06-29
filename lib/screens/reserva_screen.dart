@@ -8,7 +8,6 @@ import 'package:crypto/crypto.dart';
 import 'dart:convert';
 import 'dart:async';
 import '../models/reserva.dart';
-import 'package:flutter/foundation.dart';
 
 class ReservaScreen extends StatefulWidget {
   final Reserva reserva;
@@ -39,7 +38,7 @@ class _ReservaScreenState extends State<ReservaScreen>
   String? _referenciaActual;
   int _intentosVerificacion = 0;
   static const int _maxIntentos =
-      20; // 5 minutos de verificación (cada 15 segundos)
+      30; // 5 minutos de verificación (cada 15 segundos)
 
   StreamSubscription? _cancelacionListener;
 
@@ -118,9 +117,9 @@ class _ReservaScreenState extends State<ReservaScreen>
 
   // Función mejorada para verificar el pago con Wompi
   Future<Map<String, dynamic>> verificarPagoWompi(String referencia) async {
-    const String privateKey = 'prv_test_VAdwOa5pjSAspqzu3PvfjiPJZEuK1Nsi';
+    const String privateKey = 'prv_prod_hppWNOcSdw3YZU1xrd45BlA6sAFCWlZv';
     final url = Uri.parse(
-        'https://sandbox.wompi.co/v1/transactions?reference=$referencia');
+        'https://production.wompi.co/v1/transactions?reference=$referencia');
 
     try {
       final response = await http.get(
@@ -166,9 +165,9 @@ class _ReservaScreenState extends State<ReservaScreen>
     required int valorEnPesos,
     required String referencia,
   }) async {
-    const String publicKey = 'pub_test_B3OQlsCmfebI3TnPfjcLdr994aC83tss';
+    const String publicKey = 'pub_prod_ydyN7EKUPBJX2wqkxudaN27c1uyuu80b';
     const String integrityKey =
-        'test_integrity_emhhIGsqGPwxmauVNpLWZy6mOUSdCrJA';
+        'prod_integrity_QR01OtCQple7s1LcdKFUQVDMmud784Kk';
     final int valorEnCentavos = valorEnPesos * 100;
     const String redirectUrl = 'https://proyecto-20bae.web.app/';
     const String currency = 'COP';
@@ -280,7 +279,7 @@ class _ReservaScreenState extends State<ReservaScreen>
           _mostrarTimeoutVerificacion();
         }
       } catch (e) {
-        print('Error en verificación automática: $e');
+        ('Error en verificación automática: $e');
       }
     });
   }
@@ -297,7 +296,7 @@ class _ReservaScreenState extends State<ReservaScreen>
         'pago_iniciado': FieldValue.serverTimestamp(),
       });
     } catch (e) {
-      print('Error al actualizar documento temporal: $e');
+      debugPrint('Error al actualizar documento temporal: $e');
     }
   }
 
@@ -352,7 +351,7 @@ class _ReservaScreenState extends State<ReservaScreen>
       // Guardar reserva definitiva
       await _guardarReservaFinal();
     } catch (e) {
-      print('Error al procesar pago exitoso: $e');
+      debugPrint('Error al procesar pago exitoso: $e');
       if (mounted) {
         _mostrarError('Error al procesar el pago: $e');
       }
@@ -679,7 +678,7 @@ class _ReservaScreenState extends State<ReservaScreen>
         return {
           'disponible': false,
           'mensaje':
-              'Otro usuario está procesando el pago para esta cancha en este momento'
+              'Cancha bloqueada por 5 minutos porque otro usuario está procesando el pago para esta cancha en este momento. Si el pago no se completa se desbloquea automaticamenete'
         };
       }
 
@@ -771,7 +770,7 @@ class _ReservaScreenState extends State<ReservaScreen>
 
       return referencia;
     } catch (e) {
-      print('Error al crear bloqueo temporal: $e');
+      debugPrint('Error al crear bloqueo temporal: $e');
       return null;
     }
   }
@@ -787,7 +786,7 @@ class _ReservaScreenState extends State<ReservaScreen>
         'liberado_en': FieldValue.serverTimestamp(),
       });
     } catch (e) {
-      print('Error al liberar bloqueo: $e');
+      debugPrint('Error al liberar bloqueo: $e');
     }
   }
 
@@ -891,15 +890,17 @@ class _ReservaScreenState extends State<ReservaScreen>
 
   // Método para calcular el precio total dinámico de la cancha
   double _calcularPrecioTotalCancha() {
-    final String day =
-        DateFormat('EEEE', 'es').format(widget.reserva.fecha).toLowerCase();
-    final String horaStr = '${widget.reserva.horario.hora.hour}:00';
-    final Map<String, double>? dayPrices =
-        widget.reserva.cancha.preciosPorHorario[day];
-    return dayPrices != null && dayPrices.containsKey(horaStr)
-        ? dayPrices[horaStr] ?? widget.reserva.cancha.precio
-        : widget.reserva.cancha.precio;
-  }
+  final String day =
+      DateFormat('EEEE', 'es').format(widget.reserva.fecha).toLowerCase();
+  final String horaStr = '${widget.reserva.horario.hora.hour}:00';
+  final Map<String, Map<String, dynamic>>? dayPrices =
+      widget.reserva.cancha.preciosPorHorario[day];
+  return dayPrices != null && dayPrices.containsKey(horaStr)
+      ? (dayPrices[horaStr] is Map<String, dynamic>
+          ? (dayPrices[horaStr]!['precio'] as num?)?.toDouble() ?? widget.reserva.cancha.precio
+          : (dayPrices[horaStr] as num?)?.toDouble() ?? widget.reserva.cancha.precio)
+      : widget.reserva.cancha.precio;
+}
 
   @override
   Widget build(BuildContext context) {
@@ -1130,7 +1131,7 @@ class _ReservaScreenState extends State<ReservaScreen>
                                       shape: BoxShape.circle,
                                       boxShadow: [
                                         BoxShadow(
-                                          color: Colors.grey.withOpacity(0.3),
+                                          color: Colors.grey.withValues(alpha: 0.1),
                                           spreadRadius: 1,
                                           blurRadius: 3,
                                           offset: const Offset(0, 2),
@@ -1153,7 +1154,7 @@ class _ReservaScreenState extends State<ReservaScreen>
                                       borderRadius: BorderRadius.circular(12),
                                     ),
                                     elevation: _datosValidos ? 4 : 1,
-                                    shadowColor: Colors.grey.withOpacity(0.5),
+                                    shadowColor: Colors.grey.withValues(alpha: 0.5),
                                   ),
                                   child: Text(
                                     _datosValidos ? 'CONFIRMAR RESERVA' : 'COMPLETA LOS DATOS',

@@ -144,7 +144,7 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
                         description: 'Análisis y conteo de tu negocio.',
                         color: Colors.red,
                         context: context,
-                        screen: const GraficasScreen(),
+                        screen: const EstadisticasScreen(),
                       ),
                       _buildAdminCard(
                         icon: Icons.schedule,
@@ -256,7 +256,7 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
               Navigator.pop(context);
               Navigator.push(
                 context,
-                MaterialPageRoute(builder: (context) => const GraficasScreen()),
+                MaterialPageRoute(builder: (context) => const EstadisticasScreen()),
               );
             },
           ),

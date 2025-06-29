@@ -72,11 +72,12 @@ class _DetallesScreenState extends State<DetallesScreen>
     final String day =
         DateFormat('EEEE', 'es').format(widget.fecha).toLowerCase();
     final String horaStr = '${widget.horario.hora.hour}:00';
-    final Map<String, double>? dayPrices = widget.cancha.preciosPorHorario[day];
-    final double precioCompleto =
-        dayPrices != null && dayPrices.containsKey(horaStr)
-            ? dayPrices[horaStr] ?? widget.cancha.precio
-            : widget.cancha.precio;
+    final Map<String, Map<String, dynamic>>? dayPrices = widget.cancha.preciosPorHorario[day];
+    final double precioCompleto = dayPrices != null && dayPrices.containsKey(horaStr)
+        ? (dayPrices[horaStr] is Map<String, dynamic>
+            ? (dayPrices[horaStr]!['precio'] as num?)?.toDouble() ?? widget.cancha.precio
+            : (dayPrices[horaStr] as num?)?.toDouble() ?? widget.cancha.precio)
+        : widget.cancha.precio;
 
     // Abono mínimo como el 30% del precio completo, redondeado al entero más cercano
     final double abono = 20000;
@@ -181,11 +182,6 @@ class _DetallesScreenState extends State<DetallesScreen>
                                   const Padding(
                                     padding: EdgeInsets.symmetric(vertical: 10),
                                     child: Divider(height: 1),
-                                  ),
-                                  _buildInfoRow(
-                                    Icons.location_on_rounded,
-                                    'Sede',
-                                    widget.sede,
                                   ),
                                 ],
                               ),
@@ -467,9 +463,11 @@ class _DetallesScreenState extends State<DetallesScreen>
     final String day =
         DateFormat('EEEE', 'es').format(widget.fecha).toLowerCase();
     final String horaStr = '${widget.horario.hora.hour}:00';
-    final Map<String, double>? dayPrices = widget.cancha.preciosPorHorario[day];
+    final Map<String, Map<String, dynamic>>? dayPrices = widget.cancha.preciosPorHorario[day];
     return dayPrices != null && dayPrices.containsKey(horaStr)
-        ? dayPrices[horaStr] ?? widget.cancha.precio
+        ? (dayPrices[horaStr] is Map<String, dynamic>
+            ? (dayPrices[horaStr]!['precio'] as num?)?.toDouble() ?? widget.cancha.precio
+            : (dayPrices[horaStr] as num?)?.toDouble() ?? widget.cancha.precio)
         : widget.cancha.precio;
   }
 }

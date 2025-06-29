@@ -26,9 +26,9 @@ class ReservaDetallesScreen extends StatelessWidget {
     final String fechaStr = DateFormat('yyyy-MM-dd').format(fecha);
     final String horaNormalizada = Horario.normalizarHora(horario.horaFormateada);
     final String reservaId =
-        '${fechaStr}_${cancha.id}_${horaNormalizada}_${sede}';
+        '${fechaStr}_${cancha.id}_${horaNormalizada}_$sede';
 
-    print('🔍 Buscando reserva con ID: $reservaId');
+    debugPrint('🔍 Buscando reserva con ID: $reservaId');
 
     try {
       // Intento 1: Buscar por ID determinista
@@ -38,12 +38,12 @@ class ReservaDetallesScreen extends StatelessWidget {
           .get();
 
       if (docSnapshot.exists) {
-        print('✅ Reserva encontrada con ID: $reservaId');
+        debugPrint('✅ Reserva encontrada con ID: $reservaId');
         return Reserva.fromFirestoreWithCanchas(docSnapshot, {cancha.id: cancha});
       }
 
       // Intento 2: Buscar por campos
-      print('⚠️ No se encontró reserva con ID, buscando por campos...');
+      debugPrint('⚠️ No se encontró reserva con ID, buscando por campos...');
       final querySnapshot = await FirebaseFirestore.instance
           .collection('reservas')
           .where('fecha', isEqualTo: fechaStr)
@@ -54,15 +54,15 @@ class ReservaDetallesScreen extends StatelessWidget {
           .get();
 
       if (querySnapshot.docs.isNotEmpty) {
-        print('✅ Reserva encontrada por campos');
+        debugPrint('✅ Reserva encontrada por campos');
         return Reserva.fromFirestoreWithCanchas(
             querySnapshot.docs.first, {cancha.id: cancha});
       }
 
-      print('❌ No se encontró ninguna reserva');
+      debugPrint('❌ No se encontró ninguna reserva');
       return null;
     } catch (e) {
-      print('🔥 Error al cargar reserva: $e');
+      debugPrint('🔥 Error al cargar reserva: $e');
       throw Exception('Error al cargar reserva: $e');
     }
   }

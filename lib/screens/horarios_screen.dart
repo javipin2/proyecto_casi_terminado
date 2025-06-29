@@ -29,6 +29,7 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
   final Map<String, QuerySnapshot> _reservasSnapshots = {};
   Timer? _debounceTimer;
   Cancha? _updatedCancha;
+  Timer? _updateTimer;
 
   late AnimationController _fadeController;
   late Animation<double> _fadeAnimation;
@@ -107,6 +108,14 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
 
     _fadeController.forward();
     _slideController.forward();
+
+    // Agregar timer para actualizar horarios vencidos cada minuto
+    _updateTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
+      if (mounted && DateFormat('yyyy-MM-dd').format(_selectedDate) == DateFormat('yyyy-MM-dd').format(DateTime.now())) {
+        // Solo actualizar si estamos viendo el día de hoy
+        _refreshHorariosEstados();
+      }
+    });
   }
 
   @override
@@ -121,6 +130,7 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
     _fadeController.dispose();
     _slideController.dispose();
     _debounceTimer?.cancel();
+    _updateTimer?.cancel();
     super.dispose();
   }
 
@@ -130,73 +140,97 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
   }
 
   Future<void> _loadHorarios() async {
-    if (!mounted) return;
+    if (_debounceTimer?.isActive ?? false) _debounceTimer!.cancel();
+    _debounceTimer = Timer(const Duration(milliseconds: 300), () async {
+      if (!mounted) return;
 
-    setState(() {
-      _isLoading = true;
-    });
+      setState(() {
+        _isLoading = true;
+        horarios.clear();
+      });
 
-    _debounceTimer?.cancel();
+      try {
+        final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
+        Map<String, dynamic> selectedSede;
+        if (sedeProvider.selectedSede.isNotEmpty) {
+          // Buscar la sede completa en sedes usando el nombre o ID seleccionado
+          selectedSede = sedeProvider.sedes.firstWhere(
+            (sede) => sede['id'] == sedeProvider.selectedSede || sede['nombre'] == sedeProvider.selectedSede,
+            orElse: () => {'id': widget.cancha.sedeId}, // Fallback si no se encuentra
+          );
+        } else {
+          // Si no hay sede seleccionada, buscar por sedeId de la cancha
+          selectedSede = sedeProvider.sedes.firstWhere(
+            (sede) => sede['id'] == widget.cancha.sedeId,
+            orElse: () => {'id': widget.cancha.sedeId},
+          );
+        }
+        final sedeId = selectedSede['id'] as String;
 
-    final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
-    final sedeSeleccionada = sedeProvider.selectedSede;
-    final sede = sedeProvider.sedes.firstWhere(
-      (s) => s['nombre'] == sedeSeleccionada,
-      orElse: () => {'id': '', 'nombre': sedeSeleccionada},
-    );
-    final sedeId = sede['id'] as String;
+        final snapshotKey = '$_selectedDate-${widget.cancha.id}-$sedeId';
+        QuerySnapshot? reservasSnapshot = _reservasSnapshots[snapshotKey];
 
-    final snapshotKey = '${DateFormat('yyyy-MM-dd').format(_selectedDate)}_${widget.cancha.id}_$sedeId';
+        if (reservasSnapshot == null) {
+          reservasSnapshot = await FirebaseFirestore.instance
+              .collection('reservas')
+              .where('fecha', isEqualTo: DateFormat('yyyy-MM-dd').format(_selectedDate))
+              .where('cancha_id', isEqualTo: widget.cancha.id)
+              .where('sede', isEqualTo: sedeId)
+              .get();
+          _reservasSnapshots[snapshotKey] = reservasSnapshot;
+        }
 
-    try {
-      QuerySnapshot? reservasSnapshot = _reservasSnapshots[snapshotKey];
+        final nuevosHorarios = await Horario.generarHorarios(
+          fecha: _selectedDate,
+          canchaId: widget.cancha.id,
+          sede: sedeId,
+          reservasSnapshot: reservasSnapshot,
+          cancha: _updatedCancha ?? widget.cancha,
+        );
 
-      if (reservasSnapshot == null) {
-        reservasSnapshot = await FirebaseFirestore.instance
-            .collection('reservas')
-            .where('fecha', isEqualTo: DateFormat('yyyy-MM-dd').format(_selectedDate))
-            .where('cancha_id', isEqualTo: widget.cancha.id)
-            .where('sede', isEqualTo: sedeId)
-            .get();
-        _reservasSnapshots[snapshotKey] = reservasSnapshot;
-        print(
-            'Reservas encontradas para sedeId=$sedeId, canchaId=${widget.cancha.id}, fecha=${DateFormat('yyyy-MM-dd').format(_selectedDate)}: ${reservasSnapshot.docs.length}');
-        for (var doc in reservasSnapshot.docs) {
-          print('Reserva ${doc.id}: ${doc.data()}');
+        if (mounted) {
+          setState(() {
+            horarios = nuevosHorarios;
+            _isLoading = false;
+          });
+
+          // Log para debug
+          final disponibles = horarios.where((h) => h.estado == EstadoHorario.disponible).length;
+          final reservados = horarios.where((h) => h.estado == EstadoHorario.reservado).length;
+          final vencidos = horarios.where((h) => h.estado == EstadoHorario.vencido).length;
+
+          print('📊 Horarios cargados: $disponibles disponibles, $reservados reservados, $vencidos vencidos');
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error al cargar horarios: $e')),
+          );
         }
       }
+    });
+  }
 
-      if (!mounted) return;
+  // Método para refrescar solo los estados sin recargar desde Firebase
+  void _refreshHorariosEstados() {
+    if (!mounted) return;
 
-      final nuevosHorarios = await Horario.generarHorarios(
-        fecha: _selectedDate,
-        canchaId: widget.cancha.id,
-        sede: sedeId,
-        reservasSnapshot: reservasSnapshot,
-      );
+    bool hayCambios = false; // Corrección de "hayChangios" a "hayCambios"
+    for (int i = 0; i < horarios.length; i++) {
+      final horario = horarios[i];
+      if (horario.estado == EstadoHorario.disponible && horario.estaVencida(_selectedDate)) {
+        horarios[i] = Horario(hora: horario.hora, estado: EstadoHorario.vencido);
+        hayCambios = true;
+      }
+    }
 
-      if (!mounted) return;
-
+    if (hayCambios && mounted) {
       setState(() {
-        horarios = nuevosHorarios;
-        _isLoading = false;
+        // Los horarios ya fueron modificados arriba
       });
-    } catch (e) {
-      if (!mounted) return;
-
-      setState(() {
-        _isLoading = false;
-      });
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error al cargar horarios: $e'),
-          backgroundColor: Colors.red.shade800,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          margin: const EdgeInsets.all(12),
-        ),
-      );
     }
   }
 
@@ -745,181 +779,183 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
   }
 
   Widget _buildHorarioCard(Horario horario, String sedeNombre) {
-    final String day = DateFormat('EEEE', 'es').format(_selectedDate).toLowerCase();
-    final String horaStr = '${horario.hora.hour}:00';
-    final Map<String, double>? dayPrices = (_updatedCancha?.preciosPorHorario ?? widget.cancha.preciosPorHorario)[day];
-    final double precio = dayPrices != null && dayPrices.containsKey(horaStr)
-        ? dayPrices[horaStr] ?? (_updatedCancha?.precio ?? widget.cancha.precio)
-        : _updatedCancha?.precio ?? widget.cancha.precio;
+  final String day = DateFormat('EEEE', 'es').format(_selectedDate).toLowerCase();
+  final String horaStr = horario.horaFormateada; // Usar horaFormateada en lugar de "${horario.hora.hour}:00"
+  final Map<String, Map<String, dynamic>>? dayPrices = (_updatedCancha?.preciosPorHorario ?? widget.cancha.preciosPorHorario)[day];
+  final double precio = dayPrices != null && dayPrices.containsKey(horaStr)
+      ? (dayPrices[horaStr] is Map<String, dynamic>
+          ? (dayPrices[horaStr]!['precio'] as num?)?.toDouble() ?? (_updatedCancha?.precio ?? widget.cancha.precio)
+          : (dayPrices[horaStr] as num?)?.toDouble() ?? (_updatedCancha?.precio ?? widget.cancha.precio))
+      : (_updatedCancha?.precio ?? widget.cancha.precio);
 
-    final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
-    final sede = sedeProvider.sedes.firstWhere(
-      (s) => s['nombre'] == sedeNombre,
-      orElse: () => {'id': '', 'nombre': sedeNombre},
-    );
-    final sedeId = sede['id'] as String;
+  final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
+  final sede = sedeProvider.sedes.firstWhere(
+    (s) => s['nombre'] == sedeNombre,
+    orElse: () => {'id': '', 'nombre': sedeNombre},
+  );
+  final sedeId = sede['id'] as String;
 
-    return AnimatedBuilder(
-      animation: _fadeController,
-      builder: (context, child) {
-        return FadeTransition(
-          opacity: _fadeAnimation,
-          child: child,
-        );
+  return AnimatedBuilder(
+    animation: _fadeController,
+    builder: (context, child) {
+      return FadeTransition(
+        opacity: _fadeAnimation,
+        child: child,
+      );
+    },
+    child: InkWell(
+      onTap: () {
+        if (horario.estado == EstadoHorario.vencido) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('Esta hora ya ha pasado'),
+              backgroundColor: Colors.grey.shade600,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              margin: const EdgeInsets.all(12),
+            ),
+          );
+          return;
+        }
+        if (mounted) {
+          Navigator.push<bool>(
+            context,
+            PageRouteBuilder(
+              pageBuilder: (_, animation, __) {
+                return FadeTransition(
+                  opacity: animation,
+                  child: horario.estado == EstadoHorario.disponible
+                      ? DetallesScreen(
+                          cancha: widget.cancha,
+                          fecha: _selectedDate,
+                          horario: horario,
+                          sede: sedeId,
+                        )
+                      : ReservaDetallesScreen(
+                          cancha: widget.cancha,
+                          fecha: _selectedDate,
+                          horario: horario,
+                          sede: sedeId,
+                        ),
+                );
+              },
+              transitionDuration: const Duration(milliseconds: 300),
+            ),
+          ).then((reservaRealizada) {
+            if (reservaRealizada == true) {
+              _reservasSnapshots.clear();
+              _loadHorarios();
+            }
+          });
+        }
       },
-      child: InkWell(
-        onTap: () {
-          if (horario.estado == EstadoHorario.vencido) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: const Text('Esta hora ya ha pasado'),
-                backgroundColor: Colors.grey.shade600,
-                behavior: SnackBarBehavior.floating,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                margin: const EdgeInsets.all(12),
-              ),
-            );
-            return;
-          }
-          if (mounted) {
-            Navigator.push<bool>(
-              context,
-              PageRouteBuilder(
-                pageBuilder: (_, animation, __) {
-                  return FadeTransition(
-                    opacity: animation,
-                    child: horario.estado == EstadoHorario.disponible
-                        ? DetallesScreen(
-                            cancha: widget.cancha,
-                            fecha: _selectedDate,
-                            horario: horario,
-                            sede: sedeId,
-                          )
-                        : ReservaDetallesScreen(
-                            cancha: widget.cancha,
-                            fecha: _selectedDate,
-                            horario: horario,
-                            sede: sedeId,
-                          ),
-                  );
-                },
-                transitionDuration: const Duration(milliseconds: 300),
-              ),
-            ).then((reservaRealizada) {
-              if (reservaRealizada == true) {
-                _reservasSnapshots.clear();
-                _loadHorarios();
-              }
-            });
-          }
-        },
-        borderRadius: BorderRadius.circular(12),
-        splashColor: horario.estado == EstadoHorario.reservado
-            ? Colors.red.shade100.withAlpha(50)
-            : Colors.green.shade100.withAlpha(50),
-        highlightColor: horario.estado == EstadoHorario.reservado
-            ? Colors.red.shade200.withAlpha(30)
-            : Colors.green.shade200.withAlpha(30),
-        child: Container(
-          decoration: BoxDecoration(
-            gradient: horario.estado == EstadoHorario.reservado
-                ? LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      const Color.fromARGB(255, 134, 134, 134),
-                      const Color.fromARGB(255, 243, 243, 243),
-                    ],
-                  )
-                : null,
+      borderRadius: BorderRadius.circular(12),
+      splashColor: horario.estado == EstadoHorario.reservado
+          ? Colors.red.shade100.withAlpha(50)
+          : Colors.green.shade100.withAlpha(50),
+      highlightColor: horario.estado == EstadoHorario.reservado
+          ? Colors.red.shade200.withAlpha(30)
+          : Colors.green.shade200.withAlpha(30),
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: horario.estado == EstadoHorario.reservado
+              ? LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    const Color.fromARGB(255, 134, 134, 134),
+                    const Color.fromARGB(255, 243, 243, 243),
+                  ],
+                )
+              : null,
+          color: horario.estado == EstadoHorario.disponible
+              ? Colors.white
+              : horario.estado == EstadoHorario.vencido
+                  ? Colors.grey.shade300
+                  : null,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
             color: horario.estado == EstadoHorario.disponible
-                ? Colors.white
-                : horario.estado == EstadoHorario.vencido
-                    ? Colors.grey.shade300
-                    : null,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: horario.estado == EstadoHorario.disponible
-                  ? Colors.green.shade300
-                  : horario.estado == EstadoHorario.reservado
-                      ? const Color.fromARGB(255, 168, 168, 168)
-                      : Colors.grey.shade400,
-              width: 1.5,
-            ),
-            boxShadow: [
-              if (horario.estado == EstadoHorario.disponible)
-                BoxShadow(
-                  color: Colors.green.withAlpha(26),
-                  blurRadius: 5,
-                  offset: const Offset(0, 2),
-                ),
-              if (horario.estado == EstadoHorario.reservado)
-                BoxShadow(
-                  color: const Color.fromARGB(255, 77, 77, 77).withAlpha(50),
-                  blurRadius: 8,
-                  offset: const Offset(0, 3),
-                ),
-            ],
+                ? Colors.green.shade300
+                : horario.estado == EstadoHorario.reservado
+                    ? const Color.fromARGB(255, 168, 168, 168)
+                    : Colors.grey.shade400,
+            width: 1.5,
           ),
-          child: Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  horario.horaFormateada,
+          boxShadow: [
+            if (horario.estado == EstadoHorario.disponible)
+              BoxShadow(
+                color: Colors.green.withAlpha(26),
+                blurRadius: 5,
+                offset: const Offset(0, 2),
+              ),
+            if (horario.estado == EstadoHorario.reservado)
+              BoxShadow(
+                color: const Color.fromARGB(255, 77, 77, 77).withAlpha(50),
+                blurRadius: 8,
+                offset: const Offset(0, 3),
+              ),
+          ],
+        ),
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                horario.horaFormateada,
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: horario.estado == EstadoHorario.disponible
+                      ? Colors.green.shade700
+                      : Colors.black54,
+                  letterSpacing: 0.2,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                NumberFormat.currency(symbol: '\$', decimalDigits: 0).format(precio),
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: horario.estado == EstadoHorario.disponible
+                      ? Colors.green.shade700
+                      : Colors.black54,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: horario.estado == EstadoHorario.disponible
+                      ? Colors.green.shade50
+                      : horario.estado == EstadoHorario.reservado
+                          ? Colors.red.shade50
+                          : Colors.black12,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  horario.estado == EstadoHorario.disponible
+                      ? 'Disponible'
+                      : horario.estado == EstadoHorario.reservado
+                          ? 'Reservado'
+                          : 'Vencido',
                   style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w500,
                     color: horario.estado == EstadoHorario.disponible
                         ? Colors.green.shade700
-                        : Colors.black54,
-                    letterSpacing: 0.2,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  NumberFormat.currency(symbol: '\$', decimalDigits: 0).format(precio),
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: horario.estado == EstadoHorario.disponible
-                        ? Colors.green.shade700
-                        : Colors.black54,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: horario.estado == EstadoHorario.disponible
-                        ? Colors.green.shade50
                         : horario.estado == EstadoHorario.reservado
-                            ? Colors.red.shade50
-                            : Colors.black12,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Text(
-                    horario.estado == EstadoHorario.disponible
-                        ? 'Disponible'
-                        : horario.estado == EstadoHorario.reservado
-                            ? 'Reservado'
-                            : 'Vencido',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w500,
-                      color: horario.estado == EstadoHorario.disponible
-                          ? Colors.green.shade700
-                          : horario.estado == EstadoHorario.reservado
-                              ? const Color.fromARGB(255, 0, 0, 0)
-                              : Colors.black38,
-                    ),
+                            ? const Color.fromARGB(255, 0, 0, 0)
+                            : Colors.black38,
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 }

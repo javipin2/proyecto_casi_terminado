@@ -17,7 +17,7 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isLoading = false;
   bool _obscurePassword = true;
 
-  Future<void> _login() async {
+    Future<void> _login() async {
     setState(() => _isLoading = true);
 
     try {
@@ -39,6 +39,8 @@ class _LoginScreenState extends State<LoginScreen> {
       }
 
       final rol = doc.data()!['rol'];
+
+      if (!mounted) return;
 
       if (rol == 'admin') {
         Navigator.pushReplacement(
@@ -73,6 +75,8 @@ class _LoginScreenState extends State<LoginScreen> {
         );
       }
     } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+
       String errorMessage = "Error al iniciar sesión";
       if (e.code == 'user-not-found') {
         errorMessage = "Usuario no encontrado";
@@ -83,14 +87,18 @@ class _LoginScreenState extends State<LoginScreen> {
         SnackBar(content: Text(errorMessage)),
       );
     } catch (e) {
+      if (!mounted) return;
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text("Error: ${e.toString()}")),
       );
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
-
+  
   @override
   Widget build(BuildContext context) {
     return Scaffold(

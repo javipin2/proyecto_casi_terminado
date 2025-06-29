@@ -37,20 +37,16 @@ class Reserva {
 
   // Calcular el monto total basado en el día y la hora
   static double calcularMontoTotal(Cancha cancha, DateTime fecha, Horario horario) {
-    final String day = DateFormat('EEEE', 'es').format(fecha).toLowerCase();
-    String horaStr = horario.horaFormateada; // Ej. "10:00 PM"
-    try {
-      final time = DateFormat('h:mm a').parse(horaStr);
-      horaStr = '${time.hour.toString().padLeft(2, '0')}:00'; // Ej. "22:00"
-    } catch (e) {
-      debugPrint('Error al parsear hora: $horaStr, error: $e');
-      horaStr = '${horario.hora.hour.toString().padLeft(2, '0')}:00';
-    }
-    final preciosPorDia = cancha.preciosPorHorario[day] ?? {};
-    final precio = preciosPorDia[horaStr] ?? cancha.precio;
-    debugPrint('Calculando monto: Día=$day, Hora=$horaStr, Precio=$precio');
-    return precio;
-  }
+  final String day = DateFormat('EEEE', 'es').format(fecha).toLowerCase();
+  final String horaStr = horario.horaFormateada; // Usar directamente el formato 12h
+  final preciosPorDia = cancha.preciosPorHorario[day] ?? {};
+  final precioData = preciosPorDia[horaStr];
+  final precio = precioData is Map<String, dynamic>
+      ? (precioData['precio'] as num?)?.toDouble() ?? cancha.precio
+      : (precioData as num?)?.toDouble() ?? cancha.precio;
+  debugPrint('Calculando monto: Día=$day, Hora=$horaStr, Precio=$precio');
+  return precio;
+}
 
   // Constructor original para compatibilidad con documentos existentes
   static Future<Reserva> fromFirestore(DocumentSnapshot doc) async {

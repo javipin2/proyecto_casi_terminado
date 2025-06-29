@@ -141,6 +141,7 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
 
   Future<void> _saveChanges() async {
     if (!_formKey.currentState!.validate()) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -160,6 +161,7 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
     }
 
     if (FirebaseAuth.instance.currentUser == null) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -184,6 +186,7 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
           _currentReserva.montoPagado;
 
       if (montoPagado < 20000) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -202,6 +205,7 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
         return;
       }
       if (montoPagado > montoTotal) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -221,6 +225,7 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
       }
 
       if (_selectedTipo == TipoAbono.completo && montoPagado != montoTotal) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -239,6 +244,7 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
         return;
       }
       if (_selectedTipo == TipoAbono.parcial && montoPagado == montoTotal) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -270,6 +276,8 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
         'estado': _selectedTipo == TipoAbono.completo ? 'completo' : 'parcial',
         'confirmada': _currentReserva.confirmada,
       });
+
+      if (!mounted) return;
 
       setState(() {
         _currentReserva = Reserva(
@@ -307,6 +315,7 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
       Navigator.of(context).pop(true);
     } catch (e) {
       debugPrint('Error al actualizar la reserva: $e');
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -378,47 +387,50 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
       ),
     );
 
-    if (confirm == true) {
-      try {
-        await FirebaseFirestore.instance
-            .collection('reservas')
-            .doc(widget.reserva.id)
-            .delete();
+    if (confirm != true) return;
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Reserva eliminada con éxito.',
-              style: GoogleFonts.montserrat(),
-            ),
-            backgroundColor: _secondaryColor,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-            margin: const EdgeInsets.all(12),
-            duration: const Duration(seconds: 4),
+    try {
+      await FirebaseFirestore.instance
+          .collection('reservas')
+          .doc(widget.reserva.id)
+          .delete();
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Reserva eliminada con éxito.',
+            style: GoogleFonts.montserrat(),
           ),
-        );
-        Navigator.of(context).pop(true);
-      } catch (e) {
-        debugPrint('Error al eliminar la reserva: $e');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Error al eliminar la reserva: $e',
-              style: GoogleFonts.montserrat(),
-            ),
-            backgroundColor: Colors.redAccent,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-            margin: const EdgeInsets.all(12),
-            duration: const Duration(seconds: 4),
+          backgroundColor: _secondaryColor,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
           ),
-        );
-      }
+          margin: const EdgeInsets.all(12),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      Navigator.of(context).pop(true);
+    } catch (e) {
+      debugPrint('Error al eliminar la reserva: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Error al eliminar la reserva: $e',
+            style: GoogleFonts.montserrat(),
+          ),
+          backgroundColor: Colors.redAccent,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          margin: const EdgeInsets.all(12),
+          duration: const Duration(seconds: 4),
+        ),
+      );
     }
   }
 
@@ -710,7 +722,7 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
                       decoration: InputDecoration(
                         labelText: 'Nombre',
                         labelStyle: GoogleFonts.montserrat(
-                          color: _primaryColor.withOpacity(0.6),
+                          color: _primaryColor.withValues(alpha: 0.6),
                         ),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
@@ -741,7 +753,7 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
                       decoration: InputDecoration(
                         labelText: 'Teléfono',
                         labelStyle: GoogleFonts.montserrat(
-                          color: _primaryColor.withOpacity(0.6),
+                          color: _primaryColor.withValues(alpha: 0.6),
                         ),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
@@ -773,7 +785,7 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
                       decoration: InputDecoration(
                         labelText: 'Correo',
                         labelStyle: GoogleFonts.montserrat(
-                          color: _primaryColor.withOpacity(0.6),
+                          color: _primaryColor.withValues(alpha: 0.6),
                         ),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
@@ -809,7 +821,7 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
                       decoration: InputDecoration(
                         labelText: 'Abono',
                         labelStyle: GoogleFonts.montserrat(
-                          color: _primaryColor.withOpacity(0.6),
+                          color: _primaryColor.withValues(alpha: 0.6),
                         ),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
@@ -849,7 +861,7 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
                       decoration: InputDecoration(
                         labelText: 'Estado de pago',
                         labelStyle: GoogleFonts.montserrat(
-                          color: _primaryColor.withOpacity(0.6),
+                          color: _primaryColor.withValues(alpha: 0.6),
                         ),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
