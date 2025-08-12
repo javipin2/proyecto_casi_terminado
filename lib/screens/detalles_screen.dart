@@ -30,6 +30,55 @@ class _DetallesScreenState extends State<DetallesScreen>
   late Animation<double> _fadeAnimation;
   late Animation<Offset> _slideAnimation;
 
+  Map<String, dynamic>? _obtenerConfiguracionHorario(String day, String horaStr) {
+    final dayPrices = widget.cancha.preciosPorHorario[day];
+
+    if (dayPrices == null) {
+      debugPrint('🔍 No hay precios para el día: $day');
+      return null;
+    }
+
+    // Normalizar la hora de entrada
+    final horaNormalizada = _normalizarHoraFormato(horaStr);
+    debugPrint('🔍 Hora normalizada de entrada: "$horaNormalizada"');
+
+    // Buscar coincidencia exacta
+    if (dayPrices.containsKey(horaStr)) {
+      final config = dayPrices[horaStr];
+      debugPrint('🔍 Coincidencia exacta encontrada para "$horaStr": $config');
+      debugPrint('🔍 Campo completo específico: ${config?['completo']}');
+      return config;
+    }
+
+    // Buscar con normalización
+    for (final entry in dayPrices.entries) {
+      final llave = entry.key;
+      final llaveNormalizada = _normalizarHoraFormato(llave);
+      debugPrint('🔍 Comparando "$llaveNormalizada" con "$horaNormalizada"');
+
+      if (llaveNormalizada == horaNormalizada) {
+        debugPrint('🔍 Coincidencia encontrada: $llave -> ${entry.value}');
+        debugPrint('🔍 Campo completo específico: ${entry.value?['completo']}');
+        return entry.value;
+      }
+    }
+
+    debugPrint('🔍 No se encontró configuración para "$horaStr"');
+    debugPrint('🔍 Llaves disponibles: ${dayPrices.keys.toList()}');
+    return null;
+  }
+
+  String _normalizarHoraFormato(String horaStr) {
+    try {
+      final dateFormat = DateFormat('h:mm a');
+      final dateTime = dateFormat.parse(horaStr.toUpperCase());
+      return dateFormat.format(dateTime).toUpperCase();
+    } catch (e) {
+      debugPrint('🔍 Error normalizando hora "$horaStr": $e');
+      return Horario.normalizarHora(horaStr);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -68,21 +117,22 @@ class _DetallesScreenState extends State<DetallesScreen>
 
   @override
   Widget build(BuildContext context) {
-    // Calcular el precio dinámico para esta hora y día seleccionado
-    final String day =
-        DateFormat('EEEE', 'es').format(widget.fecha).toLowerCase();
-    final String horaStr = '${widget.horario.hora.hour}:00';
-    final Map<String, Map<String, dynamic>>? dayPrices = widget.cancha.preciosPorHorario[day];
-    final double precioCompleto = dayPrices != null && dayPrices.containsKey(horaStr)
-        ? (dayPrices[horaStr] is Map<String, dynamic>
-            ? (dayPrices[horaStr]!['precio'] as num?)?.toDouble() ?? widget.cancha.precio
-            : (dayPrices[horaStr] as num?)?.toDouble() ?? widget.cancha.precio)
-        : widget.cancha.precio;
+    final String day = DateFormat('EEEE', 'es').format(widget.fecha).toLowerCase();
+    final String horaStr = widget.horario.horaFormateada;
 
-    // Abono mínimo como el 30% del precio completo, redondeado al entero más cercano
+    final Map<String, dynamic>? configuracionHorario = _obtenerConfiguracionHorario(day, horaStr);
+
+    final double precioCompleto = configuracionHorario != null ? configuracionHorario['precio']?.toDouble() ?? widget.cancha.precio : widget.cancha.precio;
+    final bool esCompleto = configuracionHorario != null ? configuracionHorario['completo'] == true : false;
+
+    debugPrint('🔍 DEBUG - Día: $day');
+    debugPrint('🔍 DEBUG - Hora: "$horaStr"');
+    debugPrint('🔍 DEBUG - Configuración encontrada: $configuracionHorario');
+    debugPrint('🔍 DEBUG - Precio: $precioCompleto');
+    debugPrint('🔍 DEBUG - Es completo: $esCompleto');
+
     final double abono = 20000;
-    final currencyFormat =
-        NumberFormat.currency(symbol: "\$", decimalDigits: 0);
+    final currencyFormat = NumberFormat.currency(symbol: "\$", decimalDigits: 0);
     final theme = Theme.of(context);
 
     void hapticFeedback() {
@@ -167,8 +217,7 @@ class _DetallesScreenState extends State<DetallesScreen>
                                   _buildInfoRow(
                                     Icons.calendar_today_rounded,
                                     'Fecha',
-                                    DateFormat('EEEE, d MMMM y', 'es')
-                                        .format(widget.fecha),
+                                    DateFormat('EEEE, d MMMM y', 'es').format(widget.fecha),
                                   ),
                                   const Padding(
                                     padding: EdgeInsets.symmetric(vertical: 10),
@@ -213,10 +262,12 @@ class _DetallesScreenState extends State<DetallesScreen>
                                   ),
                                   const SizedBox(height: 8),
                                   Text(
-                                    'El precio puede variar según el día y horario.',
+                                    esCompleto
+                                        ? 'Este horario requiere pago completo.'
+                                        : 'El precio puede variar según el día y horario.',
                                     style: TextStyle(
                                       fontSize: 12,
-                                      color: Colors.grey.shade600,
+                                      color: esCompleto ? Colors.orange.shade600 : Colors.grey.shade600,
                                       fontStyle: FontStyle.italic,
                                     ),
                                   ),
@@ -225,11 +276,16 @@ class _DetallesScreenState extends State<DetallesScreen>
                                     'Precio completo',
                                     currencyFormat.format(precioCompleto),
                                   ),
-                                  const SizedBox(height: 8),
-                                  _buildPriceRow(
-                                    'Abono mínimo',
-                                    currencyFormat.format(abono),
-                                  ),
+                                  if (!esCompleto)
+                                    Column(
+                                      children: [
+                                        const SizedBox(height: 8),
+                                        _buildPriceRow(
+                                          'Abono mínimo',
+                                          currencyFormat.format(abono),
+                                        ),
+                                      ],
+                                    ),
                                 ],
                               ),
                             ),
@@ -238,27 +294,31 @@ class _DetallesScreenState extends State<DetallesScreen>
                                   ? constraints.maxHeight * 0.15
                                   : 16,
                             ),
+                            if (!esCompleto)
+                              Column(
+                                children: [
+                                  _buildActionButton(
+                                    label: 'Abonar y Reservar',
+                                    price: currencyFormat.format(abono),
+                                    color: Colors.grey[800]!,
+                                    onPressed: () {
+                                      hapticFeedback();
+                                      _animateButtonPress(() {
+                                        _hacerReserva(TipoAbono.parcial, abono);
+                                      });
+                                    },
+                                  ),
+                                  const SizedBox(height: 12),
+                                ],
+                              ),
                             _buildActionButton(
-                              label: 'Abonar y Reservar',
-                              price: currencyFormat.format(abono),
-                              color: Colors.grey[800]!,
-                              onPressed: () {
-                                hapticFeedback();
-                                _animateButtonPress(() {
-                                  _hacerReserva(TipoAbono.parcial, abono);
-                                });
-                              },
-                            ),
-                            const SizedBox(height: 12),
-                            _buildActionButton(
-                              label: 'Pagar Completo',
+                              label: esCompleto ? 'Pagar' : 'Pagar Completo',
                               price: currencyFormat.format(precioCompleto),
                               color: theme.primaryColor,
                               onPressed: () {
                                 hapticFeedback();
                                 _animateButtonPress(() {
-                                  _hacerReserva(
-                                      TipoAbono.completo, precioCompleto);
+                                  _hacerReserva(TipoAbono.completo, precioCompleto);
                                 });
                               },
                               isPrimary: true,
@@ -393,8 +453,7 @@ class _DetallesScreenState extends State<DetallesScreen>
                 ),
                 const SizedBox(width: 8),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
                     color: Colors.white.withAlpha(51),
                     borderRadius: BorderRadius.circular(20),
@@ -460,14 +519,10 @@ class _DetallesScreenState extends State<DetallesScreen>
   }
 
   double precioPorHorario() {
-    final String day =
-        DateFormat('EEEE', 'es').format(widget.fecha).toLowerCase();
-    final String horaStr = '${widget.horario.hora.hour}:00';
-    final Map<String, Map<String, dynamic>>? dayPrices = widget.cancha.preciosPorHorario[day];
-    return dayPrices != null && dayPrices.containsKey(horaStr)
-        ? (dayPrices[horaStr] is Map<String, dynamic>
-            ? (dayPrices[horaStr]!['precio'] as num?)?.toDouble() ?? widget.cancha.precio
-            : (dayPrices[horaStr] as num?)?.toDouble() ?? widget.cancha.precio)
-        : widget.cancha.precio;
+    final String day = DateFormat('EEEE', 'es').format(widget.fecha).toLowerCase();
+    final String horaStr = widget.horario.horaFormateada;
+
+    final configuracion = _obtenerConfiguracionHorario(day, horaStr);
+    return configuracion != null ? configuracion['precio']?.toDouble() ?? widget.cancha.precio : widget.cancha.precio;
   }
 }

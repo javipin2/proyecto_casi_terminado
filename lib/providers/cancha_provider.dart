@@ -42,47 +42,40 @@ class CanchaProvider with ChangeNotifier {
     }
   }
 
-  Future<Cancha> _procesarCancha(DocumentSnapshot doc) async {
-    final data = doc.data() as Map<String, dynamic>? ?? {};
+  // Versión simplificada que usa directamente Cancha.fromFirestore:
 
-    final imagenUrl = data['imagen'] as String? ?? 'assets/cancha_demo.png';
-    final finalImagenUrl = imagenUrl.startsWith('assets/') ? imagenUrl : await _getDownloadUrl(imagenUrl);
-
-    final preciosPorHorario = <String, Map<String, Map<String, dynamic>>>{};
-    if (data['preciosPorHorario'] is Map) {
-      final preciosRaw = data['preciosPorHorario'] as Map<String, dynamic>;
-      preciosPorHorario.addAll(preciosRaw.map((day, horarios) => MapEntry(
-        day,
-        horarios is Map
-            ? Map<String, Map<String, dynamic>>.from(horarios.map((hora, datos) => MapEntry(
-                  hora,
-                  datos is num
-                      ? {'precio': datos.toDouble(), 'habilitada': true}
-                      : datos is Map
-                          ? {
-                              'precio': (datos['precio'] as num?)?.toDouble() ?? 0.0,
-                              'habilitada': datos['habilitada'] as bool? ?? true,
-                            }
-                          : {'precio': 0.0, 'habilitada': true},
-                )))
-            : <String, Map<String, dynamic>>{},
-      )));
-    }
-
-    return Cancha(
-      id: doc.id,
-      nombre: data['nombre'] as String? ?? '',
-      descripcion: data['descripcion'] as String? ?? '',
-      imagen: finalImagenUrl,
-      techada: data['techada'] as bool? ?? false,
-      ubicacion: data['ubicacion'] as String? ?? '',
-      precio: (data['precio'] as num?)?.toDouble() ?? 0.0,
-      sedeId: data['sedeId'] as String? ?? '',
-      preciosPorHorario: preciosPorHorario,
-      disponible: data['disponible'] as bool? ?? true,
-      motivoNoDisponible: data['motivoNoDisponible'] as String?,
-    );
+Future<Cancha> _procesarCancha(DocumentSnapshot doc) async {
+  // Usar directamente el método fromFirestore que ya tiene la lógica correcta
+  final cancha = Cancha.fromFirestore(doc);
+  
+  // Solo procesar la imagen si es necesario
+  if (cancha.imagen.startsWith('assets/')) {
+    return cancha;
   }
+  
+  try {
+    final finalImagenUrl = await _getDownloadUrl(cancha.imagen);
+    
+    // Crear una nueva instancia con la URL actualizada
+    return Cancha(
+      id: cancha.id,
+      nombre: cancha.nombre,
+      descripcion: cancha.descripcion,
+      imagen: finalImagenUrl,
+      techada: cancha.techada,
+      ubicacion: cancha.ubicacion,
+      precio: cancha.precio,
+      sedeId: cancha.sedeId,
+      preciosPorHorario: cancha.preciosPorHorario, // ✅ Mantiene toda la lógica correcta
+      disponible: cancha.disponible,
+      motivoNoDisponible: cancha.motivoNoDisponible,
+    );
+  } catch (e) {
+    developer.log('Error procesando imagen para ${cancha.nombre}: $e', name: 'CanchaProvider', error: e);
+    return cancha; // Retornar la cancha original si hay error con la imagen
+  }
+}
+
 
   Future<void> _fetchCanchas({String? sede}) async {
     _isLoading = true;
@@ -133,43 +126,45 @@ class CanchaProvider with ChangeNotifier {
   Future<void> fetchAllCanchas() async => _fetchCanchas();
 
   Future<void> fetchHorasReservadas() async {
-    _isLoading = true;
-    _errorMessage = '';
-    _horasReservadas.clear();
+  _isLoading = true;
+  _errorMessage = '';
+  _horasReservadas.clear();
 
-    try {
-      final fechaInicio = DateFormat('yyyy-MM-dd').format(DateTime.now());
-      final reservasSnapshot = await FirebaseFirestore.instance
-          .collection('reservas')
-          .where('fecha', isGreaterThanOrEqualTo: fechaInicio)
-          .get();
+  try {
+    final fechaInicio = DateFormat('yyyy-MM-dd').format(DateTime.now());
+    final reservasSnapshot = await FirebaseFirestore.instance
+        .collection('reservas')
+        .where('fecha', isGreaterThanOrEqualTo: fechaInicio)
+        .where('confirmada', isEqualTo: true) // ✅ Solo reservas confirmadas
+        .get();
 
-      for (var doc in reservasSnapshot.docs) {
-        final data = doc.data() as Map<String, dynamic>? ?? {};
-        final canchaId = data['cancha_id'] as String? ?? '';
-        if (canchaId.isEmpty) continue;
+    for (var doc in reservasSnapshot.docs) {
+      final data = doc.data() as Map<String, dynamic>? ?? {};
+      final canchaId = data['cancha_id'] as String? ?? '';
+      if (canchaId.isEmpty) continue;
 
-        final fecha = DateFormat('yyyy-MM-dd').parse(data['fecha'] as String);
-        final horaStr = data['horario'] as String? ?? '0:00';
-        final horario = Horario.fromHoraFormateada(horaStr);
+      final fecha = DateFormat('yyyy-MM-dd').parse(data['fecha'] as String);
+      final horaStr = data['horario'] as String? ?? '0:00';
+      final horario = Horario.fromHoraFormateada(horaStr);
 
-        _horasReservadas.putIfAbsent(canchaId, () => {});
-        _horasReservadas[canchaId]!.putIfAbsent(fecha, () => []);
-        if (!_horasReservadas[canchaId]![fecha]!.contains(horario.hora)) {
-          _horasReservadas[canchaId]![fecha]!.add(horario.hora);
-        }
+      _horasReservadas.putIfAbsent(canchaId, () => {});
+      _horasReservadas[canchaId]!.putIfAbsent(fecha, () => []);
+      if (!_horasReservadas[canchaId]![fecha]!.contains(horario.hora)) {
+        _horasReservadas[canchaId]![fecha]!.add(horario.hora);
       }
-    } catch (error) {
-      _errorMessage = 'Error al cargar horas reservadas: $error';
-      developer.log('Error en fetchHorasReservadas: $error', name: 'CanchaProvider', error: error);
-    } finally {
-      _isLoading = false;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        developer.log('Notificando cambios en fetchHorasReservadas', name: 'CanchaProvider');
-        notifyListeners();
-      });
     }
+  } catch (error) {
+    _errorMessage = 'Error al cargar horas reservadas: $error';
+    developer.log('Error en fetchHorasReservadas: $error', name: 'CanchaProvider', error: error);
+  } finally {
+    _isLoading = false;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      developer.log('Notificando cambios en fetchHorasReservadas', name: 'CanchaProvider');
+      notifyListeners();
+    });
   }
+}
+
 
   void reset() {
     if (_canchas.isEmpty && _horasReservadas.isEmpty && !_isLoading && _errorMessage.isEmpty) return;

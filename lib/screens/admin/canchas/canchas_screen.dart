@@ -55,7 +55,7 @@ class CanchasScreenState extends State<CanchasScreen>
             const Icon(Icons.warning, color: Colors.redAccent),
             const SizedBox(width: 8),
             Text(
-              'Confirmar eliminación',
+              'Confirmar',
               style: GoogleFonts.montserrat(
                 fontWeight: FontWeight.w600,
                 color: _primaryColor,
@@ -181,19 +181,11 @@ class CanchasScreenState extends State<CanchasScreen>
             color: _primaryColor,
             fontSize: 20 * textScale,
           ),
+          
         ),
         backgroundColor: _backgroundColor,
+        automaticallyImplyLeading: false,
         elevation: 0,
-        leading: IconButton(
-          icon: Icon(Icons.arrow_back, color: _secondaryColor, size: 24 * textScale),
-          onPressed: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => const AdminDashboardScreen()),
-            );
-          },
-          tooltip: 'Volver al Dashboard',
-        ),
       ),
       body: SizedBox(
         width: double.infinity,

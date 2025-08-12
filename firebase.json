@@ -1,36 +1,53 @@
 {
-  "flutter": {
-    "platforms": {
-      "android": {
-        "default": {
-          "projectId": "canchas-la-jugada",
-          "appId": "1:201739490840:android:edc5780957d2b4ca6a156d",
-          "fileOutput": "android/app/google-services.json"
+    "flutter": {
+        "platforms": {
+            "android": {
+                "default": {
+                    "projectId": "canchas-la-jugada",
+                    "appId": "1:201739490840:android:084fb44cd89806a16a156d",
+                    "fileOutput": "android/app/google-services.json"
+                }
+            },
+            "dart": {
+                "lib/firebase_options.dart": {
+                    "projectId": "canchas-la-jugada",
+                    "configurations": {
+                        "android": "1:201739490840:android:084fb44cd89806a16a156d",
+                        "ios": "1:201739490840:ios:1ea7a5ccd33e36286a156d",
+                        "web": "1:201739490840:web:d2159a208f44b7ce6a156d"
+                    }
+                }
+            }
         }
-      },
-      "dart": {
-        "lib/firebase_options.dart": {
-          "projectId": "canchas-la-jugada",
-          "configurations": {
-            "android": "1:201739490840:android:edc5780957d2b4ca6a156d",
-            "web": "1:201739490840:web:d2159a208f44b7ce6a156d"
-          }
+    },
+    "hosting": {
+        "public": "build/web",
+        "ignore": [
+            "firebase.json",
+            "**/.*",
+            "**/node_modules/**"
+        ],
+        "rewrites": [
+            {
+                "source": "**",
+                "destination": "/index.html"
+            }
+        ]
+    },
+    "functions": [
+        {
+            "source": "functions",
+            "codebase": "default",
+            "ignore": [
+                "node_modules",
+                ".git",
+                "firebase-debug.log",
+                "firebase-debug.*.log",
+                "*.local"
+            ],
+            "predeploy": [
+                "npm --prefix \"$RESOURCE_DIR\" run lint"
+            ]
         }
-      }
-    }
-  },
-  "hosting": {
-    "public": "build/web",
-    "ignore": [
-      "firebase.json",
-      "**/.*",
-      "**/node_modules/**"
-    ],
-    "rewrites": [
-      {
-        "source": "**",
-        "destination": "/index.html"
-      }
     ]
-  }
 }

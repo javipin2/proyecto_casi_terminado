@@ -1,7 +1,7 @@
 name: reserva_canchas
 description: Aplicación para reservar canchas sintéticas.
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.2.0+1
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -9,29 +9,58 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  
+  # Internacionalización y localización
   intl: ^0.20.2
+  flutter_localizations:
+    sdk: flutter
+
+
+  # Estado y arquitectura
   provider: ^6.0.5
+  
+  # UI y widgets
   table_calendar: ^3.0.9
   shimmer: ^3.0.0
   carousel_slider: ^5.0.0
+  flutter_staggered_animations: ^1.1.1
+  flutter_animate: ^4.3.0
+  animate_do: ^3.3.4
+  
+  # Networking y HTTP
   http: ^1.3.0
+  
+  # Firebase
   firebase_core: ^3.13.0
   firebase_auth: ^5.5.3
   cloud_firestore: ^5.6.7
-  flutter_staggered_animations: ^1.1.1
-  flutter_animate: ^4.3.0  
-  google_fonts: ^6.1.0   
+  cloud_functions: ^5.5.0
+  firebase_storage: ^12.4.5
+  
+  # Fonts y UI styling
+  google_fonts: ^6.1.0
+  font_awesome_flutter: ^10.6.0
+  
+  # Charts y gráficas
   fl_chart: ^0.67.0
+  
+  # Archivos y documentos
   pdf: ^3.10.6
   csv: ^5.1.1
-  cloud_functions: ^5.5.0
+  
+  # Utilidades
   crypto: ^3.0.5
   url_launcher: ^6.2.2
   image_picker: ^1.1.2
-  firebase_storage: ^12.4.5
-  animate_do: ^3.3.4
-  
+  flutter_image_compress: ^2.3.0
+  logging: ^1.2.0  # Para manejo de logs en producción
 
+  firebase_messaging: 15.2.9
+  permission_handler: ^11.1.0
+  package_info_plus: ^4.2.0
+  
+  # ✅ NUEVA DEPENDENCIA REQUERIDA
+  shared_preferences: ^2.2.2
 
 dev_dependencies:
   flutter_test:
@@ -43,16 +72,18 @@ flutter_icons:
   android: true
   ios: true
   image_path: "assets/img1.png"
+  min_sdk_android: 21 # Para mejor compatibilidad
 
 flutter:
   uses-material-design: true
   
   assets:
-    - assets/cancha11.jpg
-    - assets/cancha2.jpg
-    - assets/cancha3.jpg
-    - assets/cancha4.jpg
     - assets/img1.png
-    - assets/fondo.jpg
     - assets/fondo2.jpg
     - assets/cancha_demo.png
+    - assets/redi22.png
+    - assets/grama1.jpg
+
+  # Optimizaciones para producción
+  # Esto ayuda a reducir el tamaño de la app
+  generate: true

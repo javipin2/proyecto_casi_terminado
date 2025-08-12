@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
@@ -31,6 +32,7 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
   final _scrollController = ScrollController();
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
+  final Map<String, Map<String, bool>> _completoHorario = {};
 
   // Controllers
   late TextEditingController _nombreController;
@@ -85,68 +87,81 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
   }
 
   void _initializeControllers() {
-    _nombreController = TextEditingController(text: widget.cancha.nombre);
-    _descripcionController = TextEditingController(text: widget.cancha.descripcion);
-    _ubicacionController = TextEditingController(text: widget.cancha.ubicacion);
-    _precioController = TextEditingController(text: widget.cancha.precio.toString());
-    _motivoNoDisponibleController = TextEditingController(text: widget.cancha.motivoNoDisponible ?? '');
-    _techada = widget.cancha.techada;
-    _sede = widget.cancha.sedeId;
-    _imagenUrl = widget.cancha.imagen;
-    _disponible = widget.cancha.disponible;
+  _nombreController = TextEditingController(text: widget.cancha.nombre);
+  _descripcionController = TextEditingController(text: widget.cancha.descripcion);
+  _ubicacionController = TextEditingController(text: widget.cancha.ubicacion);
+  _precioController = TextEditingController(text: widget.cancha.precio.toString());
+  _motivoNoDisponibleController = TextEditingController(text: widget.cancha.motivoNoDisponible ?? '');
+  _techada = widget.cancha.techada;
+  _sede = widget.cancha.sedeId;
+  _imagenUrl = widget.cancha.imagen;
+  _disponible = widget.cancha.disponible;
 
-    for (var day in _daysOfWeek) {
-      _precioControllers[day] = {};
-      _habilitadaHorario[day] = {};
-      for (var hora in _horarios) {
-        final horaNormalizada = Horario.normalizarHora(hora);
-        final preciosDay = widget.cancha.preciosPorHorario[day];
-        final precio = preciosDay != null && preciosDay[horaNormalizada] != null
-            ? (preciosDay[horaNormalizada] is Map
-                ? ((preciosDay[horaNormalizada] as Map<String, dynamic>)['precio']?.toString() ?? widget.cancha.precio.toString())
-                : preciosDay[horaNormalizada]?.toString() ?? widget.cancha.precio.toString())
-            : widget.cancha.precio.toString();
-        final habilitada = preciosDay != null && preciosDay[horaNormalizada] != null
-            ? (preciosDay[horaNormalizada] is Map ? (preciosDay[horaNormalizada] as Map<String, dynamic>)['habilitada'] ?? true : true)
-            : true;
-        _precioControllers[day]![horaNormalizada] = TextEditingController(text: precio);
-        _habilitadaHorario[day]![horaNormalizada] = habilitada;
-      }
-    }
-  }
-
-  void _initializePreciosPorHorario() {
-    _preciosPorHorario = {};
-    for (var day in _daysOfWeek) {
-      _preciosPorHorario[day] = {};
-      for (var hora in _horarios) {
-        final horaNormalizada = Horario.normalizarHora(hora);
-        final preciosDay = widget.cancha.preciosPorHorario[day];
-        final precio = preciosDay != null && preciosDay[horaNormalizada] != null
-            ? (preciosDay[horaNormalizada] is Map
-                ? (preciosDay[horaNormalizada] as Map<String, dynamic>)['precio'] ?? widget.cancha.precio
-                : preciosDay[horaNormalizada] ?? widget.cancha.precio)
-            : widget.cancha.precio;
-        final habilitada = preciosDay != null && preciosDay[horaNormalizada] != null
-            ? (preciosDay[horaNormalizada] is Map ? (preciosDay[horaNormalizada] as Map<String, dynamic>)['habilitada'] ?? true : true)
-            : true;
-        _preciosPorHorario[day]![horaNormalizada] = {
-          'precio': precio,
-          'habilitada': habilitada,
-        };
-      }
-    }
-  }
-
-  void _updatePrecioControllers(String day) {
+  for (var day in _daysOfWeek) {
+    _precioControllers[day] = {};
+    _habilitadaHorario[day] = {};
+    _completoHorario[day] = {};
     for (var hora in _horarios) {
       final horaNormalizada = Horario.normalizarHora(hora);
-      final precio = _preciosPorHorario[day]![horaNormalizada]?['precio']?.toString() ?? widget.cancha.precio.toString();
-      final habilitada = _preciosPorHorario[day]![horaNormalizada]?['habilitada'] ?? true;
-      _precioControllers[day]![horaNormalizada]?.text = precio;
+      final preciosDay = widget.cancha.preciosPorHorario[day];
+      final precio = preciosDay != null && preciosDay[horaNormalizada] != null
+          ? (preciosDay[horaNormalizada] is Map
+              ? ((preciosDay[horaNormalizada] as Map<String, dynamic>)['precio']?.toString() ?? widget.cancha.precio.toString())
+              : preciosDay[horaNormalizada]?.toString() ?? widget.cancha.precio.toString())
+          : widget.cancha.precio.toString();
+      final habilitada = preciosDay != null && preciosDay[horaNormalizada] != null
+          ? (preciosDay[horaNormalizada] is Map ? (preciosDay[horaNormalizada] as Map<String, dynamic>)['habilitada'] ?? true : true)
+          : true;
+      final completo = preciosDay != null && preciosDay[horaNormalizada] != null
+          ? (preciosDay[horaNormalizada] is Map ? (preciosDay[horaNormalizada] as Map<String, dynamic>)['completo'] ?? false : false)
+          : false;
+      _precioControllers[day]![horaNormalizada] = TextEditingController(text: precio);
       _habilitadaHorario[day]![horaNormalizada] = habilitada;
+      _completoHorario[day]![horaNormalizada] = completo;
     }
   }
+}
+
+  void _initializePreciosPorHorario() {
+  _preciosPorHorario = {};
+  for (var day in _daysOfWeek) {
+    _preciosPorHorario[day] = {};
+    for (var hora in _horarios) {
+      final horaNormalizada = Horario.normalizarHora(hora);
+      final preciosDay = widget.cancha.preciosPorHorario[day];
+      final precio = preciosDay != null && preciosDay[horaNormalizada] != null
+          ? (preciosDay[horaNormalizada] is Map
+              ? (preciosDay[horaNormalizada] as Map<String, dynamic>)['precio'] ?? widget.cancha.precio
+              : preciosDay[horaNormalizada] ?? widget.cancha.precio)
+          : widget.cancha.precio;
+      final habilitada = preciosDay != null && preciosDay[horaNormalizada] != null
+          ? (preciosDay[horaNormalizada] is Map ? (preciosDay[horaNormalizada] as Map<String, dynamic>)['habilitada'] ?? true : true)
+          : true;
+      final completo = preciosDay != null && preciosDay[horaNormalizada] != null
+          ? (preciosDay[horaNormalizada] is Map ? (preciosDay[horaNormalizada] as Map<String, dynamic>)['completo'] ?? false : false)
+          : false;
+      _preciosPorHorario[day]![horaNormalizada] = {
+        'precio': precio,
+        'habilitada': habilitada,
+        'completo': completo,
+      };
+    }
+  }
+}
+
+
+  void _updatePrecioControllers(String day) {
+  for (var hora in _horarios) {
+    final horaNormalizada = Horario.normalizarHora(hora);
+    final precio = _preciosPorHorario[day]![horaNormalizada]?['precio']?.toString() ?? widget.cancha.precio.toString();
+    final habilitada = _preciosPorHorario[day]![horaNormalizada]?['habilitada'] ?? true;
+    final completo = _preciosPorHorario[day]![horaNormalizada]?['completo'] ?? false;
+    _precioControllers[day]![horaNormalizada]?.text = precio;
+    _habilitadaHorario[day]![horaNormalizada] = habilitada;
+    _completoHorario[day]![horaNormalizada] = completo;
+  }
+}
+
 
   Future<void> _seleccionarImagen() async {
     showModalBottomSheet(
@@ -246,32 +261,51 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
   }
 
   Future<void> _getImage(ImageSource source) async {
-    try {
-      final XFile? image = await _picker.pickImage(
-        source: source,
-        maxWidth: 1920,
-        maxHeight: 1080,
-        imageQuality: 85,
-      );
+  try {
+    final XFile? image = await _picker.pickImage(
+      source: source,
+      maxWidth: 1920,
+      maxHeight: 1080,
+      imageQuality: 85,
+    );
 
-      if (image != null && mounted) {
+    if (image != null && mounted) {
+      Uint8List? compressedBytes;
+      if (kIsWeb) {
+        compressedBytes = await image.readAsBytes();
+        if (compressedBytes.length > 5 * 1024 * 1024) {
+          _mostrarError('La imagen excede el tamaño máximo de 5MB');
+          return;
+        }
+        // En web, usar los bytes originales sin comprimir para evitar errores
+        // La compresión inicial del ImagePicker ya reduce el tamaño
+      } else {
+        final file = File(image.path);
+        final fileSize = await file.length();
+        if (fileSize > 5 * 1024 * 1024) {
+          _mostrarError('La imagen excede el tamaño máximo de 5MB');
+          return;
+        }
+        // Solo comprimir en móvil donde funciona correctamente
+        compressedBytes = await FlutterImageCompress.compressWithFile(
+          image.path,
+          minWidth: 1920,
+          minHeight: 1080,
+          quality: 70,
+        );
+      }
+
+      if (mounted) {
         setState(() {
           _imagenSeleccionada = image;
+          _imagenBytes = compressedBytes;
         });
-
-        if (kIsWeb) {
-          final bytes = await image.readAsBytes();
-          if (mounted) {
-            setState(() {
-              _imagenBytes = bytes;
-            });
-          }
-        }
       }
-    } catch (e) {
-      _mostrarError("Error al seleccionar imagen: $e");
     }
+  } catch (e) {
+    _mostrarError("Error al seleccionar imagen: $e");
   }
+}
 
   Future<String?> _subirImagen() async {
     if (_imagenSeleccionada == null) return null;
@@ -529,72 +563,75 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
   }
 
   Future<void> _guardarCambios() async {
-    if (!_formKey.currentState!.validate()) return;
+  if (!_formKey.currentState!.validate()) return;
 
-    setState(() {
-      _isLoading = true;
-    });
+  setState(() {
+    _isLoading = true;
+  });
 
-    try {
-      if (_imagenSeleccionada != null) {
-        String? nuevaImagenUrl = await _subirImagen();
-        if (nuevaImagenUrl != null) {
-          _imagenUrl = nuevaImagenUrl;
-        }
-      }
-
-      // Actualizar precios y habilitada desde los controladores
-      for (var day in _daysOfWeek) {
-        for (var hora in _horarios) {
-          final horaNormalizada = Horario.normalizarHora(hora);
-          final value = _precioControllers[day]![horaNormalizada]!.text;
-          _preciosPorHorario[day]![horaNormalizada] = {
-            'precio': double.tryParse(value) ?? 0.0,
-            'habilitada': _habilitadaHorario[day]![horaNormalizada]!,
-          };
-        }
-      }
-
-      await FirebaseFirestore.instance.collection('canchas').doc(widget.canchaId).update({
-        'nombre': _nombreController.text.trim(),
-        'descripcion': _descripcionController.text.trim(),
-        'imagen': _imagenUrl,
-        'ubicacion': _ubicacionController.text.trim(),
-        'precio': double.tryParse(_precioController.text.trim()) ?? 0,
-        'techada': _techada,
-        'sedeId': _sede,
-        'preciosPorHorario': _preciosPorHorario,
-        'disponible': _disponible,
-        'motivoNoDisponible': _disponible ? null : _motivoNoDisponibleController.text.trim(),
-      });
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Row(
-              children: [
-                Icon(Icons.check_circle, color: Colors.white),
-                SizedBox(width: 8),
-                Text("Cancha actualizada correctamente"),
-              ],
-            ),
-            backgroundColor: Colors.green,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-        );
-        Navigator.pop(context);
-      }
-    } catch (error) {
-      _mostrarError("Error al actualizar cancha: $error");
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
+  try {
+    if (_imagenSeleccionada != null) {
+      String? nuevaImagenUrl = await _subirImagen();
+      if (nuevaImagenUrl != null) {
+        _imagenUrl = nuevaImagenUrl;
       }
     }
+
+    // Actualizar precios, habilitada y completo desde los controladores
+    for (var day in _daysOfWeek) {
+      for (var hora in _horarios) {
+        final horaNormalizada = Horario.normalizarHora(hora);
+        final value = _precioControllers[day]![horaNormalizada]!.text;
+        _preciosPorHorario[day]![horaNormalizada] = {
+          'precio': double.tryParse(value) ?? 0.0,
+          'habilitada': _habilitadaHorario[day]![horaNormalizada]!,
+          'completo': _completoHorario[day]![horaNormalizada]!,
+        };
+      }
+    }
+
+    await FirebaseFirestore.instance.collection('canchas').doc(widget.canchaId).update({
+      'nombre': _nombreController.text.trim(),
+      'descripcion': _descripcionController.text.trim(),
+      'imagen': _imagenUrl,
+      'ubicacion': _ubicacionController.text.trim(),
+      'precio': double.tryParse(_precioController.text.trim()) ?? 0,
+      'techada': _techada,
+      'sedeId': _sede,
+      'preciosPorHorario': _preciosPorHorario,
+      'disponible': _disponible,
+      'motivoNoDisponible': _disponible ? null : _motivoNoDisponibleController.text.trim(),
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.white),
+              SizedBox(width: 8),
+              Text("Cancha actualizada correctamente"),
+            ],
+          ),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
+      Navigator.pop(context);
+    }
+  } catch (error) {
+    _mostrarError("Error al actualizar cancha: $error");
+  } finally {
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+      });
+    }
   }
+}
+
+
 
   void _mostrarError(String mensaje) {
     if (mounted) {
@@ -1065,7 +1102,7 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
                 Icon(Icons.access_time, color: Colors.blue[700], size: 20),
                 const SizedBox(width: 8),
                 Text(
-                  "Precios y disponibilidad para ${_selectedDay!}",
+                  "Ajustes para ${_selectedDay!}",
                   style: GoogleFonts.montserrat(
                     fontWeight: FontWeight.w600,
                     fontSize: 14,
@@ -1090,88 +1127,132 @@ class _EditarCanchaScreenState extends State<EditarCanchaScreen>
   }
 
   Widget _buildHorarioPrecio(String hora) {
-    final horaNormalizada = Horario.normalizarHora(hora);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 60,
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.grey[300]!),
+  final horaNormalizada = Horario.normalizarHora(hora);
+  return Padding(
+    padding: const EdgeInsets.only(bottom: 12),
+    child: Column(
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              "Habilitada",
+              style: GoogleFonts.montserrat(
+                fontWeight: FontWeight.w500,
+                fontSize: 12,
+                color: Colors.grey[700],
               ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-                child: Text(
-                  hora,
-                  style: GoogleFonts.montserrat(
-                    fontWeight: FontWeight.w500,
-                    fontSize: 12,
+            ),
+            Text(
+              "Completo",
+              style: GoogleFonts.montserrat(
+                fontWeight: FontWeight.w500,
+                fontSize: 12,
+                color: Colors.grey[700],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Row(
+          children: [
+            SizedBox(
+              width: 60,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey[300]!),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                  child: Text(
+                    hora,
+                    style: GoogleFonts.montserrat(
+                      fontWeight: FontWeight.w500,
+                      fontSize: 12,
+                    ),
+                    textAlign: TextAlign.center,
                   ),
-                  textAlign: TextAlign.center,
                 ),
               ),
             ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: TextFormField(
-              controller: _precioControllers[_selectedDay]![horaNormalizada],
-              decoration: InputDecoration(
-                prefixText: "\$ ",
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: Colors.grey[300]!),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextFormField(
+                controller: _precioControllers[_selectedDay]![horaNormalizada],
+                decoration: InputDecoration(
+                  prefixText: "\$ ",
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide(color: Colors.grey[300]!),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide(color: Colors.grey[300]!),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: const BorderSide(color: Color(0xFF4F46E5), width: 2),
+                  ),
+                  filled: true,
+                  fillColor: Colors.white,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                  isDense: true,
                 ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: Colors.grey[300]!),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: const BorderSide(color: Color(0xFF4F46E5), width: 2),
-                ),
-                filled: true,
-                fillColor: Colors.white,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                isDense: true,
+                keyboardType: TextInputType.number,
+                style: GoogleFonts.montserrat(fontSize: 14),
+                onChanged: (value) {
+                  _preciosPorHorario[_selectedDay]![horaNormalizada]!['precio'] = double.tryParse(value) ?? 0.0;
+                },
+                validator: (value) {
+                  final parsed = double.tryParse(value ?? '');
+                  return parsed == null || parsed < 0 ? "Precio inválido" : null;
+                },
               ),
-              keyboardType: TextInputType.number,
-              style: GoogleFonts.montserrat(fontSize: 14),
-              onChanged: (value) {
-                _preciosPorHorario[_selectedDay]![horaNormalizada]!['precio'] = double.tryParse(value) ?? 0.0;
-              },
-              validator: (value) {
-                final parsed = double.tryParse(value ?? '');
-                return parsed == null || parsed < 0 ? "Precio inválido" : null;
-              },
             ),
-          ),
-          const SizedBox(width: 12),
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.grey[50],
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.grey[200]!),
+            const SizedBox(width: 12),
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.grey[50],
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey[200]!),
+              ),
+              child: Switch(
+                value: _habilitadaHorario[_selectedDay]![horaNormalizada]!,
+                onChanged: (value) {
+                  setState(() {
+                    _habilitadaHorario[_selectedDay]![horaNormalizada] = value;
+                    _preciosPorHorario[_selectedDay]![horaNormalizada]!['habilitada'] = value;
+                  });
+                },
+                activeColor: const Color(0xFF4F46E5),
+              ),
             ),
-            child: Switch(
-              value: _habilitadaHorario[_selectedDay]![horaNormalizada]!,
-              onChanged: (value) {
-                setState(() {
-                  _habilitadaHorario[_selectedDay]![horaNormalizada] = value;
-                  _preciosPorHorario[_selectedDay]![horaNormalizada]!['habilitada'] = value;
-                });
-              },
-              activeColor: const Color(0xFF4F46E5),
+            const SizedBox(width: 12),
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.grey[50],
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey[200]!),
+              ),
+              child: Switch(
+                value: _completoHorario[_selectedDay]![horaNormalizada]!,
+                onChanged: (value) {
+                  setState(() {
+                    _completoHorario[_selectedDay]![horaNormalizada] = value;
+                    _preciosPorHorario[_selectedDay]![horaNormalizada]!['completo'] = value;
+                  });
+                },
+                activeColor: const Color(0xFF4F46E5),
+              ),
             ),
-          ),
-        ],
-      ),
-    );
-  }
+          ],
+        ),
+      ],
+    ),
+  );
+}
 
   Widget _buildActionButtons() {
     return Column(

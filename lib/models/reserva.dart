@@ -19,6 +19,18 @@ class Reserva {
   String? telefono;
   String? email;
   bool confirmada;
+  
+  // NUEVAS PROPIEDADES PARA RESERVAS GRUPALES Y PRECIOS PERSONALIZADOS
+  String? grupoReservaId;          // ID del grupo de reservas
+  int? totalHorasGrupo;            // Total de horas en el grupo
+  bool precioPersonalizado;        // Si tiene precio personalizado
+  double? precioOriginal;          // Precio original antes del descuento
+  double? descuentoAplicado;       // Descuento aplicado
+  List<String>? horarios;          // Lista de horarios (para compatibilidad)
+  
+  // ✅ NUEVA PROPIEDAD PARA RESERVAS RECURRENTES
+  String? reservaRecurrenteId;     // ID de la reserva recurrente padre
+  bool esReservaRecurrente;        // Si proviene de una reserva recurrente
 
   Reserva({
     required this.id,
@@ -33,22 +45,44 @@ class Reserva {
     this.telefono,
     this.email,
     this.confirmada = false,
+    // Propiedades existentes
+    this.grupoReservaId,
+    this.totalHorasGrupo,
+    this.precioPersonalizado = false,
+    this.precioOriginal,
+    this.descuentoAplicado,
+    this.horarios,
+    // ✅ NUEVAS PROPIEDADES PARA RECURRENCIA
+    this.reservaRecurrenteId,
+    this.esReservaRecurrente = false,
   });
+
+  // GETTER PARA SABER SI ES RESERVA GRUPAL
+  bool get esReservaGrupal => grupoReservaId != null && (totalHorasGrupo ?? 0) > 1;
+
+  // GETTER PARA SABER SI TIENE DESCUENTO
+  bool get tieneDescuento => precioPersonalizado && (descuentoAplicado ?? 0) > 0;
+
+  // GETTER PARA OBTENER EL PORCENTAJE DE DESCUENTO
+  double get porcentajeDescuento {
+    if (!tieneDescuento || precioOriginal == null || precioOriginal == 0) return 0.0;
+    return ((descuentoAplicado ?? 0) / precioOriginal!) * 100;
+  }
 
   // Calcular el monto total basado en el día y la hora
   static double calcularMontoTotal(Cancha cancha, DateTime fecha, Horario horario) {
-  final String day = DateFormat('EEEE', 'es').format(fecha).toLowerCase();
-  final String horaStr = horario.horaFormateada; // Usar directamente el formato 12h
-  final preciosPorDia = cancha.preciosPorHorario[day] ?? {};
-  final precioData = preciosPorDia[horaStr];
-  final precio = precioData is Map<String, dynamic>
-      ? (precioData['precio'] as num?)?.toDouble() ?? cancha.precio
-      : (precioData as num?)?.toDouble() ?? cancha.precio;
-  debugPrint('Calculando monto: Día=$day, Hora=$horaStr, Precio=$precio');
-  return precio;
-}
+    final String day = DateFormat('EEEE', 'es').format(fecha).toLowerCase();
+    final String horaStr = horario.horaFormateada; // Usar directamente el formato 12h
+    final preciosPorDia = cancha.preciosPorHorario[day] ?? {};
+    final precioData = preciosPorDia[horaStr];
+    final precio = precioData is Map<String, dynamic>
+        ? (precioData['precio'] as num?)?.toDouble() ?? cancha.precio
+        : (precioData as num?)?.toDouble() ?? cancha.precio;
+    debugPrint('Calculando monto: Día=$day, Hora=$horaStr, Precio=$precio');
+    return precio;
+  }
 
-  // Constructor original para compatibilidad con documentos existentes
+  // CONSTRUCTOR MEJORADO DESDE FIRESTORE CON SOPORTE COMPLETO
   static Future<Reserva> fromFirestore(DocumentSnapshot doc) async {
     Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
 
@@ -106,7 +140,25 @@ class Reserva {
       );
     }
 
-    final montoTotal = calcularMontoTotal(cancha, fecha, horario);
+    // LEER DATOS NUEVOS CON VALORES POR DEFECTO PARA COMPATIBILIDAD
+    final grupoReservaId = data['grupo_reserva_id'] as String?;
+    final totalHorasGrupo = data['total_horas_grupo'] as int?;
+    final precioPersonalizado = data['precio_personalizado'] as bool? ?? false;
+    final precioOriginal = (data['precio_original'] as num?)?.toDouble();
+    final descuentoAplicado = (data['descuento_aplicado'] as num?)?.toDouble();
+    // ✅ LEER NUEVAS PROPIEDADES PARA RECURRENCIA
+    final reservaRecurrenteId = data['reserva_recurrente_id'] as String?;
+    final esReservaRecurrente = data['es_reserva_recurrente'] as bool? ?? false;
+    
+    // LEER LISTA DE HORARIOS SI EXISTE (para compatibilidad futura)
+    List<String>? horarios;
+    if (data['horarios'] is List) {
+      horarios = List<String>.from(data['horarios']);
+    }
+
+    // USAR EL VALOR GUARDADO EN LA BD O CALCULAR SI NO EXISTE
+    final montoTotal = (data['valor'] as num?)?.toDouble() ?? 
+                      calcularMontoTotal(cancha, fecha, horario);
     final montoPagado = (data['montoPagado'] ?? 0).toDouble();
     final tipoAbono = montoPagado < montoTotal ? TipoAbono.parcial : TipoAbono.completo;
 
@@ -123,10 +175,19 @@ class Reserva {
       telefono: data['telefono'],
       email: data['correo'],
       confirmada: data['confirmada'] ?? false,
+      grupoReservaId: grupoReservaId,
+      totalHorasGrupo: totalHorasGrupo,
+      precioPersonalizado: precioPersonalizado,
+      precioOriginal: precioOriginal,
+      descuentoAplicado: descuentoAplicado,
+      horarios: horarios,
+      // ✅ NUEVOS CAMPOS PARA RECURRENCIA
+      reservaRecurrenteId: reservaRecurrenteId,
+      esReservaRecurrente: esReservaRecurrente,
     );
   }
 
-  // Constructor con canchasMap para uso en AdminRegistroReservasScreen
+  // CONSTRUCTOR CON CANCHAS MAP ACTUALIZADO
   factory Reserva.fromFirestoreWithCanchas(
       DocumentSnapshot doc, Map<String, Cancha> canchasMap) {
     Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
@@ -164,7 +225,23 @@ class Reserva {
           preciosPorHorario: {},
         );
 
-    final montoTotal = calcularMontoTotal(cancha, fecha, horario);
+    // LEER DATOS NUEVOS CON VALORES POR DEFECTO
+    final grupoReservaId = data['grupo_reserva_id'] as String?;
+    final totalHorasGrupo = data['total_horas_grupo'] as int?;
+    final precioPersonalizado = data['precio_personalizado'] as bool? ?? false;
+    final precioOriginal = (data['precio_original'] as num?)?.toDouble();
+    final descuentoAplicado = (data['descuento_aplicado'] as num?)?.toDouble();
+    // ✅ LEER NUEVAS PROPIEDADES PARA RECURRENCIA
+    final reservaRecurrenteId = data['reserva_recurrente_id'] as String?;
+    final esReservaRecurrente = data['es_reserva_recurrente'] as bool? ?? false;
+    
+    List<String>? horarios;
+    if (data['horarios'] is List) {
+      horarios = List<String>.from(data['horarios']);
+    }
+
+    final montoTotal = (data['valor'] as num?)?.toDouble() ?? 
+                      calcularMontoTotal(cancha, fecha, horario);
     final montoPagado = (data['montoPagado'] ?? 0).toDouble();
     final tipoAbono =
         montoPagado < montoTotal ? TipoAbono.parcial : TipoAbono.completo;
@@ -182,11 +259,21 @@ class Reserva {
       telefono: data['telefono'],
       email: data['correo'],
       confirmada: data['confirmada'] ?? false,
+      grupoReservaId: grupoReservaId,
+      totalHorasGrupo: totalHorasGrupo,
+      precioPersonalizado: precioPersonalizado,
+      precioOriginal: precioOriginal,
+      descuentoAplicado: descuentoAplicado,
+      horarios: horarios,
+      // ✅ NUEVOS CAMPOS PARA RECURRENCIA
+      reservaRecurrenteId: reservaRecurrenteId,
+      esReservaRecurrente: esReservaRecurrente,
     );
   }
 
+  // TO FIRESTORE ACTUALIZADO PARA INCLUIR NUEVOS CAMPOS
   Map<String, dynamic> toFirestore() {
-    return {
+    final data = {
       'nombre': nombre,
       'telefono': telefono,
       'correo': email,
@@ -200,5 +287,97 @@ class Reserva {
       'confirmada': confirmada,
       'created_at': Timestamp.now(),
     };
+
+    // AGREGAR CAMPOS OPCIONALES SOLO SI EXISTEN
+    if (grupoReservaId != null) {
+      data['grupo_reserva_id'] = grupoReservaId!;
+    }
+    
+    if (totalHorasGrupo != null) {
+      data['total_horas_grupo'] = totalHorasGrupo!;
+    }
+    
+    if (precioPersonalizado) {
+      data['precio_personalizado'] = true;
+      if (precioOriginal != null) {
+        data['precio_original'] = precioOriginal!;
+      }
+      if (descuentoAplicado != null) {
+        data['descuento_aplicado'] = descuentoAplicado!;
+      }
+    }
+    
+    if (horarios != null && horarios!.isNotEmpty) {
+      data['horarios'] = horarios!;
+    }
+    
+    // ✅ AGREGAR NUEVAS PROPIEDADES PARA RECURRENCIA
+    if (reservaRecurrenteId != null) {
+      data['reserva_recurrente_id'] = reservaRecurrenteId!;
+    }
+    
+    if (esReservaRecurrente) {
+      data['es_reserva_recurrente'] = true;
+    }
+
+    return data;
+  }
+
+  // MÉTODO PARA COPIAR UNA RESERVA CON CAMBIOS
+  Reserva copyWith({
+    String? id,
+    Cancha? cancha,
+    DateTime? fecha,
+    Horario? horario,
+    String? sede,
+    TipoAbono? tipoAbono,
+    double? montoTotal,
+    double? montoPagado,
+    String? nombre,
+    String? telefono,
+    String? email,
+    bool? confirmada,
+    String? grupoReservaId,
+    int? totalHorasGrupo,
+    bool? precioPersonalizado,
+    double? precioOriginal,
+    double? descuentoAplicado,
+    List<String>? horarios,
+    // ✅ NUEVOS PARÁMETROS PARA RECURRENCIA
+    String? reservaRecurrenteId,
+    bool? esReservaRecurrente,
+  }) {
+    return Reserva(
+      id: id ?? this.id,
+      cancha: cancha ?? this.cancha,
+      fecha: fecha ?? this.fecha,
+      horario: horario ?? this.horario,
+      sede: sede ?? this.sede,
+      tipoAbono: tipoAbono ?? this.tipoAbono,
+      montoTotal: montoTotal ?? this.montoTotal,
+      montoPagado: montoPagado ?? this.montoPagado,
+      nombre: nombre ?? this.nombre,
+      telefono: telefono ?? this.telefono,
+      email: email ?? this.email,
+      confirmada: confirmada ?? this.confirmada,
+      grupoReservaId: grupoReservaId ?? this.grupoReservaId,
+      totalHorasGrupo: totalHorasGrupo ?? this.totalHorasGrupo,
+      precioPersonalizado: precioPersonalizado ?? this.precioPersonalizado,
+      precioOriginal: precioOriginal ?? this.precioOriginal,
+      descuentoAplicado: descuentoAplicado ?? this.descuentoAplicado,
+      horarios: horarios ?? this.horarios,
+      // ✅ NUEVOS CAMPOS PARA RECURRENCIA
+      reservaRecurrenteId: reservaRecurrenteId ?? this.reservaRecurrenteId,
+      esReservaRecurrente: esReservaRecurrente ?? this.esReservaRecurrente,
+    );
+  }
+
+  // MÉTODO PARA DEBUGGING Y LOGS
+  @override
+  String toString() {
+    return 'Reserva{id: $id, cancha: ${cancha.nombre}, fecha: $fecha, horario: ${horario.horaFormateada}, '
+           'montoTotal: $montoTotal, montoPagado: $montoPagado, esGrupal: $esReservaGrupal, '
+           'tieneDescuento: $tieneDescuento, grupoId: $grupoReservaId, '
+           'esRecurrente: $esReservaRecurrente, reservaRecurrenteId: $reservaRecurrenteId}';
   }
 }

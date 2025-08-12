@@ -1,12 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:http/http.dart' as http;
-import 'package:crypto/crypto.dart';
-import 'dart:convert';
-import 'dart:async';
 import '../models/reserva.dart';
 
 class ReservaScreen extends StatefulWidget {
@@ -18,8 +15,7 @@ class ReservaScreen extends StatefulWidget {
   State<ReservaScreen> createState() => _ReservaScreenState();
 }
 
-class _ReservaScreenState extends State<ReservaScreen>
-    with SingleTickerProviderStateMixin {
+class _ReservaScreenState extends State<ReservaScreen> with SingleTickerProviderStateMixin {
   bool _datosValidos = false;
   String? _errorValidacion;
   final _formKey = GlobalKey<FormState>();
@@ -32,15 +28,6 @@ class _ReservaScreenState extends State<ReservaScreen>
   late Animation<double> _fadeAnimation;
   late Animation<Offset> _slideAnimation;
   double _montoPagado = 0;
-
-  // Para el polling automático
-  Timer? _pollingTimer;
-  String? _referenciaActual;
-  int _intentosVerificacion = 0;
-  static const int _maxIntentos =
-      30; // 5 minutos de verificación (cada 15 segundos)
-
-  StreamSubscription? _cancelacionListener;
 
   @override
   void initState() {
@@ -73,294 +60,433 @@ class _ReservaScreenState extends State<ReservaScreen>
     _animationController.forward();
   }
 
-
+  // Validar datos del formulario en tiempo real
   void _validarDatosFirestore() {
-  String? error;
-  bool validos = true;
+    String? error;
+    bool validos = true;
 
-  final nombre = _nombreController.text.trim();
-  final telefono = _telefonoController.text.trim();
-  final email = _emailController.text.trim();
+    final nombre = _nombreController.text.trim();
+    final telefono = _telefonoController.text.trim();
+    final email = _emailController.text.trim();
 
-  if (nombre.isEmpty) {
-    error = 'El nombre es requerido';
-    validos = false;
-  } else if (telefono.length < 10) {
-    error = 'El teléfono debe tener al menos 10 dígitos';
-    validos = false;
-  } else if (email.isEmpty || !email.contains('@') || !email.contains('.')) {
-    error = 'Ingresa un correo electrónico válido';
-    validos = false;
-  }
-
-  setState(() {
-    _datosValidos = validos;
-    _errorValidacion = error;
-  });
-}
-
-  // Función para generar la signature según Wompi
-  String generarSignature({
-    required String publicKey,
-    required String currency,
-    required int amountInCents,
-    required String reference,
-    required String redirectUrl,
-    required String integrityKey,
-  }) {
-    final concatenatedString =
-        reference + amountInCents.toString() + currency + integrityKey;
-    final bytes = utf8.encode(concatenatedString);
-    final digest = sha256.convert(bytes);
-    return digest.toString();
-  }
-
-  // Función mejorada para verificar el pago con Wompi
-  Future<Map<String, dynamic>> verificarPagoWompi(String referencia) async {
-    const String privateKey = 'prv_prod_hppWNOcSdw3YZU1xrd45BlA6sAFCWlZv';
-    final url = Uri.parse(
-        'https://production.wompi.co/v1/transactions?reference=$referencia');
-
-    try {
-      final response = await http.get(
-        url,
-        headers: {
-          'Authorization': 'Bearer $privateKey',
-          'Content-Type': 'application/json',
-        },
-      );
-
-      if (response.statusCode == 200) {
-        Map<String, dynamic> data = jsonDecode(response.body);
-        if (data['data'] != null && data['data'].isNotEmpty) {
-          String status = data['data'][0]['status'];
-          String? paymentMethod = data['data'][0]['payment_method']?['type'];
-          int? amountInCents = data['data'][0]['amount_in_cents'];
-
-          return {
-            'success': true,
-            'approved': status == 'APPROVED',
-            'status': status,
-            'paymentMethod': paymentMethod,
-            'amount': amountInCents != null ? amountInCents / 100 : 0,
-            'transactionId': data['data'][0]['id'],
-          };
-        }
-        return {'success': false, 'approved': false, 'status': 'NOT_FOUND'};
-      } else {
-        return {'success': false, 'approved': false, 'status': 'API_ERROR'};
-      }
-    } catch (e) {
-      return {
-        'success': false,
-        'approved': false,
-        'status': 'NETWORK_ERROR',
-        'error': e.toString()
-      };
+    if (nombre.isEmpty) {
+      error = 'El nombre es requerido';
+      validos = false;
+    } else if (telefono.length < 10) {
+      error = 'El teléfono debe tener al menos 10 dígitos';
+      validos = false;
+    } else if (email.isEmpty || !email.contains('@') || !email.contains('.')) {
+      error = 'Ingresa un correo electrónico válido';
+      validos = false;
     }
+
+    setState(() {
+      _datosValidos = validos;
+      _errorValidacion = error;
+    });
   }
 
-  // Función para iniciar el pago con Wompi
-  Future<void> lanzarPagoWompi({
-    required int valorEnPesos,
-    required String referencia,
-  }) async {
-    const String publicKey = 'pub_prod_ydyN7EKUPBJX2wqkxudaN27c1uyuu80b';
-    const String integrityKey =
-        'prod_integrity_QR01OtCQple7s1LcdKFUQVDMmud784Kk';
-    final int valorEnCentavos = valorEnPesos * 100;
-    const String redirectUrl = 'https://proyecto-20bae.web.app/';
-    const String currency = 'COP';
+  // Enviar mensaje de WhatsApp con los detalles de la reserva
+  Future<void> _enviarMensajeWhatsApp(String referencia) async {
+  const String numeroTelefono = "+573013435434";
+  const String cuentaPago = "BANCOLOMBIA AHORROS⚽   *52400011088* ";
+  final String canchaNombre = widget.reserva.cancha.nombre;
+  final String fecha = DateFormat('EEEE, d \'de\' MMMM \'de\' yyyy', 'es').format(widget.reserva.fecha);
+  final String horario = widget.reserva.horario.horaFormateada;
+  final double precioTotal = _calcularPrecioTotalCancha();
+  final double abono = _montoPagado;
+  final String nombre = _nombreController.text.trim();
+  final String telefono = _telefonoController.text.trim();
+  final String email = _emailController.text.trim();
+  
+  final double saldoPendiente = precioTotal - abono;
+  final bool esPagoCompleto = saldoPendiente <= 0;
 
-    final signature = generarSignature(
-      publicKey: publicKey,
-      currency: currency,
-      amountInCents: valorEnCentavos,
-      reference: referencia,
-      redirectUrl: redirectUrl,
-      integrityKey: integrityKey,
-    );
+  final String mensaje = """
+🏆 *SOLICITUD DE RESERVA DE CANCHA*
 
-    final baseUrl = 'https://checkout.wompi.co/p/';
-    final params = {
-      'public-key': publicKey,
-      'currency': currency,
-      'amount-in-cents': valorEnCentavos.toString(),
-      'reference': referencia,
-      'redirect-url': redirectUrl,
-      'signature:integrity': signature,
-    };
+📋 *DETALLES DE LA RESERVA:*
+🏟️ Cancha: *$canchaNombre*
+📅 Fecha: *$fecha*
+⏰ Horario: *$horario*
 
-    final queryString = params.entries
-        .map((e) =>
-            '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}')
-        .join('&');
+💰 *INFORMACIÓN DE PAGO:*
+💵 Precio total: *\$${precioTotal.toStringAsFixed(0)} COP*
+💳 ${esPagoCompleto ? 'Pago completo' : 'Abono inicial'}: *\$${abono.toStringAsFixed(0)} COP*
+${!esPagoCompleto ? '⚠️ Saldo pendiente: *\$${saldoPendiente.toStringAsFixed(0)} COP*' : ''}
 
-    final fullUrl = '$baseUrl?$queryString';
-    final url = Uri.parse(fullUrl);
+👤 *DATOS DEL CLIENTE:*
+📝 Nombre: *$nombre*
+📱 Teléfono: *$telefono*
+📧 Email: *$email*
+
+💳 *Datos para transferencia:*
+$cuentaPago
+
+---
+Por favor, confirme la disponibilidad y el proceso de pago.
+¡Gracias por contactarnos! 🙌
+""";
+
+  // Mostrar diálogo con instrucciones ANTES de abrir WhatsApp
+  final bool? debeEnviar = await _mostrarDialogoInstruccionesWhatsApp();
+  
+  if (debeEnviar == true) {
+    final String urlWhatsApp = 'https://api.whatsapp.com/send/?phone=$numeroTelefono&text=${Uri.encodeComponent(mensaje)}&type=phone_number&app_absent=0';
+    final Uri url = Uri.parse(urlWhatsApp);
 
     try {
       if (await canLaunchUrl(url)) {
         await launchUrl(url, mode: LaunchMode.externalApplication);
-
-        // Iniciar verificación automática
-        _iniciarVerificacionAutomatica(referencia);
+        
+        // Esperar un momento y luego mostrar el diálogo de confirmación
+        if (mounted) {
+          setState(() {
+            _procesando = false;
+          });
+          _mostrarDialogoReservaPendiente();
+        }
       } else {
-        throw 'No se pudo abrir el navegador';
+        throw 'No se pudo abrir WhatsApp';
       }
     } catch (e) {
       if (mounted) {
-        _mostrarError('Error al iniciar el pago: $e');
+        _mostrarError('Error al abrir WhatsApp: $e');
         setState(() {
           _procesando = false;
         });
       }
     }
-  }
-
-  // Nueva función para verificación automática con polling
-  void _iniciarVerificacionAutomatica(String referencia) {
-    _referenciaActual = referencia;
-    _intentosVerificacion = 0;
-
-    if (mounted) {
-      _mostrarDialogoVerificacionAutomatica();
-    }
-
-    // Actualizar el documento temporal
-    _crearDocumentoTemporalReserva(referencia);
-
-    // LISTENER MÁS ESPECÍFICO - Solo escucha cambios relevantes
-    _cancelacionListener = FirebaseFirestore.instance
-        .collection('reservas_temporales')
-        .doc(referencia)
-        .snapshots()
-        .listen((doc) {
-      if (!mounted) return;
-
-      if (doc.exists) {
-        // ignore: unnecessary_cast
-        final data = doc.data() as Map<String, dynamic>?;
-        final estado = data?['estado'];
-
-        if (estado == 'cancelado_por_otro_pago') {
-          _pollingTimer?.cancel();
-          _cancelacionListener?.cancel();
-          _mostrarPagoCancelado();
-        }
-      }
-    });
-
-    // Polling para verificar el pago
-    _pollingTimer = Timer.periodic(const Duration(seconds: 15), (timer) async {
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
-
-      _intentosVerificacion++;
-
-      try {
-        final resultado = await verificarPagoWompi(referencia);
-
-        if (resultado['approved'] == true) {
-          timer.cancel();
-          _cancelacionListener?.cancel();
-          await _procesarPagoExitoso(resultado);
-        } else if (resultado['status'] == 'DECLINED') {
-          timer.cancel();
-          _cancelacionListener?.cancel();
-          await _liberarBloqueo(referencia);
-          _mostrarPagoRechazado();
-        } else if (_intentosVerificacion >= _maxIntentos) {
-          timer.cancel();
-          _cancelacionListener?.cancel();
-          await _liberarBloqueo(referencia);
-          _mostrarTimeoutVerificacion();
-        }
-      } catch (e) {
-        ('Error en verificación automática: $e');
-      }
+  } else {
+    setState(() {
+      _procesando = false;
     });
   }
+}
 
-  // Crear documento temporal para tracking
-  Future<void> _crearDocumentoTemporalReserva(String referencia) async {
-    try {
-      // Solo actualizar el estado de 'bloqueado' a 'pendiente'
-      await FirebaseFirestore.instance
-          .collection('reservas_temporales')
-          .doc(referencia)
-          .update({
-        'estado': 'pendiente',
-        'pago_iniciado': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      debugPrint('Error al actualizar documento temporal: $e');
-    }
-  }
 
-  // Procesar pago exitoso automáticamente
-  Future<void> _procesarPagoExitoso(Map<String, dynamic> resultadoPago) async {
-    try {
-      final String canchaNombre = widget.reserva.cancha.nombre;
-      final String fecha =
-          DateFormat('yyyy-MM-dd').format(widget.reserva.fecha);
-      final String horario = widget.reserva.horario.horaFormateada;
-      final String reservaKey = '${canchaNombre}_${fecha}_${horario}';
 
-      // Actualizar documento temporal actual como pagado
-      await FirebaseFirestore.instance
-          .collection('reservas_temporales')
-          .doc(_referenciaActual!)
-          .update({
-        'estado': 'pagado',
-        'transaction_id': resultadoPago['transactionId'],
-        'payment_method': resultadoPago['paymentMethod'],
-        'processed_at': FieldValue.serverTimestamp(),
-      });
+void _mostrarDialogoReservaPendiente() {
+  showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (BuildContext context) {
+      return AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        title: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.orange.shade50,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.orange.shade100,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.schedule,
+                  color: Colors.orange.shade700,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '⏳ Reserva Pendiente',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.orange.shade700,
+                      ),
+                    ),
+                    Text(
+                      'Esperando confirmación de pago',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.orange.shade600,
+                        fontWeight: FontWeight.w400,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.green.shade50,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.green.shade200),
+              ),
+              child: Column(
+                children: [
+                  Icon(Icons.check_circle_outline, color: Colors.green.shade600, size: 32),
+                  const SizedBox(height: 12),
+                  Text(
+                    '✅ RESERVA CREADA EXITOSAMENTE',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.green.shade800,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Tu reserva ha sido guardada y está bloqueada por 10 minutos mientras realizas el pago.\n\nUna vez confirmes el pago por WhatsApp, recibirás la confirmación final.',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Colors.green.shade700,
+                      height: 1.4,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.blue.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.blue.shade200),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, color: Colors.blue.shade700, size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'ℹ️ Ya puedes cerrar esta pantalla. Te contactaremos por WhatsApp para confirmar tu reserva.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.blue.shade800,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop(); // Cerrar diálogo
+                Navigator.of(context).pop(); // Volver a la pantalla anterior
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.green.shade600,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              child: const Text(
+                'Entendido',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
+        ],
+      );
+    },
+  );
+}
 
-      // CANCELAR TODOS LOS OTROS INTENTOS DE PAGO - CONSULTA OPTIMIZADA
-      final QuerySnapshot otrosBloqueos = await FirebaseFirestore.instance
-          .collection('reservas_temporales')
-          .where('reserva_key', isEqualTo: reservaKey)
-          .get();
 
-      // Procesar cancelaciones en lote para mejor performance
-      WriteBatch batch = FirebaseFirestore.instance.batch();
 
-      for (QueryDocumentSnapshot doc in otrosBloqueos.docs) {
-        if (doc.id != _referenciaActual) {
-          final data = doc.data() as Map<String, dynamic>;
-          final estado = data['estado'];
 
-          // Solo cancelar estados activos
-          if (estado == 'bloqueado' || estado == 'pendiente') {
-            batch.update(doc.reference, {
-              'estado': 'cancelado_por_otro_pago',
-              'cancelado_en': FieldValue.serverTimestamp(),
-              'motivo_cancelacion': 'Otro usuario completó el pago primero',
-            });
-          }
-        }
-      }
+Future<bool?> _mostrarDialogoInstruccionesWhatsApp() async {
+  return showDialog<bool>(
+    context: context,
+    barrierDismissible: false,
+    builder: (BuildContext context) {
+      return AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        title: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.green.shade50,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade100,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  FontAwesomeIcons.whatsapp,
+                  color: Colors.green,
+                  size: 30,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Enviar por WhatsApp',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.green.shade700,
+                      ),
+                    ),
+                    Text(
+                      'Te conectaremos con nuestro WhatsApp',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.green.shade600,
+                        fontWeight: FontWeight.w400,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.blue.shade50,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.blue.shade200),
+              ),
+              child: Column(
+                children: [
+                  Icon(Icons.info_outline, color: Colors.blue.shade600, size: 32),
+                  const SizedBox(height: 12),
+                  Text(
+                    '📱 INSTRUCCIONES:',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.blue.shade800,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '1. Se abrirá WhatsApp con tu mensaje listo\n'
+                    '2. Solo presiona el botón ENVIAR ➤\n'
+                    '3. En el mensaje estara la cuenta de pago\n'
+                    '4. Cancela el valor seleccionado anteriormente'
+                    '  y envia el comprobante de pago\n'
+                    '5. !!RESERVA LISTA!!',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Colors.blue.shade700,
+                      height: 1.4,
+                    ),
+                    textAlign: TextAlign.left,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.amber.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.amber.shade200),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.warning_amber_outlined, color: Colors.amber.shade700, size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      '⚠️ IMPORTANTE:  A partir de este momento la reserva está bloqueada por 10 minutos para que puedas realizar el pago en ese lapso de tiempo.\n'
+                      'Si no se confirma la reserva en ese tiermpo, se pondra disponible automáticamente.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.amber.shade800,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          Row(
+            children: [
+              const SizedBox(width: 8),
+              Expanded(
+                flex: 2,
+                child: ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green.shade600,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        FontAwesomeIcons.whatsapp,
+                        color: const Color.fromARGB(255, 3, 255, 12),
+                        size: 30,
+                      ),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Abrir WhatsApp',
+                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      );
+    },
+  );
+}
 
-      // Ejecutar todas las cancelaciones de una vez
-      await batch.commit();
 
-      // Guardar reserva definitiva
-      await _guardarReservaFinal();
-    } catch (e) {
-      debugPrint('Error al procesar pago exitoso: $e');
-      if (mounted) {
-        _mostrarError('Error al procesar el pago: $e');
-      }
-    }
-  }
+  // Guardar reserva pendiente en Firestore
+  Future<void> _guardarReservaPendiente(String referencia) async {
 
-  // Guardar reserva final
-  Future<void> _guardarReservaFinal() async {
-  // Actualizar los datos de la reserva
+  widget.reserva.montoTotal = _calcularPrecioTotalCancha();
+
+
   widget.reserva.nombre = _nombreController.text;
   widget.reserva.telefono = _telefonoController.text;
   widget.reserva.email = _emailController.text;
@@ -368,190 +494,45 @@ class _ReservaScreenState extends State<ReservaScreen>
   widget.reserva.tipoAbono = _montoPagado >= widget.reserva.montoTotal
       ? TipoAbono.completo
       : TipoAbono.parcial;
-  widget.reserva.confirmada = true;
-  widget.reserva.sede = widget.reserva.cancha.sedeId; // Usar el ID de la sede
+  widget.reserva.confirmada = false;
+  widget.reserva.sede = widget.reserva.cancha.sedeId;
 
   try {
-    // Guardar reserva confirmada
-    await FirebaseFirestore.instance
-        .collection('reservas')
-        .add(widget.reserva.toFirestore());
-
-    // Eliminar documento temporal
-    if (_referenciaActual != null) {
-      await FirebaseFirestore.instance
+    await FirebaseFirestore.instance.runTransaction((transaction) async {
+      // Actualizar estado del bloqueo temporal a 'pendiente'
+      final DocumentReference tempRef = FirebaseFirestore.instance
           .collection('reservas_temporales')
-          .doc(_referenciaActual!)
-          .delete();
-    }
+          .doc(referencia);
+      
+      transaction.update(tempRef, {
+        'estado': 'pendiente',
+        'pago_iniciado': FieldValue.serverTimestamp(),
+        // Extender el tiempo de expiración para dar tiempo a la confirmación
+        'expira_en': DateTime.now().add(Duration(minutes: 12)).millisecondsSinceEpoch,
+      });
+
+      // Guardar la reserva pendiente
+      final DocumentReference reservaRef = FirebaseFirestore.instance
+          .collection('reservas')
+          .doc(referencia);
+      
+      transaction.set(reservaRef, widget.reserva.toFirestore());
+    });
 
     if (!mounted) return;
-
-    // Cerrar diálogo y mostrar éxito
-    Navigator.of(context).pop(); // Cerrar diálogo de verificación
-
-    _mostrarExito();
-
-    // Navegar de vuelta después de un momento
-    Future.delayed(const Duration(seconds: 2), () {
-      if (mounted) {
-        Navigator.popUntil(context, (route) => route.isFirst);
-      }
-    });
+    _mostrarDialogoInstruccionesWhatsApp();
   } catch (e) {
     if (mounted) {
-      Navigator.of(context).pop(); // Cerrar diálogo
-      _mostrarError('Error al guardar la reserva: $e');
+      _mostrarError('Error al guardar la reserva pendiente: $e');
+      setState(() {
+        _procesando = false;
+      });
     }
   }
 }
 
 
-  // Diálogos y mensajes mejorados
-  void _mostrarDialogoVerificacionAutomatica() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Row(
-            children: [
-              SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
-                ),
-              ),
-              const SizedBox(width: 12),
-              const Text('Verificando Pago'),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'Estamos verificando tu pago automáticamente.\nTu reserva se confirmará en cuanto el pago sea procesado.',
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Referencia: ${_referenciaActual ?? ""}',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey[600],
-                  fontFamily: 'monospace',
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                _pollingTimer?.cancel();
-                Navigator.of(context).pop();
-                setState(() {
-                  _procesando = false;
-                });
-              },
-              child: const Text('Cancelar'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _mostrarPagoRechazado() {
-    if (!mounted) return;
-    Navigator.of(context).pop(); // Cerrar diálogo de verificación
-
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Row(
-            children: [
-              Icon(Icons.error_outline, color: Colors.red),
-              const SizedBox(width: 8),
-              const Text('Pago Rechazado'),
-            ],
-          ),
-          content: const Text(
-            'Tu pago ha sido rechazado. Por favor, intenta nuevamente con otra forma de pago.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                setState(() {
-                  _procesando = false;
-                });
-              },
-              child: const Text('Entendido'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _mostrarTimeoutVerificacion() {
-    if (!mounted) return;
-    Navigator.of(context).pop(); // Cerrar diálogo de verificación
-
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Row(
-            children: [
-              Icon(Icons.access_time, color: Colors.orange),
-              const SizedBox(width: 8),
-              const Text('Verificación Pausada'),
-            ],
-          ),
-          content: const Text(
-            'La verificación automática ha sido pausada. Si completaste el pago, tu reserva se procesará en breve. Puedes contactarnos si tienes dudas.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                setState(() {
-                  _procesando = false;
-                });
-              },
-              child: const Text('Entendido'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _mostrarExito() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: const [
-            Icon(Icons.check_circle_outline, color: Colors.white),
-            SizedBox(width: 10),
-            Expanded(child: Text("¡Reserva confirmada automáticamente!")),
-          ],
-        ),
-        backgroundColor: Colors.green.shade700,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-        ),
-        margin: const EdgeInsets.all(10),
-        duration: const Duration(seconds: 3),
-      ),
-    );
-  }
-
+  // Mostrar mensaje de error
   void _mostrarError(String mensaje) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -572,6 +553,7 @@ class _ReservaScreenState extends State<ReservaScreen>
     );
   }
 
+  // Confirmar reserva y enviar a WhatsApp
   Future<void> _confirmarReserva() async {
     if (!mounted) return;
     if (_formKey.currentState!.validate()) {
@@ -582,7 +564,7 @@ class _ReservaScreenState extends State<ReservaScreen>
       HapticFeedback.mediumImpact();
 
       try {
-        // PASO 1: Validar disponibilidad
+        // Validar disponibilidad
         final disponibilidad = await _validarDisponibilidad();
         if (!disponibilidad['disponible']) {
           _mostrarError(disponibilidad['mensaje']);
@@ -592,7 +574,7 @@ class _ReservaScreenState extends State<ReservaScreen>
           return;
         }
 
-        // PASO 2: Crear bloqueo temporal
+        // Crear bloqueo temporal
         final String? referencia = await _crearBloqueoTemporal();
         if (referencia == null) {
           _mostrarError(
@@ -603,11 +585,11 @@ class _ReservaScreenState extends State<ReservaScreen>
           return;
         }
 
-        // PASO 3: Iniciar pago con Wompi
-        await lanzarPagoWompi(
-          valorEnPesos: _montoPagado.toInt(),
-          referencia: referencia,
-        );
+        // Guardar reserva pendiente
+        await _guardarReservaPendiente(referencia);
+
+        // Enviar mensaje a WhatsApp
+        await _enviarMensajeWhatsApp(referencia);
       } catch (e) {
         _mostrarError('Error al procesar la reserva: $e');
         setState(() {
@@ -624,283 +606,216 @@ class _ReservaScreenState extends State<ReservaScreen>
     _emailController.dispose();
     _abonoController.dispose();
     _animationController.dispose();
-    _pollingTimer?.cancel();
-    _cancelacionListener?.cancel(); // AGREGAR ESTA LÍNEA
     super.dispose();
   }
 
-  // FUNCIÓN 1: VALIDAR DISPONIBILIDAD - AGREGAR DESPUÉS DE dispose()
+  // Validar disponibilidad
   Future<Map<String, dynamic>> _validarDisponibilidad() async {
-    try {
-      final String canchaNombre = widget.reserva.cancha.nombre;
-      final String fecha =
-          DateFormat('yyyy-MM-dd').format(widget.reserva.fecha);
-      final String horario = widget.reserva.horario.horaFormateada;
+  try {
+    // CAMBIO: Usar cancha_id en lugar de cancha.nombre
+    final String canchaId = widget.reserva.cancha.id; // Asegúrate de que tienes el ID
+    final String fecha = DateFormat('yyyy-MM-dd').format(widget.reserva.fecha);
+    final String horario = widget.reserva.horario.horaFormateada;
+    final String reservaKey = '${canchaId}_${fecha}_${horario}';
 
-      // Crear identificador único para la reserva
-      final String reservaKey = '${canchaNombre}_${fecha}_${horario}';
+    // 1. Verificar reservas confirmadas con los campos correctos
+    final QuerySnapshot reservasExistentes = await FirebaseFirestore.instance
+        .collection('reservas')
+        .where('cancha_id', isEqualTo: canchaId)  // ✅ Campo correcto
+        .where('fecha', isEqualTo: fecha)         // ✅ Campo correcto
+        .where('horario', isEqualTo: horario)     // ✅ Campo correcto
+        .where('confirmada', isEqualTo: true)     // ✅ Campo correcto
+        .get();
 
-      // Verificar reservas confirmadas primero
+    if (reservasExistentes.docs.isNotEmpty) {
+      return {
+        'disponible': false,
+        'mensaje': 'Esta cancha ya fue reservada por otro usuario'
+      };
+    }
+
+    // 2. Verificar bloqueos temporales
+    final int ahora = DateTime.now().millisecondsSinceEpoch;
+    
+    final QuerySnapshot reservasTemporales = await FirebaseFirestore.instance
+        .collection('reservas_temporales')
+        .where('reserva_key', isEqualTo: reservaKey)
+        .where('expira_en', isGreaterThan: ahora)
+        .get();
+
+    if (reservasTemporales.docs.isNotEmpty) {
+      return {
+        'disponible': false,
+        'mensaje': 'Cancha bloqueada temporalmente. Otro usuario está procesando la reserva. Si no se confirma la reserva, se liberará automáticamente.'
+      };
+    }
+
+    return {'disponible': true};
+  } catch (e) {
+    return {
+      'disponible': false,
+      'mensaje': 'Error al verificar disponibilidad: $e'
+    };
+  }
+}
+
+
+
+  // Crear bloqueo temporal
+  Future<String?> _crearBloqueoTemporal() async {
+  try {
+    final String referencia = 'reserva-${DateTime.now().millisecondsSinceEpoch}';
+    final String canchaId = widget.reserva.cancha.id; // Cambio aquí también
+    final String fecha = DateFormat('yyyy-MM-dd').format(widget.reserva.fecha);
+    final String horario = widget.reserva.horario.horaFormateada;
+    final String reservaKey = '${canchaId}_${fecha}_${horario}';
+    final int expiraEn = DateTime.now().add(Duration(minutes: 12)).millisecondsSinceEpoch;
+
+    await FirebaseFirestore.instance.runTransaction((transaction) async {
+      // Verificar reservas confirmadas
       final QuerySnapshot reservasExistentes = await FirebaseFirestore.instance
           .collection('reservas')
-          .where('cancha.nombre', isEqualTo: canchaNombre)
+          .where('cancha_id', isEqualTo: canchaId)  // ✅ Campo correcto
           .where('fecha', isEqualTo: fecha)
-          .where('horario.horaFormateada', isEqualTo: horario)
+          .where('horario', isEqualTo: horario)
           .where('confirmada', isEqualTo: true)
           .get();
 
       if (reservasExistentes.docs.isNotEmpty) {
-        return {
-          'disponible': false,
-          'mensaje': 'Esta cancha ya fue reservada por otro usuario'
-        };
+        throw Exception('Cancha ya reservada');
       }
 
-      // Verificar bloqueos temporales - CONSULTA SIMPLIFICADA
-      final DateTime hace5Minutos =
-          DateTime.now().subtract(Duration(minutes: 4));
-
-      // Usar el identificador único para consulta más eficiente
-      final QuerySnapshot reservasTemporales = await FirebaseFirestore.instance
+      // Verificar bloqueos temporales activos
+      final int ahora = DateTime.now().millisecondsSinceEpoch;
+      final QuerySnapshot bloqueosActivos = await FirebaseFirestore.instance
           .collection('reservas_temporales')
           .where('reserva_key', isEqualTo: reservaKey)
-          .where('timestamp', isGreaterThan: Timestamp.fromDate(hace5Minutos))
+          .where('expira_en', isGreaterThan: ahora)
           .get();
 
-      // Filtrar en el cliente por estados activos
-      final reservasActivas = reservasTemporales.docs.where((doc) {
-        final data = doc.data() as Map<String, dynamic>;
-        final estado = data['estado'];
-        return estado == 'bloqueado' || estado == 'pendiente';
-      }).toList();
-
-      if (reservasActivas.isNotEmpty) {
-        return {
-          'disponible': false,
-          'mensaje':
-              'Cancha bloqueada por 5 minutos porque otro usuario está procesando el pago para esta cancha en este momento. Si el pago no se completa se desbloquea automaticamenete'
-        };
+      if (bloqueosActivos.docs.isNotEmpty) {
+        throw Exception('Otro usuario está procesando esta reserva');
       }
 
-      return {'disponible': true};
-    } catch (e) {
-      return {
-        'disponible': false,
-        'mensaje': 'Error al verificar disponibilidad: $e'
-      };
-    }
-  }
-
-// FUNCIÓN 2: CREAR BLOQUEO TEMPORAL
-  Future<String?> _crearBloqueoTemporal() async {
-    try {
-      final String referencia =
-          'reserva-${DateTime.now().millisecondsSinceEpoch}';
-      final String canchaNombre = widget.reserva.cancha.nombre;
-      final String fecha =
-          DateFormat('yyyy-MM-dd').format(widget.reserva.fecha);
-      final String horario = widget.reserva.horario.horaFormateada;
-      final String reservaKey = '${canchaNombre}_${fecha}_${horario}';
-
-      await FirebaseFirestore.instance.runTransaction((transaction) async {
-        // Verificar una vez más dentro de la transacción
-        final QuerySnapshot reservasExistentes = await FirebaseFirestore
-            .instance
-            .collection('reservas')
-            .where('cancha.nombre', isEqualTo: canchaNombre)
-            .where('fecha', isEqualTo: fecha)
-            .where('horario.horaFormateada', isEqualTo: horario)
-            .where('confirmada', isEqualTo: true)
-            .get();
-
-        if (reservasExistentes.docs.isNotEmpty) {
-          throw Exception('Cancha ya reservada');
-        }
-
-        // Verificar bloqueos activos con el nuevo campo
-        final QuerySnapshot bloqueosActivos = await FirebaseFirestore.instance
-            .collection('reservas_temporales')
-            .where('reserva_key', isEqualTo: reservaKey)
-            .get();
-
-        // Verificar si hay bloqueos activos
-        final DateTime hace5Minutos =
-            DateTime.now().subtract(Duration(minutes: 4));
-        bool hayBloqueoActivo = false;
-
-        for (var doc in bloqueosActivos.docs) {
-          final data = doc.data() as Map<String, dynamic>;
-          final timestamp = data['timestamp'] as Timestamp?;
-          final estado = data['estado'];
-
-          if (timestamp != null &&
-              timestamp.toDate().isAfter(hace5Minutos) &&
-              (estado == 'bloqueado' || estado == 'pendiente')) {
-            hayBloqueoActivo = true;
-            break;
-          }
-        }
-
-        if (hayBloqueoActivo) {
-          throw Exception('Otro usuario está procesando esta reserva');
-        }
-
-        final DocumentReference docRef = FirebaseFirestore.instance
-            .collection('reservas_temporales')
-            .doc(referencia);
-
-        transaction.set(docRef, {
-          'referencia': referencia,
-          'cancha': canchaNombre,
-          'fecha': fecha,
-          'horario': horario,
-          'reserva_key': reservaKey, // CAMPO CLAVE PARA CONSULTAS EFICIENTES
-          'monto': _montoPagado,
-          'estado': 'bloqueado',
-          'timestamp': FieldValue.serverTimestamp(),
-          'expira_en':
-              DateTime.now().add(Duration(minutes: 4)).millisecondsSinceEpoch,
-          'datos_cliente': {
-            'nombre': _nombreController.text,
-            'telefono': _telefonoController.text,
-            'email': _emailController.text,
-          }
-        });
-      });
-
-      return referencia;
-    } catch (e) {
-      debugPrint('Error al crear bloqueo temporal: $e');
-      return null;
-    }
-  }
-
-// FUNCIÓN 3: LIBERAR BLOQUEO
-  Future<void> _liberarBloqueo(String referencia) async {
-    try {
-      await FirebaseFirestore.instance
+      // Crear nuevo bloqueo temporal
+      final DocumentReference docRef = FirebaseFirestore.instance
           .collection('reservas_temporales')
-          .doc(referencia)
-          .update({
-        'estado': 'expirado',
-        'liberado_en': FieldValue.serverTimestamp(),
+          .doc(referencia);
+
+      transaction.set(docRef, {
+        'referencia': referencia,
+        'cancha_id': canchaId,  // ✅ Campo correcto
+        'fecha': fecha,
+        'horario': horario,
+        'reserva_key': reservaKey,
+        'monto': _montoPagado,
+        'estado': 'bloqueado',
+        'timestamp': FieldValue.serverTimestamp(),
+        'expira_en': expiraEn,
+        'datos_cliente': {
+          'nombre': _nombreController.text,
+          'telefono': _telefonoController.text,
+          'email': _emailController.text,
+        }
       });
-    } catch (e) {
-      debugPrint('Error al liberar bloqueo: $e');
+    });
+
+    return referencia;
+  } catch (e) {
+    debugPrint('Error al crear bloqueo temporal: $e');
+    return null;
+  }
+}
+
+
+
+
+  // Calcular precio total dinámico
+  double _calcularPrecioTotalCancha() {
+  final String day = DateFormat('EEEE', 'es').format(widget.reserva.fecha).toLowerCase();
+  final String horaStr = widget.reserva.horario.horaFormateada;
+  
+  final Map<String, Map<String, dynamic>>? dayPrices = widget.reserva.cancha.preciosPorHorario[day];
+  
+  if (dayPrices == null) {
+    return widget.reserva.cancha.precio;
+  }
+
+  // Buscar coincidencia exacta primero
+  if (dayPrices.containsKey(horaStr)) {
+    final config = dayPrices[horaStr];
+    if (config is Map<String, dynamic>) {
+      return (config['precio'] as num?)?.toDouble() ?? widget.reserva.cancha.precio;
+    }
+    return (config as num?)?.toDouble() ?? widget.reserva.cancha.precio;
+  }
+
+  // Buscar con normalización usando el mismo método que DetallesScreen
+  for (final entry in dayPrices.entries) {
+    final llave = entry.key;
+    final llaveNormalizada = _normalizarHoraFormato(llave);
+    final horaNormalizada = _normalizarHoraFormato(horaStr);
+    
+    if (llaveNormalizada == horaNormalizada) {
+      final config = entry.value;
+      if (config is Map<String, dynamic>) {
+        return (config['precio'] as num?)?.toDouble() ?? widget.reserva.cancha.precio;
+      }
+      return (config as num?)?.toDouble() ?? widget.reserva.cancha.precio;
     }
   }
 
-// FUNCIÓN 4: DIÁLOGO DE CANCELACIÓN
-  void _mostrarPagoCancelado() {
-    if (!mounted) return;
-    Navigator.of(context).pop(); // Cerrar diálogo de verificación
+  return widget.reserva.cancha.precio;
+}
 
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Row(
-            children: [
-              Icon(Icons.cancel_outlined, color: Colors.orange, size: 28),
-              const SizedBox(width: 12),
-              const Text('Reserva No Disponible'),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                '¡Oops! Otro usuario completó esta reserva antes que tú.',
-                style: TextStyle(fontSize: 16),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.blue.shade50,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.info_outline,
-                        color: Colors.blue.shade700, size: 20),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Tu pago no se procesará y no se te cobrará nada.',
-                        style: TextStyle(
-                          color: Colors.blue.shade700,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ),
-                  ],
+// Agregar este método a ReservaScreen para normalizar horas
+String _normalizarHoraFormato(String horaStr) {
+  try {
+    final dateFormat = DateFormat('h:mm a');
+    final dateTime = dateFormat.parse(horaStr.toUpperCase());
+    return dateFormat.format(dateTime).toUpperCase();
+  } catch (e) {
+    debugPrint('Error normalizando hora "$horaStr": $e');
+    // Fallback: usar el método de Horario si existe
+    return horaStr;
+  }
+}
+
+
+
+
+
+  // Mostrar mensaje de validación
+  Widget _buildMensajeValidacion() {
+    if (_errorValidacion != null) {
+      return Container(
+        margin: const EdgeInsets.only(bottom: 20),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.red.shade50,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.red.shade200),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.warning_outlined, color: Colors.red.shade600, size: 20),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                _errorValidacion!,
+                style: TextStyle(
+                  color: Colors.red.shade700,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                Navigator.of(context).pop(); // Regresar a pantalla anterior
-              },
-              child: const Text('Buscar Otra Cancha'),
             ),
           ],
-        );
-      },
-    );
+        ),
+      );
+    }
+    return const SizedBox.shrink();
   }
-
-
-  Widget _buildMensajeValidacion() {
-  if (_errorValidacion != null) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 20),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.red.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.red.shade200),
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.warning_outlined, color: Colors.red.shade600, size: 20),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              _errorValidacion!,
-              style: TextStyle(
-                color: Colors.red.shade700,
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-  return const SizedBox.shrink();
-}
-
-
-  // Método para calcular el precio total dinámico de la cancha
-  double _calcularPrecioTotalCancha() {
-  final String day =
-      DateFormat('EEEE', 'es').format(widget.reserva.fecha).toLowerCase();
-  final String horaStr = '${widget.reserva.horario.hora.hour}:00';
-  final Map<String, Map<String, dynamic>>? dayPrices =
-      widget.reserva.cancha.preciosPorHorario[day];
-  return dayPrices != null && dayPrices.containsKey(horaStr)
-      ? (dayPrices[horaStr] is Map<String, dynamic>
-          ? (dayPrices[horaStr]!['precio'] as num?)?.toDouble() ?? widget.reserva.cancha.precio
-          : (dayPrices[horaStr] as num?)?.toDouble() ?? widget.reserva.cancha.precio)
-      : widget.reserva.cancha.precio;
-}
 
   @override
   Widget build(BuildContext context) {
@@ -1097,7 +1012,7 @@ class _ReservaScreenState extends State<ReservaScreen>
                             label: 'Abono (mínimo 20000)',
                             icon: Icons.attach_money,
                             keyboardType: TextInputType.number,
-                            validatorMsg: 'Por favor',
+                            validatorMsg: 'Por favor ingresa un abono',
                             extraValidation: (value) {
                               final abono = double.tryParse(value ?? '0') ?? 0;
                               if (abono < 20000) {
@@ -1117,7 +1032,7 @@ class _ReservaScreenState extends State<ReservaScreen>
                           ),
                         ],
                         const SizedBox(height: 40),
-                        _buildMensajeValidacion(), // NUEVA LÍNEA
+                        _buildMensajeValidacion(),
                         AnimatedContainer(
                           duration: const Duration(milliseconds: 300),
                           width: double.infinity,
@@ -1146,7 +1061,7 @@ class _ReservaScreenState extends State<ReservaScreen>
                                   ),
                                 )
                               : ElevatedButton(
-                                  onPressed: _datosValidos ? _confirmarReserva : null, // Deshabilitar si los datos no son válidos
+                                  onPressed: _datosValidos ? _confirmarReserva : null,
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: _datosValidos ? Colors.grey[850] : Colors.grey[400],
                                     foregroundColor: Colors.white,
@@ -1222,64 +1137,64 @@ class _ReservaScreenState extends State<ReservaScreen>
   }
 
   Widget _buildTextField({
-  required TextEditingController controller,
-  required String label,
-  required IconData icon,
-  required TextInputType keyboardType,
-  required String validatorMsg,
-  String? Function(String?)? extraValidation,
-  void Function(String)? onChanged,
-}) {
-  return TextFormField(
-    controller: controller,
-    decoration: InputDecoration(
-      labelText: label,
-      labelStyle: TextStyle(
-        color: Colors.grey[600],
-        fontSize: 15,
+    required TextEditingController controller,
+    required String label,
+    required IconData icon,
+    required TextInputType keyboardType,
+    required String validatorMsg,
+    String? Function(String?)? extraValidation,
+    void Function(String)? onChanged,
+  }) {
+    return TextFormField(
+      controller: controller,
+      decoration: InputDecoration(
+        labelText: label,
+        labelStyle: TextStyle(
+          color: Colors.grey[600],
+          fontSize: 15,
+        ),
+        prefixIcon: Icon(icon, color: Colors.grey[600], size: 20),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: Colors.grey[300]!),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: Colors.grey[300]!),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: Colors.grey[800]!, width: 1.5),
+        ),
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: Colors.red[400]!, width: 1.5),
+        ),
+        filled: true,
+        fillColor: Colors.white,
+        contentPadding: const EdgeInsets.symmetric(vertical: 16),
       ),
-      prefixIcon: Icon(icon, color: Colors.grey[600], size: 20),
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: Colors.grey[300]!),
+      style: TextStyle(
+        color: Colors.grey[800],
+        fontSize: 16,
       ),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: Colors.grey[300]!),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: Colors.grey[800]!, width: 1.5),
-      ),
-      errorBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: Colors.red[400]!, width: 1.5),
-      ),
-      filled: true,
-      fillColor: Colors.white,
-      contentPadding: const EdgeInsets.symmetric(vertical: 16),
-    ),
-    style: TextStyle(
-      color: Colors.grey[800],
-      fontSize: 16,
-    ),
-    keyboardType: keyboardType,
-    onChanged: (value) {
-      // Llamar a la validación en tiempo real
-      _validarDatosFirestore();
-      if (onChanged != null) {
-        onChanged(value);
-      }
-    },
-    validator: (value) {
-      if (value == null || value.isEmpty) {
-        return validatorMsg;
-      }
-      if (extraValidation != null) {
-        return extraValidation(value);
-      }
-      return null;
-    },
-  );
-}
+      keyboardType: keyboardType,
+      onChanged: (value) {
+        _validarDatosFirestore();
+        if (onChanged != null) {
+          onChanged(value);
+        }
+      },
+      validator: (value) {
+        if (value == null || value.isEmpty) {
+          return validatorMsg;
+        }
+        if (extraValidation != null) {
+          return extraValidation(value);
+        }
+        return null;
+      },
+    );
+  }
+
 }

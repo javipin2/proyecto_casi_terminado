@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/cupertino.dart';
 
 class Cancha {
   final String id;
@@ -46,6 +47,7 @@ class Cancha {
                   ? (datos['precio'] is num ? datos['precio'].toDouble() : 0.0)
                   : (datos is num ? datos.toDouble() : 0.0),
               'habilitada': datos is Map ? (datos['habilitada'] as bool? ?? true) : true,
+              'completo': datos is Map ? (datos['completo'] as bool? ?? false) : false,
             };
           }
           preciosPorHorario[day] = horarios;
@@ -140,7 +142,8 @@ class Cancha {
         final current = horarios[hora]!;
         final otherData = otherHorarios[hora]!;
         if (current['precio'] != otherData['precio'] ||
-            current['habilitada'] != otherData['habilitada']) {
+            current['habilitada'] != otherData['habilitada'] ||
+            current['completo'] != otherData['completo']) {
           return true;
         }
       }
@@ -152,12 +155,12 @@ class Cancha {
   static Future<Map<String, dynamic>?> getSedeInfo(String sedeId) async {
     try {
       final doc = await FirebaseFirestore.instance
-          .collection('sedes')
+          .collection('sede')
           .doc(sedeId)
           .get();
       return doc.data();
     } catch (e) {
-      print('Error obteniendo sede: $e');
+      debugPrint('Error obteniendo sede: $e');
       return null;
     }
   }

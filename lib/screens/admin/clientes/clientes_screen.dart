@@ -148,6 +148,7 @@ class _ClientesScreenState extends State<ClientesScreen>
             color: Colors.black87,
           ),
         ),
+        automaticallyImplyLeading: false,
         actions: [
           IconButton(
             onPressed: () {

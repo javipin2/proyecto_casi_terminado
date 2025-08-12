@@ -3,7 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:flutter_staggered_animations/flutter_staggered_animations.dart';
 import '../providers/sede_provider.dart';
 import '../providers/cancha_provider.dart';
-import 'cancha_card.dart';
+import 'widgets/cancha_card.dart';
 import 'horarios_screen.dart';
 import 'sede_screen.dart';
 

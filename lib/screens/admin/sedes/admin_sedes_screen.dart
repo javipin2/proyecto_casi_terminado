@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:reserva_canchas/providers/cancha_provider.dart';
 import '../../../providers/sede_provider.dart';
 
@@ -70,7 +71,7 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> with SingleTickerPr
     try {
       final storageRef = FirebaseStorage.instance
           .ref()
-          .child('sedes/${sede}_${DateTime.now().millisecondsSinceEpoch}.jpg');
+          .child('sede/${sede}_${DateTime.now().millisecondsSinceEpoch}.jpg');
 
       UploadTask uploadTask;
 
@@ -100,33 +101,67 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> with SingleTickerPr
   }
 
   void _pickImage() async {
-    final picker = ImagePicker();
-    final pickedFile = await picker.pickImage(
-      source: ImageSource.gallery,
-      maxWidth: 800,
-      maxHeight: 600,
-      imageQuality: 80,
-    );
+  final picker = ImagePicker();
+  final pickedFile = await picker.pickImage(
+    source: ImageSource.gallery,
+    maxWidth: 1920,
+    maxHeight: 1080,
+    imageQuality: 85,
+  );
 
-    if (pickedFile != null) {
-      setState(() {
-        if (kIsWeb) {
-          pickedFile.readAsBytes().then((bytes) {
-            setState(() {
-              _selectedImageBytes = bytes;
-              _selectedImageFile = null;
-            });
-          });
-        } else {
-          final file = File(pickedFile.path);
-          setState(() {
-            _selectedImageFile = file;
-            _selectedImageBytes = null;
-          });
+  if (pickedFile != null && mounted) {
+    try {
+      Uint8List? compressedBytes;
+      if (kIsWeb) {
+        compressedBytes = await pickedFile.readAsBytes();
+        if (compressedBytes.length > 5 * 1024 * 1024) {
+          _showSnackBar('La imagen excede el tamaño máximo de 5MB', isError: true);
+          return;
         }
-      });
+        // Intentar compresión solo si es compatible, de lo contrario usar los bytes originales
+        try {
+          compressedBytes = await FlutterImageCompress.compressWithList(
+            compressedBytes,
+            minWidth: 1920,
+            minHeight: 1080,
+            quality: 70,
+          );
+        } catch (e) {
+          debugPrint('Error al comprimir imagen en web: $e');
+          // Usar los bytes originales si la compresión falla
+          compressedBytes = await pickedFile.readAsBytes();
+        }
+      } else {
+        final file = File(pickedFile.path);
+        final fileSize = await file.length();
+        if (fileSize > 5 * 1024 * 1024) {
+          _showSnackBar('La imagen excede el tamaño máximo de 5MB', isError: true);
+          return;
+        }
+        compressedBytes = await FlutterImageCompress.compressWithFile(
+          pickedFile.path,
+          minWidth: 1920,
+          minHeight: 1080,
+          quality: 70,
+        );
+      }
+
+      if (mounted) {
+        setState(() {
+          if (kIsWeb) {
+            _selectedImageBytes = compressedBytes;
+            _selectedImageFile = null;
+          } else {
+            _selectedImageFile = File(pickedFile.path); // Guardar el archivo original para _uploadImage
+            _selectedImageBytes = null;
+          }
+        });
+      }
+    } catch (e) {
+      _showSnackBar('Error al procesar la imagen: $e', isError: true);
     }
   }
+}
 
   void _clearSelectedImage() {
     setState(() {
@@ -266,35 +301,67 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> with SingleTickerPr
                       ),
                       SizedBox(height: 16),
                       GestureDetector(
-                        onTap: () async {
-                          final picker = ImagePicker();
-                          final pickedFile = await picker.pickImage(
-                            source: ImageSource.gallery,
-                            maxWidth: 800,
-                            maxHeight: 600,
-                            imageQuality: 80,
-                          );
+  onTap: () async {
+    final picker = ImagePicker();
+    final pickedFile = await picker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 1920,
+      maxHeight: 1080,
+      imageQuality: 85,
+    );
 
-                          if (pickedFile != null) {
-                            setDialogState(() {
-                              if (kIsWeb) {
-                                pickedFile.readAsBytes().then((bytes) {
-                                  setDialogState(() {
-                                    tempImageBytes = bytes;
-                                    tempImageFile = null;
-                                  });
-                                });
-                              } else {
-                                final file = File(pickedFile.path);
-                                setDialogState(() {
-                                  tempImageFile = file;
-                                  tempImageBytes = null;
-                                });
-                              }
-                            });
-                          }
-                        },
-                        child: Container(
+    if (pickedFile != null) {
+      try {
+        Uint8List? compressedBytes;
+        if (kIsWeb) {
+          compressedBytes = await pickedFile.readAsBytes();
+          if (compressedBytes.length > 5 * 1024 * 1024) {
+            _showSnackBar('La imagen excede el tamaño máximo de 5MB', isError: true);
+            return;
+          }
+          // Intentar compresión solo si es compatible, de lo contrario usar los bytes originales
+          try {
+            compressedBytes = await FlutterImageCompress.compressWithList(
+              compressedBytes,
+              minWidth: 1920,
+              minHeight: 1080,
+              quality: 70,
+            );
+          } catch (e) {
+            debugPrint('Error al comprimir imagen en web: $e');
+            // Usar los bytes originales si la compresión falla
+            compressedBytes = await pickedFile.readAsBytes();
+          }
+        } else {
+          final file = File(pickedFile.path);
+          final fileSize = await file.length();
+          if (fileSize > 5 * 1024 * 1024) {
+            _showSnackBar('La imagen excede el tamaño máximo de 5MB', isError: true);
+            return;
+          }
+          compressedBytes = await FlutterImageCompress.compressWithFile(
+            pickedFile.path,
+            minWidth: 1920,
+            minHeight: 1080,
+            quality: 70,
+          );
+        }
+
+        setDialogState(() {
+          if (kIsWeb) {
+            tempImageBytes = compressedBytes;
+            tempImageFile = null;
+          } else {
+            tempImageFile = File(pickedFile.path); // Guardar el archivo original para _uploadImage
+            tempImageBytes = null;
+          }
+        });
+      } catch (e) {
+        _showSnackBar('Error al procesar la imagen: $e', isError: true);
+      }
+    }
+  },
+  child: Container(
                           height: 120,
                           width: double.infinity,
                           decoration: BoxDecoration(
@@ -851,14 +918,11 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> with SingleTickerPr
             fontSize: isSmallScreen ? 18 : 20,
           ),
         ),
+        automaticallyImplyLeading: false,
         backgroundColor: _primaryColor,
         foregroundColor: Colors.white,
         elevation: 0,
         centerTitle: true,
-        leading: IconButton(
-          icon: Icon(Icons.arrow_back_ios, color: Colors.white, size: isSmallScreen ? 20 : 24),
-          onPressed: () => Navigator.pop(context),
-        ),
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: _toggleFormVisibility,
@@ -1025,11 +1089,10 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> with SingleTickerPr
                         },
                       ),
             ),
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
-    ),
     );
-
   }
 }

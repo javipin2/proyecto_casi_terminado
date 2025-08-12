@@ -12,7 +12,7 @@ class ReservaDetallesScreen extends StatelessWidget {
   final DateTime fecha;
   final Horario horario;
   final String sede;
-  
+  final bool esReservaRecurrente;
 
   const ReservaDetallesScreen({
     super.key,
@@ -20,9 +20,35 @@ class ReservaDetallesScreen extends StatelessWidget {
     required this.fecha,
     required this.horario,
     required this.sede,
+    this.esReservaRecurrente = false,
   });
 
   Future<Reserva?> _fetchReserva() async {
+    if (esReservaRecurrente && horario.reservaRecurrenteData != null) {
+      final data = horario.reservaRecurrenteData!;
+      
+      return Reserva(
+        id: '${data['id']}_${DateFormat('yyyy-MM-dd').format(fecha)}',
+        cancha: cancha,
+        fecha: fecha,
+        horario: horario,
+        sede: sede,
+        tipoAbono: (data['montoPagado'] as double) >= (data['montoTotal'] as double) 
+            ? TipoAbono.completo : TipoAbono.parcial,
+        montoTotal: data['montoTotal'] as double,
+        montoPagado: data['montoPagado'] as double,
+        nombre: horario.clienteNombre,
+        telefono: data['clienteTelefono'] as String,
+        email: data['clienteEmail'] as String?,
+        confirmada: true,
+        reservaRecurrenteId: data['id'] as String,
+        esReservaRecurrente: true,
+        precioPersonalizado: data['precioPersonalizado'] as bool? ?? false,
+        precioOriginal: (data['precioOriginal'] as num?)?.toDouble(),
+        descuentoAplicado: (data['descuentoAplicado'] as num?)?.toDouble(),
+      );
+    }
+
     final String fechaStr = DateFormat('yyyy-MM-dd').format(fecha);
     final String horaNormalizada = Horario.normalizarHora(horario.horaFormateada);
     final String reservaId =
@@ -167,7 +193,6 @@ class ReservaDetallesScreen extends StatelessWidget {
                   const SizedBox(height: 16),
                   ElevatedButton.icon(
                     onPressed: () {
-                      // Forzar recarga
                       Navigator.pushReplacement(
                         context,
                         MaterialPageRoute(
@@ -176,6 +201,7 @@ class ReservaDetallesScreen extends StatelessWidget {
                             fecha: fecha,
                             horario: horario,
                             sede: sede,
+                            esReservaRecurrente: esReservaRecurrente,
                           ),
                         ),
                       );
@@ -243,6 +269,7 @@ class ReservaDetallesScreen extends StatelessWidget {
                             fecha: fecha,
                             horario: horario,
                             sede: sede,
+                            esReservaRecurrente: esReservaRecurrente,
                           ),
                         ),
                       );
@@ -341,7 +368,7 @@ class ReservaDetallesScreen extends StatelessWidget {
                             .sedes
                             .firstWhere(
                               (sede) => sede['id'] == reserva.sede,
-                              orElse: () => {'nombre': reserva.sede}, // Fallback al ID si no se encuentra
+                              orElse: () => {'nombre': reserva.sede},
                             )['nombre'] as String,
                       ),
                     ],
@@ -390,9 +417,9 @@ class ReservaDetallesScreen extends StatelessWidget {
                         label: 'Correo',
                         value: _maskEmail(reserva.email),
                       ),
-                      ],
-                    ),
+                    ],
                   ),
+                ),
                 const SizedBox(height: 24),
                 Center(
                   child: ElevatedButton.icon(

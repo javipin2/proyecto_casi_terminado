@@ -29,7 +29,7 @@ class SedeProvider extends ChangeNotifier {
       debugPrint('Usuario autenticado: ${FirebaseAuth.instance.currentUser?.uid ?? "No autenticado"}');
 
       final snapshot = await FirebaseFirestore.instance
-          .collection('sedes')
+          .collection('sede')
           .where('activa', isEqualTo: true)
           .orderBy('nombre')
           .get();
@@ -94,7 +94,7 @@ class SedeProvider extends ChangeNotifier {
 
       final defaultImageUrl = imageUrl ?? 'https://images.unsplash.com/photo-1544966503-7cc5ac882d5f?ixlib=rb-4.0.3&auto=format&fit=crop&w=300&h=200';
 
-      final sedeRef = FirebaseFirestore.instance.collection('sedes').doc();
+      final sedeRef = FirebaseFirestore.instance.collection('sede').doc();
       await sedeRef.set({
         'nombre': nombreSede,
         'imagen': defaultImageUrl,
@@ -151,7 +151,7 @@ class SedeProvider extends ChangeNotifier {
 
       final batch = FirebaseFirestore.instance.batch();
 
-      final sedeRef = FirebaseFirestore.instance.collection('sedes').doc(sedeId);
+      final sedeRef = FirebaseFirestore.instance.collection('sede').doc(sedeId);
       batch.update(sedeRef, {'nombre': nuevoNombre});
 
       final canchaDocs = await FirebaseFirestore.instance
@@ -193,7 +193,7 @@ class SedeProvider extends ChangeNotifier {
       }
 
       await FirebaseFirestore.instance
-          .collection('sedes')
+          .collection('sede')
           .doc(sedeId)
           .update({'imagen': nuevaImagenUrl});
 
@@ -250,7 +250,7 @@ class SedeProvider extends ChangeNotifier {
       }
 
       await FirebaseFirestore.instance
-          .collection('sedes')
+          .collection('sede')
           .doc(sedeId)
           .update({'activa': false});
 
@@ -312,7 +312,7 @@ class SedeProvider extends ChangeNotifier {
 
       final batch = FirebaseFirestore.instance.batch();
 
-      final sedeRef = FirebaseFirestore.instance.collection('sedes').doc(sedeId);
+      final sedeRef = FirebaseFirestore.instance.collection('sede').doc(sedeId);
       batch.delete(sedeRef);
 
       final canchaDocs = await FirebaseFirestore.instance
@@ -366,7 +366,7 @@ class SedeProvider extends ChangeNotifier {
         await doc.reference.delete();
       }
 
-      await FirebaseFirestore.instance.collection('sedes').doc(sedeId).delete();
+      await FirebaseFirestore.instance.collection('sede').doc(sedeId).delete();
 
       debugPrint('Sede $sedeId eliminada con éxito');
       await fetchSedes();
