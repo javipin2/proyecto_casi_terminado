@@ -9,6 +9,7 @@ import 'package:reserva_canchas/providers/sede_provider.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/date_symbol_data_local.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class Confirmar extends StatefulWidget {
   const Confirmar({super.key});
@@ -269,24 +270,103 @@ class _ConfirmarState extends State<Confirmar> with TickerProviderStateMixin {
     }
   }
 
-  Future<void> _aceptarReserva(String reservaId, ReservaProvider provider) async {
-    setState(() => _isLoading = true);
-    try {
-      await FirebaseFirestore.instance.runTransaction((transaction) async {
-        final reservaRef = FirebaseFirestore.instance.collection('reservas').doc(reservaId);
-        transaction.update(reservaRef, {'confirmada': true});
-      });
+  Future _enviarMensajeConfirmacionWhatsApp(Reserva reserva) async {
+  try {
+    // ✅ Si el teléfono viene null, asignamos un valor por defecto vacío
+    final String telefono = reserva.telefono ?? '';
+
+    if (telefono.isEmpty) {
       if (mounted) {
-        _showSuccessSnackBar('Reserva aceptada exitosamente');
+        _showErrorSnackBar('El cliente no tiene número de teléfono registrado.');
       }
-    } catch (e) {
+      return;
+    }
+
+    final String numeroTelefono = telefono.startsWith('+')
+        ? telefono
+        : '+57${telefono.replaceAll(RegExp(r'[^0-9]'), '')}';
+
+    final String fecha = DateFormat('EEEE, d \'de\' MMMM \'de\' yyyy', 'es')
+        .format(reserva.fecha);
+    final String horario = reserva.horario.horaFormateada;
+    final String canchaNombre = reserva.cancha.nombre;
+    final double precioTotal = reserva.montoTotal;
+    final double montoPagado = reserva.montoPagado;
+    final double saldoPendiente = precioTotal - montoPagado;
+    final bool esPagoCompleto = saldoPendiente <= 0;
+
+    final String mensaje = """
+
+*¡Hola ${reserva.nombre}! Tu reserva ha sido confirmada exitosamente.*✅
+
+📋 *DETALLES DE LA RESERVA:*
+🏟️ Cancha: *$canchaNombre*
+📅 Fecha: *$fecha*
+⏰ Horario: *$horario*
+
+""";
+
+    final String urlWhatsApp =
+        'https://api.whatsapp.com/send/?phone=$numeroTelefono&text=${Uri.encodeComponent(mensaje)}&type=phone_number&app_absent=0';
+    final Uri url = Uri.parse(urlWhatsApp);
+
+    if (await canLaunchUrl(url)) {
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+    } else {
+      debugPrint('No se pudo abrir WhatsApp para el número: $numeroTelefono');
       if (mounted) {
-        _showErrorSnackBar('Error al aceptar la reserva: $e');
+        _showErrorSnackBar(
+            'No se pudo abrir WhatsApp. Verifica que esté instalado.');
       }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
+    }
+  } catch (e) {
+    debugPrint('Error al enviar mensaje de WhatsApp: $e');
+    if (mounted) {
+      _showErrorSnackBar('Error al abrir WhatsApp: $e');
     }
   }
+}
+
+
+
+// Modificar el método _aceptarReserva existente
+Future<void> _aceptarReserva(String reservaId, ReservaProvider provider) async {
+  setState(() => _isLoading = true);
+  try {
+    // Obtener los datos de la reserva antes de confirmarla
+    final docSnapshot = await FirebaseFirestore.instance
+        .collection('reservas')
+        .doc(reservaId)
+        .get();
+    
+    if (!docSnapshot.exists) {
+      throw Exception('La reserva no existe');
+    }
+
+    // Crear objeto Reserva para obtener los datos
+    final reserva = await Reserva.fromFirestore(docSnapshot);
+    
+    // Actualizar la reserva en Firestore
+    await FirebaseFirestore.instance.runTransaction((transaction) async {
+      final reservaRef = FirebaseFirestore.instance.collection('reservas').doc(reservaId);
+      transaction.update(reservaRef, {'confirmada': true});
+    });
+    
+    if (mounted) {
+      _showSuccessSnackBar('Reserva aceptada exitosamente');
+      
+      // Enviar mensaje de confirmación por WhatsApp
+      await _enviarMensajeConfirmacionWhatsApp(reserva);
+    }
+  } catch (e) {
+    if (mounted) {
+      _showErrorSnackBar('Error al aceptar la reserva: $e');
+    }
+  } finally {
+    if (mounted) setState(() => _isLoading = false);
+  }
+}
+
 
   Future<void> _rechazarReserva(String reservaId, ReservaProvider provider) async {
     final bool? confirmar = await showDialog<bool>(

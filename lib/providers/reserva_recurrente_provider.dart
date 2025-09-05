@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import 'package:reserva_canchas/providers/audit_provider.dart';
 import '../models/reserva_recurrente.dart';
 import '../models/reserva.dart';
 import '../models/cancha.dart';
@@ -50,25 +51,50 @@ class ReservaRecurrenteProvider with ChangeNotifier {
 
   /// Crear una nueva reserva recurrente
   Future<String> crearReservaRecurrente(ReservaRecurrente reserva) async {
-    try {
-      final docRef = FirebaseFirestore.instance
-          .collection('reservas_recurrentes')
-          .doc();
-      
-      final reservaConId = reserva.copyWith(id: docRef.id);
-      await docRef.set(reservaConId.toFirestore());
-      
-      // Agregar a la lista local
-      _reservasRecurrentes.add(reservaConId);
-      notifyListeners();
-      
-      return docRef.id;
-    } catch (e) {
-      _errorMessage = 'Error al crear reserva recurrente: $e';
-      debugPrint(_errorMessage);
-      throw Exception(_errorMessage);
-    }
+  try {
+    final docRef = FirebaseFirestore.instance
+        .collection('reservas_recurrentes')
+        .doc();
+    
+    final reservaConId = reserva.copyWith(id: docRef.id);
+    await docRef.set(reservaConId.toFirestore());
+    
+    // 🔍 AUDITORÍA: Registrar creación de reserva recurrente
+    await AuditProvider.registrarAccion(
+      accion: reserva.precioPersonalizado ? 'crear_reserva_recurrente_precio_personalizado' : 'crear_reserva_recurrente',
+      entidad: 'reserva_recurrente',
+      entidadId: docRef.id,
+      datosNuevos: reservaConId.toFirestore(),
+      metadatos: {
+        'cancha_id': reserva.canchaId,
+        'sede': reserva.sede,
+        'cliente': reserva.clienteNombre,
+        'horario': reserva.horario,
+        'dias_semana': reserva.diasSemana,
+        'fecha_inicio': reserva.fechaInicio.toIso8601String(),
+        'fecha_fin': reserva.fechaFin?.toIso8601String(),
+        'monto_total': reserva.montoTotal,
+        'descuento_aplicado': reserva.descuentoAplicado ?? 0,
+      },
+      descripcion: reserva.precioPersonalizado 
+        ? 'Reserva recurrente creada con precio personalizado'
+        : 'Nueva reserva recurrente creada',
+    );
+    
+    // Agregar a la lista local
+    _reservasRecurrentes.add(reservaConId);
+    notifyListeners();
+    
+    return docRef.id;
+  } catch (e) {
+    _errorMessage = 'Error al crear reserva recurrente: $e';
+    debugPrint(_errorMessage);
+    throw Exception(_errorMessage);
   }
+}
+
+
+
 
   /// Excluir un día específico de una reserva recurrente
   Future<void> excluirDiaReservaRecurrente(String reservaId, DateTime fecha) async {
@@ -218,79 +244,165 @@ bool _reservaEsActivaHoy(ReservaRecurrente reserva, DateTime fecha) {
   }
 
   /// Generar reservas normales desde reservas recurrentes para un rango de fechas
-  Future<List<Reserva>> generarReservasDesdeRecurrentes(
-    DateTime fechaInicio, 
-    DateTime fechaFin, 
-    Map<String, Cancha> canchasMap
-  ) async {
-    final List<Reserva> reservasGeneradas = [];
+  // 🔥 MÉTODO CORREGIDO EN reserva_recurrente_provider.dart
+Future<List<Reserva>> generarReservasDesdeRecurrentes(
+  DateTime fechaInicio, 
+  DateTime fechaFin, 
+  Map<String, Cancha> canchasMap
+) async {
+  final List<Reserva> reservasGeneradas = [];
+  
+  // 🔥 NUEVA: Obtener todas las reservas individuales que tienen precio independiente
+  final reservasIndividualesPersonalizadas = await _obtenerReservasIndividualesPersonalizadas(
+    fechaInicio, 
+    fechaFin
+  );
+  
+  for (var fecha = fechaInicio; fecha.isBefore(fechaFin.add(Duration(days: 1))); fecha = fecha.add(Duration(days: 1))) {
+    final reservasActivas = obtenerReservasActivasParaFecha(fecha);
     
-    for (var fecha = fechaInicio; fecha.isBefore(fechaFin.add(Duration(days: 1))); fecha = fecha.add(Duration(days: 1))) {
-      final reservasActivas = obtenerReservasActivasParaFecha(fecha);
+    for (var reservaRecurrente in reservasActivas) {
+      final cancha = canchasMap[reservaRecurrente.canchaId];
+      if (cancha == null) continue;
       
-      for (var reservaRecurrente in reservasActivas) {
-        final cancha = canchasMap[reservaRecurrente.canchaId];
-        if (cancha == null) continue;
-        
-        final horario = Horario.fromHoraFormateada(reservaRecurrente.horario);
-        
-        final reserva = Reserva(
-          id: '${reservaRecurrente.id}_${DateFormat('yyyy-MM-dd').format(fecha)}',
-          cancha: cancha,
-          fecha: fecha,
-          horario: horario,
-          sede: reservaRecurrente.sede,
-          tipoAbono: reservaRecurrente.montoPagado >= reservaRecurrente.montoTotal 
-              ? TipoAbono.completo : TipoAbono.parcial,
-          montoTotal: reservaRecurrente.montoTotal,
-          montoPagado: reservaRecurrente.montoPagado,
-          nombre: reservaRecurrente.clienteNombre,
-          telefono: reservaRecurrente.clienteTelefono,
-          email: reservaRecurrente.clienteEmail,
-          confirmada: true,
-          // Marcar como reserva recurrente
-          reservaRecurrenteId: reservaRecurrente.id,
-          esReservaRecurrente: true,
-          // ✅ INCLUIR INFORMACIÓN DE PRECIO PERSONALIZADO
-          precioPersonalizado: reservaRecurrente.precioPersonalizado,
-          precioOriginal: reservaRecurrente.precioOriginal,
-          descuentoAplicado: reservaRecurrente.descuentoAplicado,
-        );
-        
-        reservasGeneradas.add(reserva);
+      final horario = Horario.fromHoraFormateada(reservaRecurrente.horario);
+      
+      // 🔥 NUEVA LÓGICA: Verificar si existe una reserva individual personalizada para esta fecha/cancha/hora
+      final claveReserva = '${DateFormat('yyyy-MM-dd').format(fecha)}_${reservaRecurrente.canchaId}_${reservaRecurrente.horario}';
+      final reservaPersonalizada = reservasIndividualesPersonalizadas[claveReserva];
+      
+      // 🔥 Usar precio personalizado si existe, sino usar el de la recurrente
+      double montoTotal = reservaRecurrente.montoTotal;
+      double montoPagado = reservaRecurrente.montoPagado;
+      bool precioPersonalizado = reservaRecurrente.precioPersonalizado;
+      double? precioOriginal = reservaRecurrente.precioOriginal;
+      double? descuentoAplicado = reservaRecurrente.descuentoAplicado;
+      
+      if (reservaPersonalizada != null) {
+        debugPrint('💰 Usando precio personalizado para $claveReserva: ${reservaPersonalizada['montoTotal']}');
+        montoTotal = reservaPersonalizada['montoTotal'];
+        montoPagado = reservaPersonalizada['montoPagado'];
+        precioPersonalizado = reservaPersonalizada['precioPersonalizado'] ?? false;
+        precioOriginal = reservaPersonalizada['precioOriginal'];
+        descuentoAplicado = reservaPersonalizada['descuentoAplicado'];
       }
+      
+      final reserva = Reserva(
+        id: '${reservaRecurrente.id}_${DateFormat('yyyy-MM-dd').format(fecha)}',
+        cancha: cancha,
+        fecha: fecha,
+        horario: horario,
+        sede: reservaRecurrente.sede,
+        tipoAbono: montoPagado >= montoTotal ? TipoAbono.completo : TipoAbono.parcial,
+        montoTotal: montoTotal, // 🔥 Ahora usa el precio correcto
+        montoPagado: montoPagado, // 🔥 Ahora usa el monto pagado correcto
+        nombre: reservaRecurrente.clienteNombre,
+        telefono: reservaRecurrente.clienteTelefono,
+        email: reservaRecurrente.clienteEmail,
+        confirmada: true,
+        reservaRecurrenteId: reservaRecurrente.id,
+        esReservaRecurrente: true,
+        precioPersonalizado: precioPersonalizado,
+        precioOriginal: precioOriginal,
+        descuentoAplicado: descuentoAplicado,
+      );
+      
+      reservasGeneradas.add(reserva);
+    }
+  }
+  
+  return reservasGeneradas;
+}
+
+// 🔥 NUEVO MÉTODO AUXILIAR
+Future<Map<String, Map<String, dynamic>>> _obtenerReservasIndividualesPersonalizadas(
+  DateTime fechaInicio,
+  DateTime fechaFin
+) async {
+  try {
+    final query = FirebaseFirestore.instance
+        .collection('reservas')
+        .where('precio_independiente_de_recurrencia', isEqualTo: true)
+        .where('fecha', isGreaterThanOrEqualTo: DateFormat('yyyy-MM-dd').format(fechaInicio))
+        .where('fecha', isLessThanOrEqualTo: DateFormat('yyyy-MM-dd').format(fechaFin));
+    
+    final snapshot = await query.get();
+    
+    Map<String, Map<String, dynamic>> reservasPersonalizadas = {};
+    
+    for (var doc in snapshot.docs) {
+      final data = doc.data();
+      final fecha = data['fecha'] as String;
+      final canchaId = data['cancha_id'] as String;
+      final horario = data['horario'] as String;
+      
+      final clave = '${fecha}_${canchaId}_${horario}';
+      reservasPersonalizadas[clave] = {
+        'montoTotal': (data['montoTotal'] ?? data['valor'] as num?)?.toDouble() ?? 0.0,
+        'montoPagado': (data['montoPagado'] as num?)?.toDouble() ?? 0.0,
+        'precioPersonalizado': data['precioPersonalizado'] as bool? ?? false,
+        'precioOriginal': (data['precio_original'] as num?)?.toDouble(),
+        'descuentoAplicado': (data['descuento_aplicado'] as num?)?.toDouble(),
+      };
+      
+      debugPrint('🔍 Reserva personalizada encontrada: $clave - Precio: ${reservasPersonalizadas[clave]!['montoTotal']}');
     }
     
-    return reservasGeneradas;
+    return reservasPersonalizadas;
+  } catch (e) {
+    debugPrint('❌ Error obteniendo reservas personalizadas: $e');
+    return {};
   }
+}
+
+
 
   /// Cancelar una reserva recurrente
   Future<void> cancelarReservaRecurrente(String reservaId) async {
-    try {
-      await FirebaseFirestore.instance
-          .collection('reservas_recurrentes')
-          .doc(reservaId)
-          .update({
-        'estado': EstadoRecurrencia.cancelada.name,
-        'fechaActualizacion': Timestamp.now(),
-      });
-      
-      // ✅ NO REMOVER DE LA LISTA, SOLO ACTUALIZAR EL ESTADO
-      final index = _reservasRecurrentes.indexWhere((r) => r.id == reservaId);
-      if (index != -1) {
-        _reservasRecurrentes[index] = _reservasRecurrentes[index].copyWith(
-          estado: EstadoRecurrencia.cancelada,
-          fechaActualizacion: DateTime.now(),
-        );
-      }
-      
-      notifyListeners();
-    } catch (e) {
-      _errorMessage = 'Error al cancelar reserva recurrente: $e';
-      debugPrint(_errorMessage);
-      throw Exception(_errorMessage);
-    }
+  try {
+    final index = _reservasRecurrentes.indexWhere((r) => r.id == reservaId);
+    if (index == -1) throw Exception('Reserva recurrente no encontrada');
+    
+    final reservaAnterior = _reservasRecurrentes[index];
+    
+    await FirebaseFirestore.instance
+        .collection('reservas_recurrentes')
+        .doc(reservaId)
+        .update({
+      'estado': EstadoRecurrencia.cancelada.name,
+      'fechaActualizacion': Timestamp.now(),
+    });
+    
+    // 🔍 AUDITORÍA: Registrar cancelación
+    await AuditProvider.registrarAccion(
+      accion: 'cancelar_reserva_recurrente',
+      entidad: 'reserva_recurrente',
+      entidadId: reservaId,
+      datosAntiguos: {'estado': reservaAnterior.estado.name},
+      datosNuevos: {'estado': EstadoRecurrencia.cancelada.name},
+      metadatos: {
+        'cliente': reservaAnterior.clienteNombre,
+        'horario': reservaAnterior.horario,
+        'sede': reservaAnterior.sede,
+        'monto_afectado': reservaAnterior.montoTotal,
+      },
+      descripcion: 'Reserva recurrente cancelada completamente',
+    );
+    
+    // NO REMOVER DE LA LISTA, SOLO ACTUALIZAR EL ESTADO
+    _reservasRecurrentes[index] = _reservasRecurrentes[index].copyWith(
+      estado: EstadoRecurrencia.cancelada,
+      fechaActualizacion: DateTime.now(),
+    );
+    
+    notifyListeners();
+  } catch (e) {
+    _errorMessage = 'Error al cancelar reserva recurrente: $e';
+    debugPrint(_errorMessage);
+    throw Exception(_errorMessage);
   }
+}
+
 
   void limpiar() {
     _reservasRecurrentes.clear();
@@ -308,45 +420,33 @@ bool _reservaEsActivaHoy(ReservaRecurrente reserva, DateTime fecha) {
     final reservaActual = _reservasRecurrentes[index];
     final ahora = DateTime.now();
     
-    // ✅ NUEVA LÓGICA CORREGIDA
     List<String> nuevosExcluidos = List<String>.from(reservaActual.diasExcluidos);
     DateTime? nuevaFechaFin;
     
     try {
-      // Obtener la hora de la reserva recurrente
       final horarioReserva = Horario.fromHoraFormateada(reservaActual.horario);
       final horaReservaHoy = DateTime(
         ahora.year, ahora.month, ahora.day,
         horarioReserva.hora.hour, horarioReserva.hora.minute
       );
       
-      // ✅ VERIFICAR SI HOY ES UN DÍA VÁLIDO PARA ESTA RESERVA RECURRENTE
       final diaSemanaHoy = DateFormat('EEEE', 'es').format(ahora).toLowerCase();
       final esHoyDiaValido = reservaActual.diasSemana.contains(diaSemanaHoy);
       final fechaHoyStr = DateFormat('yyyy-MM-dd').format(ahora);
       final yaEstaExcluidoHoy = reservaActual.diasExcluidos.contains(fechaHoyStr);
       
       if (esHoyDiaValido && !yaEstaExcluidoHoy) {
-        // Hoy SÍ hay reserva programada
         if (ahora.isBefore(horaReservaHoy)) {
-          // ⏰ LA HORA AÚN NO HA PASADO - Excluir HOY también y establecer fechaFin como ayer
           nuevosExcluidos.add(fechaHoyStr);
           nuevaFechaFin = DateTime(ahora.year, ahora.month, ahora.day - 1, 23, 59, 59, 999);
-          debugPrint('🕐 Hora no ha pasado (${DateFormat('HH:mm').format(ahora)} < ${DateFormat('HH:mm').format(horaReservaHoy)}). Excluyendo HOY también.');
         } else {
-          // ⏰ LA HORA YA PASÓ - NO excluir hoy, establecer fechaFin como final de hoy
           nuevaFechaFin = DateTime(ahora.year, ahora.month, ahora.day, 23, 59, 59, 999);
-          debugPrint('🕐 Hora ya pasó (${DateFormat('HH:mm').format(ahora)} >= ${DateFormat('HH:mm').format(horaReservaHoy)}). Manteniendo hoy para inventario.');
         }
       } else {
-        // Hoy NO hay reserva programada O ya está excluido - establecer fechaFin como ayer
         nuevaFechaFin = DateTime(ahora.year, ahora.month, ahora.day - 1, 23, 59, 59, 999);
-        debugPrint('📅 Hoy no es día válido para esta reserva o ya está excluido. Solo cancelando futuras.');
       }
       
     } catch (e) {
-      // Si hay error parseando la hora, usar lógica conservadora (mantener hoy)
-      debugPrint('⚠️ Error parseando horario ${reservaActual.horario}: $e');
       nuevaFechaFin = DateTime(ahora.year, ahora.month, ahora.day, 23, 59, 59, 999);
     }
     
@@ -362,15 +462,33 @@ bool _reservaEsActivaHoy(ReservaRecurrente reserva, DateTime fecha) {
         .doc(reservaId)
         .update(reservaActualizada.toFirestore());
     
-    // ✅ ACTUALIZAR LA LISTA LOCAL
+    // 🔍 AUDITORÍA: Registrar cancelación de futuras
+    await AuditProvider.registrarAccion(
+      accion: 'cancelar_reservas_futuras',
+      entidad: 'reserva_recurrente',
+      entidadId: reservaId,
+      datosAntiguos: {
+        'estado': reservaActual.estado.name,
+        'fechaFin': reservaActual.fechaFin?.toIso8601String(),
+        'diasExcluidos': reservaActual.diasExcluidos,
+      },
+      datosNuevos: {
+        'estado': EstadoRecurrencia.cancelada.name,
+        'fechaFin': nuevaFechaFin?.toIso8601String(),
+        'diasExcluidos': nuevosExcluidos,
+      },
+      metadatos: {
+        'cliente': reservaActual.clienteNombre,
+        'horario': reservaActual.horario,
+        'sede': reservaActual.sede,
+        'fecha_corte': DateFormat('yyyy-MM-dd HH:mm:ss').format(ahora),
+        'dias_excluidos_agregados': nuevosExcluidos.where((d) => !reservaActual.diasExcluidos.contains(d)).toList(),
+      },
+      descripcion: 'Reservas futuras canceladas desde hoy',
+    );
+    
     _reservasRecurrentes[index] = reservaActualizada;
     notifyListeners();
-    
-    debugPrint('✅ Reservas futuras canceladas correctamente.');
-    debugPrint('✅ Estado: ${reservaActualizada.estado}');
-    debugPrint('✅ FechaFin establecida: ${nuevaFechaFin != null ? DateFormat('yyyy-MM-dd HH:mm:ss').format(nuevaFechaFin) : 'null'}');
-    debugPrint('✅ Días excluidos: ${nuevosExcluidos.join(', ')}');
-    debugPrint('✅ Hora actual: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(ahora)}');
     
   } catch (e) {
     _errorMessage = 'Error al cancelar reservas futuras: $e';
@@ -378,6 +496,7 @@ bool _reservaEsActivaHoy(ReservaRecurrente reserva, DateTime fecha) {
     throw Exception(_errorMessage);
   }
 }
+
 
 
 }

@@ -1,0 +1,372 @@
+Future _imprimirFacturaTermica(Reserva reserva) async {
+  try {
+    int anchoFactura = 48;
+    
+    String centrarTexto(String texto, [int? ancho]) {
+      ancho ??= anchoFactura;
+      if (texto.length >= ancho) return texto;
+      int espaciosIzq = ((ancho - texto.length) / 2).floor();
+      return ' ' * espaciosIzq + texto;
+    }
+    
+    String justificarTexto(String izq, String der, [int? ancho]) {
+      ancho ??= anchoFactura;
+      int espacios = ancho - izq.length - der.length;
+      if (espacios < 1) espacios = 1;
+      return izq + ' ' * espacios + der;
+    }
+    
+    String lineaGuiones = '-' * anchoFactura;
+    String lineaPuntos = '.' * anchoFactura;
+    String lineaIguales = '=' * anchoFactura;
+    
+    // CÁLCULOS FINANCIEROS
+    final valorOriginal = reserva.precioPersonalizado && reserva.precioOriginal != null 
+      ? reserva.precioOriginal! 
+      : reserva.montoTotal;
+    
+    final descuento = reserva.descuentoAplicado ?? 0.0;
+    final totalFinal = reserva.montoTotal;
+    final abonado = reserva.montoPagado;
+    final pendiente = totalFinal - abonado;
+    
+    // CREAR TODAS LAS SECCIONES
+    final tituloFactura = centrarTexto('*** FACTURA DE RESERVA ***');
+    final nombreEmpresa = centrarTexto('CANCHAS LA JUGADA');
+    
+    final infoClienteTitulo = centrarTexto('INFORMACION DEL CLIENTE');
+    final clienteNombre = justificarTexto('Cliente:', '${reserva.nombre ?? 'N/A'}');
+    final clienteTelefono = justificarTexto('Telefono:', '${reserva.telefono ?? 'N/A'}');
+    
+    final detallesTitulo = centrarTexto('DETALLES DE LA RESERVA');
+    final detalleCancha = justificarTexto('Cancha Deportiva:', '${reserva.cancha.nombre}');
+    final detalleFecha = justificarTexto('Fecha de Reserva:', '${DateFormat('dd/MM/yyyy').format(reserva.fecha)}');
+    final detalleHorario = justificarTexto('Horario:', '${reserva.horario.horaFormateada}');
+    final detalleDuracion = justificarTexto('Duracion:', '1 Hora');
+    final detalleEmision = justificarTexto('Fecha de Emision:', '${DateFormat('dd/MM/yyyy HH:mm').format(DateTime.now())}');
+    
+    final financieroTitulo = centrarTexto('RESUMEN FINANCIERO');
+    final financieroValor = justificarTexto('Valor por Hora:', '\$${NumberFormat('#,###', 'es').format(valorOriginal.toInt())}');
+    final financieroSubtotal = justificarTexto('Subtotal:', '\$${NumberFormat('#,###', 'es').format(valorOriginal.toInt())}');
+    final financieroDescuento = justificarTexto('Descuentos:', descuento > 0 ? '-\$${NumberFormat('#,###', 'es').format(descuento.toInt())}' : '\$0');
+    final financieroTotal = justificarTexto('TOTAL A PAGAR:', '\$${NumberFormat('#,###', 'es').format(totalFinal.toInt())}');
+    final financieroAbonado = justificarTexto('MONTO ABONADO:', '\$${NumberFormat('#,###', 'es').format(abonado.toInt())}');
+    final financieroPendiente = justificarTexto('SALDO PENDIENTE:', '\$${NumberFormat('#,###', 'es').format(pendiente.toInt())}');
+    
+    final agradecimiento1 = centrarTexto('¡¡¡ GRACIAS POR ELEGIRNOS !!!');
+    final agradecimiento2 = centrarTexto('ESPERAMOS VERTE PRONTO');
+    
+    final infoTitulo = centrarTexto('INFORMACION IMPORTANTE');
+    final info1 = centrarTexto(' Conserve este comprobante como prueba de pago');
+    final info2 = centrarTexto(' Para cualquier reclamo presente este documento');
+    final info3 = centrarTexto(' Llegue 10 minutos antes de su horario reservado');
+    final info4 = centrarTexto(' Cancelaciones con 2 horas de anticipacion');
+    
+    final fechaHora = centrarTexto(DateFormat('dd/MM/yyyy - HH:mm:ss', 'es_ES').format(DateTime.now()));
+    
+    final StringBuffer htmlBuffer = StringBuffer();
+    
+    htmlBuffer.write('''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        @page { 
+            size: A4 portrait; 
+            margin: 8mm; 
+        }
+        body { 
+            font-family: 'Consolas', 'Monaco', 'Lucida Console', 'Liberation Mono', 'DejaVu Sans Mono', 'Bitstream Vera Sans Mono', 'Courier New', monospace !important;
+            font-size: 13px !important;
+            font-weight: 900 !important;
+            margin: 0; 
+            padding: 8px;
+            white-space: pre;
+            color: #000000 !important;
+            background: #ffffff !important;
+            line-height: 1.15 !important;
+            letter-spacing: 0.02em !important;
+            -webkit-font-smoothing: none !important;
+            -moz-osx-font-smoothing: unset !important;
+            text-rendering: optimizeSpeed !important;
+        }
+        .extra-bold {
+            font-weight: 900 !important;
+            font-size: 14px !important;
+            text-shadow: 0.5px 0.5px 0px #000000 !important;
+        }
+        .section {
+            margin: 10px 0;
+        }
+        @media print {
+            * {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+                color-adjust: exact !important;
+            }
+            body { 
+                font-family: 'Consolas', 'Monaco', 'Lucida Console', monospace !important;
+                font-size: 12px !important;
+                font-weight: 900 !important;
+                color: #000000 !important;
+                background: #ffffff !important;
+                -webkit-font-smoothing: none !important;
+                -moz-osx-font-smoothing: unset !important;
+                text-rendering: optimizeSpeed !important;
+                letter-spacing: 0.03em !important;
+                line-height: 1.1 !important;
+                margin: 0 !important;
+                padding: 5px !important;
+            }
+            .extra-bold {
+                font-weight: 900 !important;
+                font-size: 13px !important;
+                text-shadow: 0.8px 0.8px 0px #000000 !important;
+            }
+            @page {
+                margin: 5mm !important;
+                size: A4 !important;
+            }
+        }
+    </style>
+</head>
+<body>''');
+
+    // AGREGAR CONTENIDO CON CLASES PARA MÁXIMA DENSIDAD
+    htmlBuffer.write('<div class="extra-bold">');
+    htmlBuffer.write(tituloFactura);
+    htmlBuffer.write('</div>\n\n<div class="extra-bold">');
+    htmlBuffer.write(nombreEmpresa);
+    htmlBuffer.write('</div>\n\n\n');
+    
+    htmlBuffer.write('<div class="section">\n');
+    htmlBuffer.write('<div class="extra-bold">$lineaIguales</div>\n');
+    htmlBuffer.write('<div class="extra-bold">$infoClienteTitulo</div>\n');
+    htmlBuffer.write('<div class="extra-bold">$lineaGuiones</div>\n');
+    htmlBuffer.write('$clienteNombre\n');
+    htmlBuffer.write('$clienteTelefono\n');
+    htmlBuffer.write('</div>\n\n');
+    
+    htmlBuffer.write('<div class="section">\n');
+    htmlBuffer.write('<div class="extra-bold">$lineaIguales</div>\n');
+    htmlBuffer.write('<div class="extra-bold">$detallesTitulo</div>\n');
+    htmlBuffer.write('<div class="extra-bold">$lineaGuiones</div>\n');
+    htmlBuffer.write('$detalleCancha\n');
+    htmlBuffer.write('$detalleFecha\n');
+    htmlBuffer.write('$detalleHorario\n');
+    htmlBuffer.write('$detalleDuracion\n');
+    htmlBuffer.write('$detalleEmision\n');
+    htmlBuffer.write('</div>\n\n');
+    
+    htmlBuffer.write('<div class="section">\n');
+    htmlBuffer.write('<div class="extra-bold">$lineaIguales</div>\n');
+    htmlBuffer.write('<div class="extra-bold">$financieroTitulo</div>\n');
+    htmlBuffer.write('<div class="extra-bold">$lineaGuiones</div>\n');
+    htmlBuffer.write('$financieroValor\n');
+    htmlBuffer.write('$financieroSubtotal\n');
+    htmlBuffer.write('$financieroDescuento\n');
+    htmlBuffer.write('<div class="extra-bold">$lineaPuntos</div>\n');
+    htmlBuffer.write('<div class="extra-bold">$financieroTotal</div>\n');
+    htmlBuffer.write('<div class="extra-bold">$financieroAbonado</div>\n');
+    htmlBuffer.write('<div class="extra-bold">$lineaPuntos</div>\n');
+    htmlBuffer.write('<div class="extra-bold">$financieroPendiente</div>\n');
+    htmlBuffer.write('<div class="extra-bold">$lineaGuiones</div>\n');
+    htmlBuffer.write('</div>\n\n');
+    
+    htmlBuffer.write('${centrarTexto('')}\n');
+    htmlBuffer.write('<div class="extra-bold">$agradecimiento1</div>\n');
+    htmlBuffer.write('<div class="extra-bold">$agradecimiento2</div>\n');
+    htmlBuffer.write('${centrarTexto('')}\n\n');
+    
+    htmlBuffer.write('<div class="section">\n');
+    htmlBuffer.write('<div class="extra-bold">$lineaPuntos</div>\n');
+    htmlBuffer.write('<div class="extra-bold">$infoTitulo</div>\n');
+    htmlBuffer.write('<div class="extra-bold">$lineaPuntos</div>\n');
+    htmlBuffer.write('$info1\n');
+    htmlBuffer.write('$info2\n');
+    htmlBuffer.write('$info3\n');
+    htmlBuffer.write('$info4\n');
+    htmlBuffer.write('<div class="extra-bold">$lineaPuntos</div>\n');
+    htmlBuffer.write('</div>\n\n');
+    
+    htmlBuffer.write('${centrarTexto('')}\n');
+    htmlBuffer.write('${centrarTexto('')}\n');
+    htmlBuffer.write('<div class="extra-bold">$fechaHora</div>\n\n');
+    
+    // Espacios en blanco
+    for (int i = 0; i < 8; i++) {
+      htmlBuffer.write('${centrarTexto('')}\n');
+    }
+    
+    htmlBuffer.write('''
+<script>
+function prepararImpresionTermica() {
+    // FORZAR MÁXIMA DENSIDAD PARA IMPRESORAS TÉRMICAS
+    var estiloTermico = document.createElement('style');
+    estiloTermico.innerHTML = `
+        @media print {
+            * {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+                color-adjust: exact !important;
+                filter: contrast(1.8) brightness(0.9) !important;
+            }
+            body {
+                font-family: 'Consolas', monospace !important;
+                font-size: 11px !important;
+                font-weight: 900 !important;
+                color: #000000 !important;
+                background: #ffffff !important;
+                -webkit-font-smoothing: none !important;
+                -moz-osx-font-smoothing: unset !important;
+                text-rendering: optimizeSpeed !important;
+                letter-spacing: 0.05em !important;
+                line-height: 1.0 !important;
+                text-shadow: 0.5px 0.5px 0px #000000 !important;
+            }
+            .extra-bold {
+                font-weight: 900 !important;
+                font-size: 12px !important;
+                text-shadow: 1px 1px 0px #000000 !important;
+                filter: contrast(2.0) brightness(0.8) !important;
+            }
+        }
+    `;
+    document.head.appendChild(estiloTermico);
+    
+    // APLICAR FILTROS ADICIONALES PARA DENSIDAD
+    document.body.style.filter = 'contrast(1.5) brightness(0.9)';
+    document.body.style.fontWeight = '900';
+    
+    // ESPERAR Y IMPRIMIR
+    setTimeout(function() {
+        window.print();
+    }, 1200);
+}
+
+if (document.readyState === 'complete') {
+    setTimeout(prepararImpresionTermica, 1500);
+} else {
+    window.addEventListener('load', function() {
+        setTimeout(prepararImpresionTermica, 1500);
+    });
+}
+
+window.addEventListener('afterprint', function() {
+    setTimeout(function() {
+        if (window.opener) {
+            window.close();
+        }
+    }, 2000);
+});
+</script>
+
+</body>
+</html>''');
+
+    // LIMPIAR HTML
+    String facturaHTML = htmlBuffer.toString();
+    facturaHTML = facturaHTML.replaceAll('\uFEFF', '');
+    facturaHTML = facturaHTML.replaceAll('\u200B', '');
+    facturaHTML = facturaHTML.replaceAll('\u00A0', ' ');
+    
+    if (!facturaHTML.startsWith('<!DOCTYPE html>')) {
+      int docTypeIndex = facturaHTML.indexOf('<!DOCTYPE html>');
+      if (docTypeIndex > 0) {
+        facturaHTML = facturaHTML.substring(docTypeIndex);
+      }
+    }
+    
+    final blob = html.Blob([facturaHTML], 'text/html; charset=utf-8');
+    final url = html.Url.createObjectUrlFromBlob(blob);
+    
+    final windowFeatures = [
+      'width=650',
+      'height=850',
+      'left=100',
+      'top=50',
+      'scrollbars=yes',
+      'resizable=yes',
+      'menubar=no',
+      'toolbar=no',
+      'location=no',
+      'status=no',
+    ].join(',');
+    
+    final ventanaImpresion = html.window.open(
+      url,
+      '_blank',
+      windowFeatures
+    );
+    
+    if (ventanaImpresion != null) {
+      Timer(Duration(seconds: 10), () {
+        try {
+          html.Url.revokeObjectUrl(url);
+        } catch (e) {
+          // Ignorar errores de limpieza
+        }
+      });
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.print, color: Colors.white),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Factura Optimizada para Impresora Térmica',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      Text(
+                        'Con máxima densidad de impresión',
+                        style: TextStyle(fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: Colors.green[700],
+            duration: Duration(seconds: 5),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      
+    } else {
+      throw Exception('No se pudo abrir la ventana de impresión');
+    }
+    
+  } catch (e) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.error, color: Colors.white),
+                  SizedBox(width: 8),
+                  Text('Error de Impresión Térmica', style: TextStyle(fontWeight: FontWeight.bold)),
+                ],
+              ),
+              SizedBox(height: 4),
+              Text('Verificar configuración de densidad térmica', style: TextStyle(fontSize: 12)),
+            ],
+          ),
+          backgroundColor: Colors.red[700],
+          duration: Duration(seconds: 5),
+        ),
+      );
+    }
+  }
+}

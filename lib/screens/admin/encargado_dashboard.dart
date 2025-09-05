@@ -18,11 +18,17 @@ class EncargadoDashboardScreen extends StatefulWidget {
 class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
     with TickerProviderStateMixin {
   late AnimationController _fadeController;
-  late AnimationController _pulseController;
+  late AnimationController _sidebarController;
   late AnimationController _badgeController;
   late Stream<QuerySnapshot> _reservasPendientesStream;
 
-  // Paleta de colores
+  // Control del sidebar
+  bool _isSidebarCollapsed = false;
+  bool _isMobileMenuOpen = false; // Para controlar el menú móvil
+  String _currentSection = 'Reservas Pendientes';
+  Widget _currentContent = const Confirmar();
+
+  // Paleta de colores mejorada
   final Color _secondaryColor = const Color(0xFF6366F1);
   final Color _accentColor = const Color(0xFF8B5CF6);
   final Color _backgroundColor = const Color(0xFFF8FAFC);
@@ -31,6 +37,23 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
   final Color _textPrimary = const Color(0xFF0F172A);
   final Color _textSecondary = const Color(0xFF64748B);
   final Color _borderColor = const Color(0xFFE2E8F0);
+  final Color _sidebarColor = const Color(0xFF1E293B);
+
+  // Configuraciones de las secciones - SOLO RESERVAS PENDIENTES Y REGISTRO
+  final List<Map<String, dynamic>> _sections = [
+    {
+      'icon': Icons.pending_actions_rounded,
+      'title': 'Reservas Pendientes',
+      'screen': const Confirmar(),
+      'hasNotification': true,
+    },
+    {
+      'icon': Icons.book_rounded,
+      'title': 'Registro',
+      'screen': const EncargadoRegistroReservasScreen(),
+      'hasNotification': false,
+    },
+  ];
 
   @override
   void initState() {
@@ -39,21 +62,20 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
       vsync: this,
       duration: const Duration(milliseconds: 800),
     );
-    _pulseController = AnimationController(
+    _sidebarController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 2000),
-    )..repeat(reverse: true);
-    
+      duration: const Duration(milliseconds: 300),
+    );
     _badgeController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 600),
     )..repeat(reverse: true);
-    
+
     _reservasPendientesStream = FirebaseFirestore.instance
         .collection('reservas')
         .where('confirmada', isEqualTo: false)
         .snapshots();
-    
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _fadeController.forward();
     });
@@ -62,9 +84,44 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
   @override
   void dispose() {
     _fadeController.dispose();
-    _pulseController.dispose();
+    _sidebarController.dispose();
     _badgeController.dispose();
     super.dispose();
+  }
+
+  bool _isMobile(BuildContext context) {
+    return MediaQuery.of(context).size.width <= 768;
+  }
+
+  bool _isTablet(BuildContext context) {
+    final width = MediaQuery.of(context).size.width;
+    return width > 768 && width <= 1024;
+  }
+
+  void _toggleSidebar() {
+    setState(() {
+      if (_isMobile(context)) {
+        _isMobileMenuOpen = !_isMobileMenuOpen;
+      } else {
+        _isSidebarCollapsed = !_isSidebarCollapsed;
+        if (_isSidebarCollapsed) {
+          _sidebarController.forward();
+        } else {
+          _sidebarController.reverse();
+        }
+      }
+    });
+  }
+
+  void _navigateToSection(String title, Widget screen) {
+    setState(() {
+      _currentSection = title;
+      _currentContent = screen;
+      // En móvil, cerrar el menú después de navegar
+      if (_isMobile(context)) {
+        _isMobileMenuOpen = false;
+      }
+    });
   }
 
   Future<void> _showLogoutConfirmation(BuildContext context) async {
@@ -93,12 +150,14 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
                 ),
               ),
               const SizedBox(width: 12),
-              Text(
-                'Cerrar Sesión',
-                style: GoogleFonts.inter(
-                  fontWeight: FontWeight.w600,
-                  color: _textPrimary,
-                  fontSize: 18,
+              Flexible(
+                child: Text(
+                  'Cerrar Sesión',
+                  style: GoogleFonts.inter(
+                    fontWeight: FontWeight.w600,
+                    color: _textPrimary,
+                    fontSize: 18,
+                  ),
                 ),
               ),
             ],
@@ -150,7 +209,7 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
   Future<void> _logout(BuildContext context) async {
     final navigator = Navigator.of(context);
     final scaffoldMessenger = ScaffoldMessenger.of(context);
-    
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -222,782 +281,900 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
   @override
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
-    final isDesktop = screenSize.width > 1200;
+    final isMobile = _isMobile(context);
+    final isTablet = _isTablet(context);
+    final isDesktop = screenSize.width > 1024;
     final user = FirebaseAuth.instance.currentUser;
 
+    if (isMobile) {
+      return _buildMobileLayout(context, user);
+    } else {
+      return _buildDesktopLayout(context, user, isDesktop);
+    }
+  }
+
+  Widget _buildMobileLayout(BuildContext context, User? user) {
     return Scaffold(
       backgroundColor: _backgroundColor,
-      appBar: _buildAppBar(context),
-      drawer: isDesktop ? null : _buildDrawer(context, user),
+      appBar: _buildMobileAppBar(context, user),
+      drawer: _buildMobileDrawer(context, user),
       body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              _backgroundColor,
-              _surfaceColor.withValues(alpha: 0.3),
-            ],
-            stops: const [0.0, 1.0],
-          ),
-        ),
-        child: Column(
-          children: [
-            _buildWelcomeHeader(user),
-            Expanded(
-              child: Padding(
-                padding: EdgeInsets.symmetric(
-                  horizontal: isDesktop ? 32.0 : 16.0,
-                  vertical: isDesktop ? 24.0 : 16.0,
-                ),
-                child: 
-                LayoutBuilder(
-  builder: (context, constraints) {
-    int crossAxisCount;
-    double childAspectRatio;
-    
-    if (constraints.maxWidth > 1200) {
-      crossAxisCount = 3;  // Cambio de 2 a 3
-      childAspectRatio = 1.2;  // Cambio de 0.95 a 1.2
-    } else if (constraints.maxWidth > 900) {
-      crossAxisCount = 2;
-      childAspectRatio = 1.0;  // Cambio de 0.9 a 1.0
-    } else if (constraints.maxWidth > 600) {
-      crossAxisCount = 2;
-      childAspectRatio = 0.95;  // Cambio de 0.85 a 0.95
-    } else {
-      crossAxisCount = 1;
-      childAspectRatio = 1.1;
-    }
-    
-    return GridView.count(
-      crossAxisCount: crossAxisCount,
-      crossAxisSpacing: isDesktop ? 20 : 20,  // Cambio de 24 a 20
-      mainAxisSpacing: isDesktop ? 20 : 20,   // Cambio de 24 a 20
-      childAspectRatio: childAspectRatio,
-      physics: const BouncingScrollPhysics(),
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).padding.bottom + 16,
-      ),
-      children: _buildEncargadoCards(context),
-    );
-  },
-),
-              ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(0),
+          child: Container(
+            decoration: BoxDecoration(
+              color: _cardColor,
             ),
-          ],
+            child: _currentContent,
+          ),
         ),
       ),
     );
   }
 
-  PreferredSizeWidget _buildAppBar(BuildContext context) {
+  PreferredSizeWidget _buildMobileAppBar(BuildContext context, User? user) {
     return AppBar(
+      backgroundColor: _sidebarColor,
+      foregroundColor: Colors.white,
+      elevation: 0,
+      leading: Builder(
+        builder: (context) => IconButton(
+          icon: Icon(Icons.menu_rounded),
+          onPressed: () => Scaffold.of(context).openDrawer(),
+        ),
+      ),
       title: Row(
         children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [_secondaryColor, _accentColor],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
+          Expanded(
+            child: Text(
+              _currentSection,
+              style: GoogleFonts.inter(
+                fontWeight: FontWeight.w600,
+                color: Colors.white,
+                fontSize: 16,
               ),
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: [
-                BoxShadow(
-                  color: _secondaryColor.withValues(alpha: 0.3),
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: Icon(
-              Icons.dashboard_rounded,
-              color: Colors.white,
-              size: 24,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
-          const SizedBox(width: 16),
-          Text(
-            'Encargado',
-            style: GoogleFonts.inter(
-              fontWeight: FontWeight.w700,
-              color: _textPrimary,
-              fontSize: 20,
-            ),
+          // Badge de notificaciones para móvil
+          StreamBuilder<QuerySnapshot>(
+            stream: _reservasPendientesStream,
+            builder: (context, snapshot) {
+              if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                return const SizedBox.shrink();
+              }
+              
+              final notificationCount = snapshot.data!.docs.length;
+              return Container(
+                margin: const EdgeInsets.only(left: 8),
+                child: AnimatedBuilder(
+                  animation: _badgeController,
+                  builder: (context, child) {
+                    return Transform.scale(
+                      scale: 1.0 + (_badgeController.value * 0.1),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [Colors.red.shade500, Colors.red.shade600],
+                          ),
+                          borderRadius: BorderRadius.circular(12),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.red.shade500.withValues(alpha: 0.3),
+                              blurRadius: 4,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: Text(
+                          notificationCount > 99 ? '99+' : '$notificationCount',
+                          style: GoogleFonts.inter(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              );
+            },
           ),
         ],
       ),
-      backgroundColor: _cardColor,
-      elevation: 0,
-      automaticallyImplyLeading: false,
-      surfaceTintColor: Colors.transparent,
-      shadowColor: _borderColor,
-      bottom: PreferredSize(
-        preferredSize: const Size.fromHeight(1),
-        child: Container(
-          height: 1,
-          color: _borderColor,
-        ),
-      ),
-      actions: [
-        Container(
-          margin: const EdgeInsets.only(right: 16),
-          child: Tooltip(
-            message: 'Cerrar sesión',
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: () => _showLogoutConfirmation(context),
-                borderRadius: BorderRadius.circular(12),
-                child: Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.red.shade50,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: Colors.red.shade200,
-                      width: 1,
-                    ),
-                  ),
-                  child: Icon(
-                    Icons.logout_rounded,
-                    color: Colors.red.shade600,
-                    size: 20,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
+      systemOverlayStyle: SystemUiOverlayStyle.light,
     );
   }
 
-  Widget _buildWelcomeHeader(User? user) {
-    final screenSize = MediaQuery.of(context).size;
-    final isDesktop = screenSize.width > 1200;
-    final isTablet = screenSize.width > 768;
-    
-    final hour = DateTime.now().hour;
-    String greeting = 'Buenos días';
-    IconData greetingIcon = Icons.wb_sunny_rounded;
-    
-    if (hour >= 12 && hour < 18) {
-      greeting = 'Buenas tardes';
-      greetingIcon = Icons.wb_sunny_outlined;
-    } else if (hour >= 18) {
-      greeting = 'Buenas noches';
-      greetingIcon = Icons.brightness_3_rounded;
-    }
-
-    return Container(
-      width: double.infinity,
-      margin: EdgeInsets.symmetric(
-        horizontal: isDesktop ? 32.0 : 16.0,
-        vertical: isDesktop ? 24.0 : 16.0,
-      ),
-      padding: EdgeInsets.all(isDesktop ? 28.0 : 20.0),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [_secondaryColor, _accentColor],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: _secondaryColor.withValues(alpha: 0.3),
-            blurRadius: 20,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      greetingIcon,
-                      color: Colors.white.withValues(alpha: 0.9),
-                      size: isDesktop ? 24 : 20,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      greeting,
-                      style: GoogleFonts.inter(
-                        fontSize: isDesktop ? 16 : 14,
-                        color: Colors.white.withValues(alpha: 0.9),
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Encargado',
-                  style: GoogleFonts.inter(
-                    fontSize: isDesktop ? 28 : 24,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'encargado@gmail.com',
-                  style: GoogleFonts.inter(
-                    fontSize: isDesktop ? 14 : 12,
-                    color: Colors.white.withValues(alpha: 0.8),
-                    fontWeight: FontWeight.w400,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          if (isTablet) ...[
-            AnimatedBuilder(
-              animation: _pulseController,
-              builder: (context, child) {
-                return Transform.scale(
-                  scale: 1.0 + (_pulseController.value * 0.05),
-                  child: Container(
-                    width: isDesktop ? 64 : 56,
-                    height: isDesktop ? 64 : 56,
+  Widget _buildMobileDrawer(BuildContext context, User? user) {
+    return Drawer(
+      backgroundColor: _sidebarColor,
+      child: SafeArea(
+        child: Column(
+          children: [
+            // Header del drawer móvil
+            Container(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                children: [
+                  Container(
+                    width: 60,
+                    height: 60,
                     decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.3),
-                        width: 2,
+                      gradient: LinearGradient(
+                        colors: [_secondaryColor, _accentColor],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
                       ),
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: _secondaryColor.withValues(alpha: 0.3),
+                          blurRadius: 12,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
                     ),
                     child: Icon(
                       Icons.admin_panel_settings_rounded,
                       color: Colors.white,
-                      size: isDesktop ? 32 : 28,
+                      size: 28,
                     ),
                   ),
-                );
-              },
-            ),
-          ],
-        ],
-      ),
-    ).animate().fadeIn(duration: 600.ms).slideY(begin: -0.2, duration: 600.ms);
-  }
-
-  List<Widget> _buildEncargadoCards(BuildContext context) {
-    final cardConfigs = [
-      {
-        'icon': Icons.pending_actions_rounded,
-        'title': 'Reservas Pendientes',
-        'description': 'Confirma las reservas pendientes.',
-        'color': const Color(0xFFFF6B35),
-        'bgColor': const Color(0xFFFFF4E6),
-        'screen': const Confirmar(),
-        'hasNotification': true,
-      },
-      {
-        'icon': Icons.book_rounded,
-        'title': 'Registro de Reservas',
-        'description': 'Historial de reservas.',
-        'color': const Color(0xFF06B6D4),
-        'bgColor': const Color(0xFFECFEFF),
-        'screen': const EncargadoRegistroReservasScreen(),
-        'hasNotification': false,
-      },
-    ];
-
-    return cardConfigs.asMap().entries.map((entry) {
-      final index = entry.key;
-      final config = entry.value;
-      
-      if (config['hasNotification'] == true) {
-        return StreamBuilder<QuerySnapshot>(
-          stream: _reservasPendientesStream,
-          builder: (context, snapshot) {
-            int notificationCount = 0;
-            if (snapshot.hasData) {
-              notificationCount = snapshot.data!.docs.length;
-            }
-            
-            return _buildEncargadoCard(
-              icon: config['icon'] as IconData,
-              title: config['title'] as String,
-              description: config['description'] as String,
-              color: config['color'] as Color,
-              backgroundColor: config['bgColor'] as Color,
-              context: context,
-              screen: config['screen'] as Widget,
-              delay: index * 100,
-              notificationCount: notificationCount,
-            );
-          },
-        );
-      }
-      
-      return _buildEncargadoCard(
-        icon: config['icon'] as IconData,
-        title: config['title'] as String,
-        description: config['description'] as String,
-        color: config['color'] as Color,
-        backgroundColor: config['bgColor'] as Color,
-        context: context,
-        screen: config['screen'] as Widget,
-        delay: index * 100,
-      );
-    }).toList();
-  }
-
-  Widget _buildEncargadoCard({
-    required IconData icon,
-    required String title,
-    required String description,
-    required Color color,
-    required Color backgroundColor,
-    required BuildContext context,
-    required Widget screen,
-    required int delay,
-    int? notificationCount,
-  }) {
-    final screenSize = MediaQuery.of(context).size;
-    final isDesktop = screenSize.width > 1200;
-    final isTablet = screenSize.width > 768;
-    
-    return Animate(
-      effects: [
-        FadeEffect(
-          duration: const Duration(milliseconds: 600),
-          delay: Duration(milliseconds: 300 + delay),
-          curve: Curves.easeOutCubic,
-        ),
-        SlideEffect(
-          begin: const Offset(0, 0.3),
-          end: Offset.zero,
-          duration: const Duration(milliseconds: 600),
-          delay: Duration(milliseconds: 300 + delay),
-          curve: Curves.easeOutCubic,
-        ),
-        ScaleEffect(
-          begin: const Offset(0.9, 0.9),
-          end: const Offset(1.0, 1.0),
-          duration: const Duration(milliseconds: 600),
-          delay: Duration(milliseconds: 300 + delay),
-          curve: Curves.easeOutCubic,
-        ),
-      ],
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        child: Material(
-          color: Colors.transparent,
-          child: InkWell(
-            onTap: () {
-              HapticFeedback.lightImpact();
-              Navigator.push(
-                context,
-                PageRouteBuilder(
-                  pageBuilder: (context, animation, secondaryAnimation) => screen,
-                  transitionsBuilder: (context, animation, secondaryAnimation, child) {
-                    const begin = Offset(1.0, 0.0);
-                    const end = Offset.zero;
-                    const curve = Curves.easeInOutCubic;
-                    var tween = Tween(begin: begin, end: end)
-                        .chain(CurveTween(curve: curve));
-                    return SlideTransition(
-                      position: animation.drive(tween),
-                      child: FadeTransition(
-                        opacity: animation,
-                        child: child,
+                  const SizedBox(height: 16),
+                  Text(
+                    'Panel de Administración',
+                    style: GoogleFonts.inter(
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white,
+                      fontSize: 16,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  if (user?.email != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      user!.email!,
+                      style: GoogleFonts.inter(
+                        color: Colors.white.withValues(alpha: 0.7),
+                        fontSize: 12,
                       ),
-                    );
-                  },
-                  transitionDuration: const Duration(milliseconds: 400),
-                ),
-              );
-            },
-            borderRadius: BorderRadius.circular(20),
-            child: 
-            Container(
-              height: double.infinity,
-              decoration: BoxDecoration(
-                color: _cardColor,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: _borderColor.withValues(alpha: 0.5),
-                  width: 1,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.03),
-                    blurRadius: 12,
-                    offset: const Offset(0, 4),
-                  ),
-                  BoxShadow(
-                    color: color.withValues(alpha: 0.08),
-                    blurRadius: 24,
-                    offset: const Offset(0, 8),
-                  ),
+                      textAlign: TextAlign.center,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ],
               ),
-              child: Stack(
+            ),
+
+            Container(
+              height: 1,
+              margin: const EdgeInsets.symmetric(horizontal: 20),
+              color: Colors.white.withValues(alpha: 0.1),
+            ),
+
+            // Menú de navegación móvil
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                itemCount: _sections.length,
+                itemBuilder: (context, index) {
+                  final section = _sections[index];
+                  final isSelected = _currentSection == section['title'];
+                  
+                  if (section['hasNotification'] == true) {
+                    return StreamBuilder<QuerySnapshot>(
+                      stream: _reservasPendientesStream,
+                      builder: (context, snapshot) {
+                        int notificationCount = 0;
+                        if (snapshot.hasData) {
+                          notificationCount = snapshot.data!.docs.length;
+                        }
+                        
+                        return _buildMobileDrawerItem(
+                          icon: section['icon'],
+                          title: section['title'],
+                          isSelected: isSelected,
+                          notificationCount: notificationCount,
+                          onTap: () {
+                            _navigateToSection(section['title'], section['screen']);
+                            Navigator.of(context).pop(); // Cerrar drawer
+                          },
+                        );
+                      },
+                    );
+                  }
+                  
+                  return _buildMobileDrawerItem(
+                    icon: section['icon'],
+                    title: section['title'],
+                    isSelected: isSelected,
+                    onTap: () {
+                      _navigateToSection(section['title'], section['screen']);
+                      Navigator.of(context).pop(); // Cerrar drawer
+                    },
+                  );
+                },
+              ),
+            ),
+
+            // Footer del drawer móvil
+            Container(
+              padding: const EdgeInsets.all(20),
+              child: Column(
                 children: [
-                  Center(
-                    child: Padding(
-  padding: EdgeInsets.all(isDesktop ? 20.0 : 20.0),  // Cambio de 24.0 a 20.0
-  child: Column(
-
-                        mainAxisSize: MainAxisSize.min,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          TweenAnimationBuilder<double>(
-                            tween: Tween(begin: 0.0, end: 1.0),
-                            duration: Duration(milliseconds: 600 + delay),
-                            curve: Curves.elasticOut,
-                            builder: (context, value, child) {
-                              return Transform.scale(
-                                scale: value,
-                                child: 
-                                Container(
-  width: isDesktop ? 56 : 56,  // Cambio de 64 a 56
-  height: isDesktop ? 56 : 56, // Cambio de 64 a 56
-  decoration: BoxDecoration(
-    gradient: LinearGradient(
-      colors: [
-        backgroundColor,
-        backgroundColor.withValues(alpha: 0.7),
-      ],
-      begin: Alignment.topLeft,
-      end: Alignment.bottomRight,
-    ),
-    borderRadius: BorderRadius.circular(16),  // Cambio de 18 a 16
-    border: Border.all(
-      color: color.withValues(alpha: 0.3),
-      width: 2,
-    ),
-    boxShadow: [
-      BoxShadow(
-        color: color.withValues(alpha: 0.2),
-        blurRadius: 12,
-        offset: const Offset(0, 4),
-      ),
-    ],
-  ),
-  child: Icon(
-    icon,
-    size: isDesktop ? 28 : 28,  // Cambio de 32 a 28
-    color: color,
-  ),
-),
-
-                              );
-                            },
-                          ),
-                          SizedBox(height: isDesktop ? 16 : 16),  // Cambio de 20 a 16
-Text(
-  title,
-  style: GoogleFonts.inter(
-    fontSize: isDesktop ? 16 : 16,  // Cambio de 18 a 16
-    fontWeight: FontWeight.w700,
-    color: _textPrimary,
-    letterSpacing: -0.5,
-  ),
-  textAlign: TextAlign.center,
-  maxLines: 2,
-  overflow: TextOverflow.ellipsis,
-),
-SizedBox(height: isDesktop ? 6 : 6),   // Cambio de 8 a 6
-Flexible(
-  child: Text(
-    description,
-    style: GoogleFonts.inter(
-      fontSize: isDesktop ? 13 : 13,  // Cambio de 14 a 13
-      color: _textSecondary,
-      height: 1.4,
-      fontWeight: FontWeight.w500,
-    ),
-    textAlign: TextAlign.center,
-    maxLines: 2,
-    overflow: TextOverflow.ellipsis,
-  ),
-),
-SizedBox(height: isDesktop ? 16 : 16), // Cambio de 20 a 16
-
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                colors: [
-                                  color.withValues(alpha: 0.1),
-                                  color.withValues(alpha: 0.05),
-                                ],
-                                begin: Alignment.topCenter,
-                                end: Alignment.bottomCenter,
-                              ),
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(
-                                color: color.withValues(alpha: 0.3),
-                                width: 1.5,
-                              ),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  'Acceder',
-                                  style: GoogleFonts.inter(
-                                    fontSize: isDesktop ? 13 : 12,
-                                    fontWeight: FontWeight.w700,
-                                    color: color,
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                                Icon(
-                                  Icons.arrow_forward_rounded,
-                                  size: isDesktop ? 16 : 14,
-                                  color: color,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
+                  Container(
+                    height: 1,
+                    color: Colors.white.withValues(alpha: 0.1),
                   ),
-                  if (notificationCount != null && notificationCount > 0)
-                    Positioned(
-                      top: 12,
-                      right: 12,
-                      child: AnimatedBuilder(
-                        animation: _badgeController,
-                        builder: (context, child) {
-                          return Transform.scale(
-                            scale: 1.0 + (_badgeController.value * 0.15),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                              decoration: BoxDecoration(
-                                gradient: LinearGradient(
-                                  colors: [
-                                    Colors.red.shade500,
-                                    Colors.red.shade600,
-                                  ],
-                                  begin: Alignment.topCenter,
-                                  end: Alignment.bottomCenter,
-                                ),
-                                borderRadius: BorderRadius.circular(16),
-                                border: Border.all(
-                                  color: Colors.white,
-                                  width: 2,
-                                ),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.red.shade500.withValues(alpha: 0.5),
-                                    blurRadius: 8,
-                                    offset: const Offset(0, 3),
-                                  ),
-                                  BoxShadow(
-                                    color: Colors.red.shade500.withValues(alpha: 0.2),
-                                    blurRadius: 16,
-                                    offset: const Offset(0, 6),
-                                  ),
-                                ],
-                              ),
-                              constraints: const BoxConstraints(
-                                minWidth: 24,
-                                minHeight: 24,
-                              ),
-                              child: Center(
-                                child: Text(
-                                  notificationCount > 99 ? '99+' : '$notificationCount',
-                                  style: GoogleFonts.inter(
-                                    color: Colors.white,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w800,
-                                    height: 1.0,
-                                  ),
-                                  textAlign: TextAlign.center,
-                                ),
-                              ),
-                            ),
-                          );
-                        },
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.of(context).pop();
+                        _showLogoutConfirmation(context);
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red.shade600,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                       ),
-                    ),
-                  if (isTablet)
-                    Positioned.fill(
-                      child: Container(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(20),
-                          gradient: LinearGradient(
-                            colors: [
-                              Colors.white.withValues(alpha: 0.0),
-                              Colors.white.withValues(alpha: 0.03),
-                              Colors.white.withValues(alpha: 0.0),
-                            ],
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                          ),
+                      icon: Icon(Icons.logout_rounded, size: 20),
+                      label: Text(
+                        'Cerrar Sesión',
+                        style: GoogleFonts.inter(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14,
                         ),
                       ),
                     ),
+                  ),
                 ],
               ),
             ),
-          ),
+          ],
         ),
       ),
     );
   }
 
-  Widget _buildDrawer(BuildContext context, User? user) {
-    return Drawer(
-      backgroundColor: _cardColor,
-      child: Column(
-        children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.fromLTRB(24, 60, 24, 24),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [_secondaryColor, _accentColor],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 60,
-                  height: 60,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.2),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.3),
-                      width: 2,
-                    ),
-                  ),
-                  child: Icon(
-                    Icons.admin_panel_settings_rounded,
-                    color: Colors.white,
-                    size: 28,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'Encargado',
-                  style: GoogleFonts.inter(
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white,
-                    fontSize: 20,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'encargado@gmail.com',
-                  style: GoogleFonts.inter(
-                    color: Colors.white.withValues(alpha: 0.8),
-                    fontSize: 14,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              children: [
-                _buildDrawerItem(
-                  icon: Icons.dashboard_rounded,
-                  title: 'Dashboard',
-                  onTap: () => Navigator.pop(context),
-                ),
-                _buildDrawerItem(
-                  icon: Icons.pending_actions_rounded,
-                  title: 'Reservas Pendientes',
-                  onTap: () {
-                    Navigator.pop(context);
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const Confirmar()),
-                    );
-                  },
-                ),
-                _buildDrawerItem(
-                  icon: Icons.book_rounded,
-                  title: 'Registro de Reservas',
-                  onTap: () {
-                    Navigator.pop(context);
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const EncargadoRegistroReservasScreen()),
-                    );
-                  },
-                ),
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  child: Divider(),
-                ),
-                _buildDrawerItem(
-                  icon: Icons.logout_rounded,
-                  title: 'Cerrar Sesión',
-                  onTap: () {
-                    Navigator.pop(context);
-                    _showLogoutConfirmation(context);
-                  },
-                  isDestructive: true,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDrawerItem({
+  Widget _buildMobileDrawerItem({
     required IconData icon,
     required String title,
+    required bool isSelected,
     required VoidCallback onTap,
-    bool isDestructive = false,
+    int? notificationCount,
   }) {
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
       child: ListTile(
+        onTap: () {
+          HapticFeedback.lightImpact();
+          onTap();
+        },
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        tileColor: isSelected 
+            ? _secondaryColor.withValues(alpha: 0.2)
+            : null,
         leading: Container(
           width: 40,
           height: 40,
           decoration: BoxDecoration(
-            color: isDestructive 
-                ? Colors.red.withValues(alpha: 0.1)
-                : _surfaceColor,
+            color: isSelected 
+                ? _secondaryColor.withValues(alpha: 0.2)
+                : Colors.white.withValues(alpha: 0.1),
             borderRadius: BorderRadius.circular(10),
           ),
           child: Icon(
             icon,
-            color: isDestructive ? Colors.red.shade600 : _textSecondary,
+            color: isSelected ? _secondaryColor : Colors.white.withValues(alpha: 0.8),
             size: 20,
           ),
         ),
         title: Text(
           title,
           style: GoogleFonts.inter(
-            fontWeight: FontWeight.w500,
-            color: isDestructive ? Colors.red.shade600 : _textPrimary,
-            fontSize: 14,
+            fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+            color: isSelected 
+                ? Colors.white
+                : Colors.white.withValues(alpha: 0.9),
+            fontSize: 15,
           ),
         ),
-        onTap: onTap,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
+        trailing: notificationCount != null && notificationCount > 0
+            ? Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Colors.red.shade500, Colors.red.shade600],
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  notificationCount > 99 ? '99+' : '$notificationCount',
+                  style: GoogleFonts.inter(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              )
+            : null,
+      ),
+    );
+  }
+
+  Widget _buildDesktopLayout(BuildContext context, User? user, bool isDesktop) {
+    return Scaffold(
+      backgroundColor: _backgroundColor,
+      body: Row(
+        children: [
+          // Sidebar para desktop
+          _buildSidebar(context, user, isDesktop),
+          
+          // Contenido principal
+          Expanded(
+            child: Column(
+              children: [
+                _buildTopBar(context, user),
+                Expanded(
+                  child: Container(
+                    margin: const EdgeInsets.all(24),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: _cardColor,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: _borderColor,
+                            width: 1,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.05),
+                              blurRadius: 20,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: _currentContent,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSidebar(BuildContext context, User? user, bool isDesktop) {
+    final sidebarWidth = _isSidebarCollapsed ? 80.0 : 280.0;
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeInOutCubic,
+      width: sidebarWidth,
+      child: Container(
+        decoration: BoxDecoration(
+          color: _sidebarColor,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.1),
+              blurRadius: 20,
+              offset: const Offset(2, 0),
+            ),
+          ],
         ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        child: Column(
+          children: [
+            // Header del sidebar
+            _buildSidebarHeader(user),
+            
+            // Divisor
+            Container(
+              height: 1,
+              margin: const EdgeInsets.symmetric(horizontal: 16),
+              color: Colors.white.withValues(alpha: 0.1),
+            ),
+            
+            // Menú de navegación
+            Expanded(
+              child: _buildSidebarMenu(),
+            ),
+            
+            // Footer del sidebar
+            _buildSidebarFooter(context),
+          ],
+        ),
+      ),
+    ).animate().fadeIn(duration: 600.ms).slideX(begin: -1.0, duration: 600.ms);
+  }
+
+  Widget _buildSidebarHeader(User? user) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        children: [
+          // Logo/Icono
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            width: _isSidebarCollapsed ? 40 : 60,
+            height: _isSidebarCollapsed ? 40 : 60,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [_secondaryColor, _accentColor],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: _secondaryColor.withValues(alpha: 0.3),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Icon(
+              Icons.admin_panel_settings_rounded,
+              color: Colors.white,
+              size: _isSidebarCollapsed ? 20 : 28,
+            ),
+          ),
+          
+          if (!_isSidebarCollapsed) ...[
+            const SizedBox(height: 16),
+            Text(
+              'Administrador',
+              style: GoogleFonts.inter(
+                fontWeight: FontWeight.w700,
+                color: Colors.white,
+                fontSize: 18,
+              ),
+            ),
+            if (user?.email != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                user!.email!,
+                style: GoogleFonts.inter(
+                  color: Colors.white.withValues(alpha: 0.7),
+                  fontSize: 12,
+                ),
+                textAlign: TextAlign.center,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSidebarMenu() {
+    return ListView.builder(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      itemCount: _sections.length,
+      itemBuilder: (context, index) {
+        final section = _sections[index];
+        final isSelected = _currentSection == section['title'];
+        
+        if (section['hasNotification'] == true) {
+          return StreamBuilder<QuerySnapshot>(
+            stream: _reservasPendientesStream,
+            builder: (context, snapshot) {
+              int notificationCount = 0;
+              if (snapshot.hasData) {
+                notificationCount = snapshot.data!.docs.length;
+              }
+              
+              return _buildSidebarMenuItem(
+                icon: section['icon'],
+                title: section['title'],
+                isSelected: isSelected,
+                notificationCount: notificationCount,
+                onTap: () => _navigateToSection(section['title'], section['screen']),
+              );
+            },
+          );
+        }
+        
+        return _buildSidebarMenuItem(
+          icon: section['icon'],
+          title: section['title'],
+          isSelected: isSelected,
+          onTap: () => _navigateToSection(section['title'], section['screen']),
+        );
+      },
+    );
+  }
+
+  Widget _buildSidebarMenuItem({
+    required IconData icon,
+    required String title,
+    required bool isSelected,
+    required VoidCallback onTap,
+    int? notificationCount,
+  }) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () {
+            HapticFeedback.lightImpact();
+            onTap();
+          },
+          borderRadius: BorderRadius.circular(12),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            padding: EdgeInsets.symmetric(
+              horizontal: _isSidebarCollapsed ? 0 : 16, 
+              vertical: 12
+            ),
+            decoration: BoxDecoration(
+              color: isSelected 
+                  ? _secondaryColor.withValues(alpha: 0.2)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: isSelected 
+                    ? _secondaryColor.withValues(alpha: 0.3)
+                    : Colors.transparent,
+                width: 1,
+              ),
+            ),
+            child: _isSidebarCollapsed 
+                ? _buildCollapsedMenuItem(icon, isSelected, notificationCount)
+                : _buildExpandedMenuItem(icon, title, isSelected, notificationCount),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCollapsedMenuItem(IconData icon, bool isSelected, int? notificationCount) {
+    return SizedBox(
+      width: 56,
+      child: Stack(
+        children: [
+          // Icono centrado
+          Center(
+            child: Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: isSelected 
+                    ? _secondaryColor.withValues(alpha: 0.2)
+                    : Colors.white.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(
+                icon,
+                color: isSelected ? _secondaryColor : Colors.white.withValues(alpha: 0.8),
+                size: 18,
+              ),
+            ),
+          ),
+          
+          // Badge de notificación posicionado absolutamente
+          if (notificationCount != null && notificationCount > 0)
+            Positioned(
+              right: 8,
+              top: 0,
+              child: AnimatedBuilder(
+                animation: _badgeController,
+                builder: (context, child) {
+                  return Transform.scale(
+                    scale: 1.0 + (_badgeController.value * 0.1),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [Colors.red.shade500, Colors.red.shade600],
+                        ),
+                        borderRadius: BorderRadius.circular(10),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.red.shade500.withValues(alpha: 0.3),
+                            blurRadius: 4,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                      child: Center(
+                        child: Text(
+                          notificationCount > 9 ? '9+' : '$notificationCount',
+                          style: GoogleFonts.inter(
+                            color: Colors.white,
+                            fontSize: 8,
+                            fontWeight: FontWeight.w700,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildExpandedMenuItem(IconData icon, String title, bool isSelected, int? notificationCount) {
+    return Row(
+      children: [
+        // Icono
+        Container(
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            color: isSelected 
+                ? _secondaryColor.withValues(alpha: 0.2)
+                : Colors.white.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(
+            icon,
+            color: isSelected ? _secondaryColor : Colors.white.withValues(alpha: 0.8),
+            size: 18,
+          ),
+        ),
+        
+        const SizedBox(width: 12),
+        
+        // Título
+        Expanded(
+          child: Text(
+            title,
+            style: GoogleFonts.inter(
+              fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+              color: isSelected 
+                  ? Colors.white
+                  : Colors.white.withValues(alpha: 0.8),
+              fontSize: 14,
+            ),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        
+        // Badge de notificación
+        if (notificationCount != null && notificationCount > 0)
+          AnimatedBuilder(
+            animation: _badgeController,
+            builder: (context, child) {
+              return Transform.scale(
+                scale: 1.0 + (_badgeController.value * 0.1),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [Colors.red.shade500, Colors.red.shade600],
+                    ),
+                    borderRadius: BorderRadius.circular(10),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.red.shade500.withValues(alpha: 0.3),
+                        blurRadius: 4,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  constraints: const BoxConstraints(minWidth: 20),
+                  child: Center(
+                    child: Text(
+                      notificationCount > 99 ? '99+' : '$notificationCount',
+                      style: GoogleFonts.inter(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+      ],
+    );
+  }
+
+  Widget _buildSidebarFooter(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        children: [
+          Container(
+            height: 1,
+            color: Colors.white.withValues(alpha: 0.1),
+          ),
+          const SizedBox(height: 16),
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: () => _showLogoutConfirmation(context),
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                padding: EdgeInsets.symmetric(
+                  horizontal: _isSidebarCollapsed ? 0 : 16, 
+                  vertical: 12
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade900.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: Colors.red.shade700.withValues(alpha: 0.3),
+                    width: 1,
+                  ),
+                ),
+                child: _isSidebarCollapsed 
+                    ? SizedBox(
+                        width: 56,
+                        child: Center(
+                          child: Icon(
+                            Icons.logout_rounded,
+                            color: Colors.red.shade400,
+                            size: 18,
+                          ),
+                        ),
+                      )
+                    : Row(
+                        children: [
+                          Icon(
+                            Icons.logout_rounded,
+                            color: Colors.red.shade400,
+                            size: 18,
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            'Cerrar Sesión',
+                            style: GoogleFonts.inter(
+                              fontWeight: FontWeight.w500,
+                              color: Colors.red.shade400,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ],
+                      ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTopBar(BuildContext context, User? user) {
+    return Container(
+      height: 70,
+      decoration: BoxDecoration(
+        color: _cardColor,
+        border: Border(
+          bottom: BorderSide(
+            color: _borderColor,
+            width: 1,
+          ),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Row(
+          children: [
+            // Botón para toggle del sidebar
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: _toggleSidebar,
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  padding: const EdgeInsets.all(8),
+                  child: Icon(
+                    _isSidebarCollapsed ? Icons.menu_rounded : Icons.menu_open_rounded,
+                    color: _textSecondary,
+                    size: 24,
+                  ),
+                ),
+              ),
+            ),
+            
+            const SizedBox(width: 16),
+            
+            // Título de la sección actual
+            Text(
+              _currentSection,
+              style: GoogleFonts.inter(
+                fontWeight: FontWeight.w600,
+                color: _textPrimary,
+                fontSize: 18,
+              ),
+            ),
+            
+            const Spacer(),
+            
+            // Información del usuario (opcional)
+            if (user?.email != null)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  color: _surfaceColor,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: _borderColor,
+                    width: 1,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 32,
+                      height: 32,
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [_secondaryColor, _accentColor],
+                        ),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Center(
+                        child: Text(
+                          user!.email!.substring(0, 1).toUpperCase(),
+                          style: GoogleFonts.inter(
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Administrador',
+                          style: GoogleFonts.inter(
+                            fontWeight: FontWeight.w600,
+                            color: _textPrimary,
+                            fontSize: 13,
+                          ),
+                        ),
+                        Text(
+                          user.email!,
+                          style: GoogleFonts.inter(
+                            color: _textSecondary,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

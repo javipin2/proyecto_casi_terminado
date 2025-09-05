@@ -1,9 +1,11 @@
+// agregar_reserva_screen.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
+import 'package:reserva_canchas/utils/reserva_audit_utils.dart';
 
 import '../../../models/cancha.dart';
 import '../../../models/horario.dart';
@@ -11,6 +13,8 @@ import '../../../models/reserva.dart';
 import '../../../models/cliente.dart';
 import '../../../models/reserva_recurrente.dart';
 import '../../../providers/reserva_recurrente_provider.dart';
+import '../../../providers/peticion_provider.dart';
+
 
 class AgregarReservaScreen extends StatefulWidget {
   final DateTime fecha;
@@ -49,8 +53,10 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
   List<String> _diasSeleccionados = [];
   DateTime? _fechaFinRecurrencia;
   List<Map<String, dynamic>> _conflictosDetectados = [];
-  bool _mostrandoConflictos = false;
   bool _verificandoConflictos = false; // Nueva variable para loading state
+  bool _controlTotalActivado = false;
+  bool _esSuperAdmin = false;
+  bool _esAdmin = false;
 
   final List<String> _diasSemana = [
     'lunes',
@@ -85,6 +91,8 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _inicializarPrecioTotal();
+      _cargarEstadoControlTotal();
+      _verificarRolUsuario();
       _fadeController.forward();
     });
   }
@@ -205,220 +213,489 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
     }
   }
 
+
+
   Future<void> _crearReserva() async {
-    if (!_formKey.currentState!.validate()) return;
+  if (!_formKey.currentState!.validate()) return;
 
-    setState(() {
-      _isProcessing = true;
-    });
+  setState(() {
+    _isProcessing = true;
+  });
 
-    try {
-      if (_esReservaRecurrente) {
-        await _crearReservaRecurrente();
+  try {
+    if (_esReservaRecurrente) {
+      // Reservas recurrentes
+      if (_precioEditableActivado && !_esSuperAdmin && !_controlTotalActivado) {
+        // Admin normal sin control total: crear petición
+        await _crearPeticionReservaRecurrente(
+          horario: widget.horarios.first,
+          montoTotal: _calcularMontoTotal(),
+          montoPagado: _selectedTipo == TipoAbono.completo
+              ? _calcularMontoTotal()
+              : double.parse(_abonoController.text),
+          precioOriginal: Reserva.calcularMontoTotal(widget.cancha, widget.fecha, widget.horarios.first),
+          descuentoAplicado: Reserva.calcularMontoTotal(widget.cancha, widget.fecha, widget.horarios.first) - _calcularMontoTotal(),
+        );
       } else {
+        // SuperAdmin, precio normal, o control total activado: crear directamente
+        await _crearReservaRecurrente();
+      }
+    } else {
+      // Reservas normales
+      if (_precioEditableActivado && !_esSuperAdmin && !_controlTotalActivado) {
+        // Admin normal sin control total: crear petición
+        await _crearPeticionReserva();
+      } else {
+        // SuperAdmin, precio normal, o control total activado: crear directamente
         await _crearReservaNormal();
       }
-    } catch (e) {
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Error al crear la${_esReservaRecurrente ? ' reserva recurrente' : widget.horarios.length > 1 ? 's reservas' : ' reserva'}: $e',
-            style: GoogleFonts.montserrat(),
-          ),
-          backgroundColor: Colors.redAccent,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          margin: const EdgeInsets.all(12),
-          duration: const Duration(seconds: 4),
-        ),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isProcessing = false;
-        });
-      }
     }
-  }
-
-  Future<void> _crearReservaNormal() async {
-    final distribucionPrecios = _calcularDistribucionPrecio();
-    final montoTotalGeneral = _calcularMontoTotal();
-
-    final abonoTotal = _selectedTipo == TipoAbono.completo
-        ? montoTotalGeneral
-        : double.parse(_abonoController.text);
-
-    final distribucionAbono =
-        _calcularDistribucionAbono(abonoTotal, montoTotalGeneral, distribucionPrecios);
-
-    String? grupoReservaId;
-    if (widget.horarios.length > 1) {
-      grupoReservaId = DateTime.now().millisecondsSinceEpoch.toString();
-    }
-
-    final List<String> reservasCreadas = [];
-
-    for (final horario in widget.horarios) {
-      final precioHora = distribucionPrecios[horario]!;
-      final abonoHora = distribucionAbono[horario]!;
-
-      final reserva = Reserva(
-        id: '',
-        cancha: widget.cancha,
-        fecha: widget.fecha,
-        horario: horario,
-        sede: widget.sede,
-        tipoAbono: _selectedTipo!,
-        montoTotal: precioHora,
-        montoPagado: abonoHora,
-        nombre: _nombreController.text,
-        telefono: _telefonoController.text,
-        email: _emailController.text.isEmpty ? null : _emailController.text,
-        confirmada: true,
-      );
-
-      final docRef = FirebaseFirestore.instance.collection('reservas').doc();
-      final datosReserva = reserva.toFirestore();
-
-      if (grupoReservaId != null) {
-        datosReserva['grupo_reserva_id'] = grupoReservaId;
-        datosReserva['total_horas_grupo'] = widget.horarios.length;
-      }
-
-      if (_precioEditableActivado) {
-        final precioOriginal = Reserva.calcularMontoTotal(widget.cancha, widget.fecha, horario);
-        datosReserva['precio_original'] = precioOriginal;
-        datosReserva['precio_personalizado'] = true;
-        datosReserva['descuento_aplicado'] = precioOriginal - precioHora;
-      }
-
-      await docRef.set(datosReserva);
-      reservasCreadas.add(docRef.id);
-    }
-
-    debugPrint('=== RESUMEN DE RESERVAS CREADAS ===');
-    debugPrint('Total de horas: ${widget.horarios.length}');
-    debugPrint('ID de grupo: ${grupoReservaId ?? "No aplica (reserva individual)"}');
-    debugPrint('Precio personalizado activado: $_precioEditableActivado');
-    debugPrint('Monto total: ${montoTotalGeneral.toStringAsFixed(0)}');
-    debugPrint('Abono total: ${abonoTotal.toStringAsFixed(0)}');
-
-    for (final horario in widget.horarios) {
-      final precioHora = distribucionPrecios[horario]!;
-      final abonoHora = distribucionAbono[horario]!;
-      debugPrint(
-          '${horario.horaFormateada}: Precio=${precioHora.toStringAsFixed(0)}, Abono=${abonoHora.toStringAsFixed(0)}');
-    }
-    debugPrint('Reservas creadas: ${reservasCreadas.length}');
-
+  } catch (e) {
     if (!mounted) return;
+
+    String tipoReserva = _esReservaRecurrente ? ' reserva recurrente' : widget.horarios.length > 1 ? 's reservas' : ' reserva';
+    
+    String mensajeError = e.toString();
+    if (mensajeError.contains('control total') && !_controlTotalActivado) {
+      mensajeError = _esReservaRecurrente 
+          ? 'La reserva recurrente con descuento requiere aprobación del superadministrador.'
+          : 'Las reservas con descuento requieren aprobación del superadministrador.';
+    }
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          'Reserva${widget.horarios.length > 1 ? 's' : ''} creada${widget.horarios.length > 1 ? 's' : ''} exitosamente.${_precioEditableActivado ? ' Descuento aplicado.' : ''}${grupoReservaId != null ? ' ID de grupo: $grupoReservaId' : ''}',
+          'Error al crear la$tipoReserva: $mensajeError',
           style: GoogleFonts.montserrat(),
         ),
-        backgroundColor: _secondaryColor,
+        backgroundColor: Colors.redAccent,
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         margin: const EdgeInsets.all(12),
         duration: const Duration(seconds: 4),
       ),
     );
-
-    await Future.delayed(const Duration(milliseconds: 100));
+  } finally {
     if (mounted) {
-      Navigator.of(context).pop(true);
+      setState(() {
+        _isProcessing = false;
+      });
     }
   }
+}
+
+
+
+  Future<void> _crearReservaNormal() async {
+  final distribucionPrecios = _calcularDistribucionPrecio();
+  final montoTotalGeneral = _calcularMontoTotal();
+
+  final abonoTotal = _selectedTipo == TipoAbono.completo
+      ? montoTotalGeneral
+      : double.parse(_abonoController.text);
+
+  final distribucionAbono =
+      _calcularDistribucionAbono(abonoTotal, montoTotalGeneral, distribucionPrecios);
+
+  String? grupoReservaId;
+  if (widget.horarios.length > 1) {
+    grupoReservaId = DateTime.now().millisecondsSinceEpoch.toString();
+  }
+
+  final List<String> reservasCreadas = [];
+
+  for (final horario in widget.horarios) {
+    final precioHora = distribucionPrecios[horario]!;
+    final abonoHora = distribucionAbono[horario]!;
+
+    final reserva = Reserva(
+      id: '',
+      cancha: widget.cancha,
+      fecha: widget.fecha,
+      horario: horario,
+      sede: widget.sede,
+      tipoAbono: _selectedTipo!,
+      montoTotal: precioHora,
+      montoPagado: abonoHora,
+      nombre: _nombreController.text,
+      telefono: _telefonoController.text,
+      email: _emailController.text.isEmpty ? null : _emailController.text,
+      confirmada: true,
+    );
+
+    final docRef = FirebaseFirestore.instance.collection('reservas').doc();
+    final datosReserva = reserva.toFirestore();
+
+    if (grupoReservaId != null) {
+      datosReserva['grupo_reserva_id'] = grupoReservaId;
+      datosReserva['total_horas_grupo'] = widget.horarios.length;
+    }
+
+    if (_precioEditableActivado) {
+      final precioOriginal = Reserva.calcularMontoTotal(widget.cancha, widget.fecha, horario);
+      datosReserva['precio_original'] = precioOriginal;
+      datosReserva['precio_personalizado'] = true;
+      datosReserva['descuento_aplicado'] = precioOriginal - precioHora;
+    }
+
+    await docRef.set(datosReserva);
+    reservasCreadas.add(docRef.id);
+  }
+
+  // 🔥 AGREGAR AUDITORÍA AQUÍ - Después de crear todas las reservas
+  try {
+    // Auditoría para cada reserva creada
+    for (int i = 0; i < reservasCreadas.length; i++) {
+      final reservaId = reservasCreadas[i];
+      final horario = widget.horarios[i];
+      final precioHora = distribucionPrecios[horario]!;
+      final abonoHora = distribucionAbono[horario]!;
+      
+      // Calcular contexto para auditoría
+      double? descuentoAplicado;
+      if (_precioEditableActivado) {
+        final precioOriginal = Reserva.calcularMontoTotal(widget.cancha, widget.fecha, horario);
+        descuentoAplicado = precioOriginal - precioHora;
+      }
+
+      // Datos de la reserva para auditoría
+      final datosReserva = {
+        'nombre': _nombreController.text,
+        'telefono': _telefonoController.text,
+        'correo': _emailController.text.isEmpty ? null : _emailController.text,
+        'fecha': DateFormat('yyyy-MM-dd').format(widget.fecha),
+        'horario': horario.horaFormateada,
+        'cancha_nombre': widget.cancha.nombre,
+        'cancha_id': widget.cancha.id,
+        'sede': widget.sede,
+        'montoTotal': precioHora,
+        'montoPagado': abonoHora,
+        'estado': abonoHora >= precioHora ? 'completo' : 'parcial',
+        'confirmada': true,
+        'precio_personalizado': _precioEditableActivado,
+      };
+
+      await ReservaAuditUtils.auditarCreacionReserva(
+        reservaId: reservaId,
+        datosReserva: datosReserva,
+        tieneDescuento: _precioEditableActivado,
+        descuentoAplicado: descuentoAplicado,
+        esReservaGrupal: widget.horarios.length > 1,
+        cantidadHoras: widget.horarios.length,
+        contextoPrecio: {
+          'precio_original': _precioEditableActivado 
+              ? Reserva.calcularMontoTotal(widget.cancha, widget.fecha, horario)
+              : precioHora,
+          'precio_aplicado': precioHora,
+          'metodo_creacion': 'interfaz_creacion',
+          'grupo_reserva_id': grupoReservaId,
+        },
+      );
+    }
+  } catch (e) {
+    debugPrint('⚠️ Error en auditoría de creación: $e');
+    // No interrumpir el flujo si la auditoría falla
+  }
+
+  debugPrint('=== RESUMEN DE RESERVAS CREADAS ===');
+  debugPrint('Total de horas: ${widget.horarios.length}');
+  debugPrint('ID de grupo: ${grupoReservaId ?? "No aplica (reserva individual)"}');
+  debugPrint('Precio personalizado activado: $_precioEditableActivado');
+  debugPrint('Monto total: ${montoTotalGeneral.toStringAsFixed(0)}');
+  debugPrint('Abono total: ${abonoTotal.toStringAsFixed(0)}');
+
+  for (final horario in widget.horarios) {
+    final precioHora = distribucionPrecios[horario]!;
+    final abonoHora = distribucionAbono[horario]!;
+    debugPrint(
+        '${horario.horaFormateada}: Precio=${precioHora.toStringAsFixed(0)}, Abono=${abonoHora.toStringAsFixed(0)}');
+  }
+  debugPrint('Reservas creadas: ${reservasCreadas.length}');
+
+  if (!mounted) return;
+
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text(
+        'Reserva${widget.horarios.length > 1 ? 's' : ''} creada${widget.horarios.length > 1 ? 's' : ''} exitosamente.${_precioEditableActivado ? ' Descuento aplicado.' : ''}${grupoReservaId != null ? ' ID de grupo: $grupoReservaId' : ''}',
+        style: GoogleFonts.montserrat(),
+      ),
+      backgroundColor: _secondaryColor,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+      ),
+      margin: const EdgeInsets.all(12),
+      duration: const Duration(seconds: 4),
+    ),
+  );
+
+  await Future.delayed(const Duration(milliseconds: 100));
+  if (mounted) {
+    Navigator.of(context).pop(true);
+  }
+}
+
 
   Future<void> _crearReservaRecurrente() async {
-    if (widget.horarios.length > 1) {
-      throw Exception('Las reservas recurrentes solo admiten un horario por vez');
-    }
+  if (widget.horarios.length > 1) {
+    throw Exception('Las reservas recurrentes solo admiten un horario por vez');
+  }
 
-    final horario = widget.horarios.first;
-    final montoTotal = _calcularMontoTotal();
-    final montoPagado = _selectedTipo == TipoAbono.completo
-        ? montoTotal
-        : double.parse(_abonoController.text);
+  final horario = widget.horarios.first;
+  final montoTotal = _calcularMontoTotal();
+  final montoPagado = _selectedTipo == TipoAbono.completo
+      ? montoTotal
+      : double.parse(_abonoController.text);
 
-    // ✅ CALCULAR PRECIO ORIGINAL Y DESCUENTO SI ESTÁ ACTIVADO
-    double? precioOriginal;
-    double? descuentoAplicado;
-    bool precioPersonalizado = false;
+  // ✅ CALCULAR PRECIO ORIGINAL Y DESCUENTO SI ESTÁ ACTIVADO
+  double? precioOriginal;
+  double? descuentoAplicado;
+  bool precioPersonalizado = false;
 
-    if (_precioEditableActivado && _precioTotalController.text.isNotEmpty) {
-      precioOriginal = Reserva.calcularMontoTotal(widget.cancha, widget.fecha, horario);
-      final precioPersonalizadoValor = double.tryParse(_precioTotalController.text) ?? 0.0;
-      descuentoAplicado = precioOriginal - precioPersonalizadoValor;
-      precioPersonalizado = true;
-    }
+  if (_precioEditableActivado && _precioTotalController.text.isNotEmpty) {
+    precioOriginal = Reserva.calcularMontoTotal(widget.cancha, widget.fecha, horario);
+    final precioPersonalizadoValor = double.tryParse(_precioTotalController.text) ?? 0.0;
+    descuentoAplicado = precioOriginal - precioPersonalizadoValor;
+    precioPersonalizado = true;
+  }
 
-    // ✅ CREAR LISTA DE DÍAS EXCLUIDOS BASADA EN CONFLICTOS
+  // ✅ CREAR LISTA DE DÍAS EXCLUIDOS BASADA EN CONFLICTOS
+  final List<String> diasExcluidos = [];
+  for (var conflicto in _conflictosDetectados) {
+    final fechaConflicto = DateFormat('yyyy-MM-dd').format(conflicto['fecha']);
+    diasExcluidos.add(fechaConflicto);
+  }
+
+  final reservaRecurrente = ReservaRecurrente(
+    id: '',
+    clienteId: _selectedClienteId ?? '',
+    clienteNombre: _nombreController.text,
+    clienteTelefono: _telefonoController.text,
+    clienteEmail: _emailController.text.isEmpty ? null : _emailController.text,
+    canchaId: widget.cancha.id,
+    sede: widget.sede,
+    horario: horario.horaFormateada,
+    diasSemana: _diasSeleccionados,
+    tipoRecurrencia: TipoRecurrencia.semanal,
+    estado: EstadoRecurrencia.activa,
+    fechaInicio: widget.fecha,
+    fechaFin: _fechaFinRecurrencia,
+    montoTotal: montoTotal,
+    montoPagado: montoPagado,
+    diasExcluidos: diasExcluidos,
+    fechaCreacion: DateTime.now(),
+    fechaActualizacion: DateTime.now(),
+    notas: _notasController.text.isEmpty ? null : _notasController.text,
+    precioPersonalizado: precioPersonalizado,
+    precioOriginal: precioOriginal,
+    descuentoAplicado: descuentoAplicado,
+  );
+
+  final reservaRecurrenteProvider =
+      Provider.of<ReservaRecurrenteProvider>(context, listen: false);
+  
+  // Crear la reserva recurrente y obtener el ID
+  final reservaCreadaId = await reservaRecurrenteProvider.crearReservaRecurrente(reservaRecurrente);
+  final reservaRecurrenteId = reservaCreadaId ?? 'id_temporal_${DateTime.now().millisecondsSinceEpoch}';
+
+
+  // 🔥 AGREGAR AUDITORÍA AQUÍ - Después de crear la reserva recurrente
+  try {
+    final datosReservaRecurrente = {
+      'nombre': _nombreController.text,
+      'telefono': _telefonoController.text,
+      'correo': _emailController.text.isEmpty ? null : _emailController.text,
+      'fecha': DateFormat('yyyy-MM-dd').format(widget.fecha),
+      'fecha_fin': _fechaFinRecurrencia != null ? DateFormat('yyyy-MM-dd').format(_fechaFinRecurrencia!) : null,
+      'horario': horario.horaFormateada,
+      'cancha_nombre': widget.cancha.nombre,
+      'cancha_id': widget.cancha.id,
+      'sede': widget.sede,
+      'montoTotal': montoTotal,
+      'montoPagado': montoPagado,
+      'estado': montoPagado >= montoTotal ? 'completo' : 'parcial',
+      'dias_semana': _diasSeleccionados,
+      'precio_personalizado': precioPersonalizado,
+      'tipo_recurrencia': 'semanal',
+    };
+
+    await ReservaAuditUtils.auditarCreacionReserva(
+      reservaId: reservaRecurrenteId,
+      datosReserva: datosReservaRecurrente,
+      tieneDescuento: precioPersonalizado,
+      descuentoAplicado: descuentoAplicado,
+      esReservaGrupal: false,
+      cantidadHoras: 1,
+      contextoPrecio: {
+        'precio_original': precioOriginal ?? montoTotal,
+        'precio_aplicado': montoTotal,
+        'metodo_creacion': 'reserva_recurrente',
+        'dias_semana': _diasSeleccionados.length,
+        'fecha_inicio': DateFormat('yyyy-MM-dd').format(widget.fecha),
+        'fecha_fin': _fechaFinRecurrencia != null ? DateFormat('yyyy-MM-dd').format(_fechaFinRecurrencia!) : null,
+        'conflictos_excluidos': _conflictosDetectados.length,
+        'es_reserva_recurrente': true,
+      },
+    );
+  } catch (e) {
+    debugPrint('⚠️ Error en auditoría de creación de reserva recurrente: $e');
+    // No interrumpir el flujo si la auditoría falla
+  }
+
+  if (!mounted) return;
+
+  final mensajeDescuento = precioPersonalizado && (descuentoAplicado ?? 0) > 0 
+      ? ' Con descuento de COP ${descuentoAplicado!.toStringAsFixed(0)} por reserva.'
+      : '';
+
+  final mensajeConflictos = _conflictosDetectados.isNotEmpty
+      ? ' Se excluyeron ${_conflictosDetectados.length} fecha(s) con reservas existentes.'
+      : '';
+
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text(
+        'Reserva recurrente creada exitosamente. Los horarios se aplicarán automáticamente según la programación.$mensajeDescuento$mensajeConflictos',
+        style: GoogleFonts.montserrat(),
+      ),
+      backgroundColor: _secondaryColor,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      margin: const EdgeInsets.all(12),
+      duration: const Duration(seconds: 5),
+    ),
+  );
+
+  await Future.delayed(const Duration(milliseconds: 100));
+  if (mounted) {
+    Navigator.of(context).pop(true);
+  }
+}
+
+
+
+
+
+
+  Future<void> _crearPeticionReservaRecurrente({
+  required Horario horario,
+  required double montoTotal,
+  required double montoPagado,
+  required double precioOriginal,
+  required double descuentoAplicado,
+}) async {
+  try {
+    final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
+
+    // Crear lista de días excluidos basada en conflictos
     final List<String> diasExcluidos = [];
     for (var conflicto in _conflictosDetectados) {
       final fechaConflicto = DateFormat('yyyy-MM-dd').format(conflicto['fecha']);
       diasExcluidos.add(fechaConflicto);
     }
 
-    final reservaRecurrente = ReservaRecurrente(
-      id: '',
-      clienteId: _selectedClienteId ?? '',
-      clienteNombre: _nombreController.text,
-      clienteTelefono: _telefonoController.text,
-      clienteEmail: _emailController.text.isEmpty ? null : _emailController.text,
-      canchaId: widget.cancha.id,
-      sede: widget.sede,
-      horario: horario.horaFormateada,
-      diasSemana: _diasSeleccionados,
-      tipoRecurrencia: TipoRecurrencia.semanal, // Fijo como semanal
-      estado: EstadoRecurrencia.activa,
-      fechaInicio: widget.fecha,
-      fechaFin: _fechaFinRecurrencia,
-      montoTotal: montoTotal,
-      montoPagado: montoPagado,
-      diasExcluidos: diasExcluidos,
-      fechaCreacion: DateTime.now(),
-      fechaActualizacion: DateTime.now(),
-      notas: _notasController.text.isEmpty ? null : _notasController.text,
-      precioPersonalizado: precioPersonalizado,
-      precioOriginal: precioOriginal,
-      descuentoAplicado: descuentoAplicado,
+    final valoresAntiguos = <String, dynamic>{};
+
+    final valoresNuevos = <String, dynamic>{
+      'tipo': 'nueva_reserva_recurrente_precio_personalizado',
+      'datos_reserva_recurrente': {
+        'cliente_id': _selectedClienteId ?? '',
+        'cliente_nombre': _nombreController.text,
+        'cliente_telefono': _telefonoController.text,
+        'cliente_email': _emailController.text.isEmpty ? null : _emailController.text,
+        'cancha_id': widget.cancha.id,
+        'cancha_nombre': widget.cancha.nombre,
+        'sede': widget.sede,
+        'horario': horario.horaFormateada,
+        'dias_semana': _diasSeleccionados,
+        'fecha_inicio': DateFormat('yyyy-MM-dd').format(widget.fecha),
+        'fecha_fin': _fechaFinRecurrencia != null ? DateFormat('yyyy-MM-dd').format(_fechaFinRecurrencia!) : null,
+        'dias_excluidos': diasExcluidos,
+        'notas': _notasController.text.isEmpty ? null : _notasController.text,
+        'monto_total': montoTotal,
+        'monto_pagado': montoPagado,
+      },
+      'precio_original': precioOriginal,
+      'precio_aplicado': montoTotal,
+      'descuento_aplicado': descuentoAplicado,
+      'precioPersonalizado': true,
+      'precioOriginal': precioOriginal,
+      'descuentoAplicado': descuentoAplicado,
+      'cantidad_dias_semana': _diasSeleccionados.length,
+    };
+
+    final peticionId = 'nueva_reserva_recurrente_${DateTime.now().millisecondsSinceEpoch}';
+    await peticionProvider.crearPeticion(
+      reservaId: peticionId,
+      valoresAntiguos: valoresAntiguos,
+      valoresNuevos: valoresNuevos,
     );
 
-    final reservaRecurrenteProvider =
-        Provider.of<ReservaRecurrenteProvider>(context, listen: false);
-    final reservaRecurrenteId =
-        await reservaRecurrenteProvider.crearReservaRecurrente(reservaRecurrente);
+    // 🔥 AGREGAR AUDITORÍA AQUÍ - Después de crear la petición
+    try {
+      final datosParaAuditoria = {
+        'nombre': _nombreController.text,
+        'telefono': _telefonoController.text,
+        'correo': _emailController.text.isEmpty ? null : _emailController.text,
+        'fecha': DateFormat('yyyy-MM-dd').format(widget.fecha),
+        'fecha_fin': _fechaFinRecurrencia != null ? DateFormat('yyyy-MM-dd').format(_fechaFinRecurrencia!) : null,
+        'horario': horario.horaFormateada,
+        'cancha_nombre': widget.cancha.nombre,
+        'cancha_id': widget.cancha.id,
+        'sede': widget.sede,
+        'montoTotal': montoTotal,
+        'montoPagado': montoPagado,
+        'estado': montoPagado >= montoTotal ? 'completo' : 'parcial',
+        'dias_semana': _diasSeleccionados,
+        'precio_personalizado': true,
+        'tipo_recurrencia': 'semanal',
+      };
+
+      await ReservaAuditUtils.auditarCreacionReserva(
+        reservaId: peticionId,
+        datosReserva: datosParaAuditoria,
+        tieneDescuento: true,
+        descuentoAplicado: descuentoAplicado,
+        esReservaGrupal: false,
+        cantidadHoras: 1,
+        contextoPrecio: {
+          'precio_original': precioOriginal,
+          'precio_aplicado': montoTotal,
+          'metodo_creacion': 'peticion_reserva_recurrente',
+          'requiere_aprobacion': true,
+          'tipo_peticion': 'nueva_reserva_recurrente_precio_personalizado',
+          'estado_peticion': 'pendiente',
+          'dias_semana': _diasSeleccionados.length,
+          'fecha_inicio': DateFormat('yyyy-MM-dd').format(widget.fecha),
+          'fecha_fin': _fechaFinRecurrencia != null ? DateFormat('yyyy-MM-dd').format(_fechaFinRecurrencia!) : null,
+          'conflictos_excluidos': _conflictosDetectados.length,
+          'es_reserva_recurrente': true,
+        },
+      );
+    } catch (e) {
+      debugPrint('⚠️ Error en auditoría de petición de reserva recurrente: $e');
+      // No interrumpir el flujo si la auditoría falla
+    }
 
     if (!mounted) return;
 
-    final mensajeDescuento = precioPersonalizado && (descuentoAplicado ?? 0) > 0 
-        ? ' Con descuento de COP ${descuentoAplicado!.toStringAsFixed(0)} por reserva.'
-        : '';
-
-    final mensajeConflictos = _conflictosDetectados.isNotEmpty
-        ? ' Se excluyeron ${_conflictosDetectados.length} fecha(s) con reservas existentes.'
-        : '';
-
+    final formatter = NumberFormat('#,##0', 'es_CO');
+    
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          'Reserva recurrente creada exitosamente. Los horarios se aplicarán automáticamente según la programación.$mensajeDescuento$mensajeConflictos',
+          '📋 Petición creada exitosamente.\n\n'
+          '• Reserva recurrente con descuento de COP ${formatter.format(descuentoAplicado)}\n'
+          '• Días: ${_diasSeleccionados.map((d) => StringCapitalize(d).capitalize()).join(', ')}\n'
+          '• Esperando aprobación del superadministrador\n',
           style: GoogleFonts.montserrat(),
         ),
-        backgroundColor: _secondaryColor,
+        backgroundColor: Colors.orange.shade600,
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         margin: const EdgeInsets.all(12),
-        duration: const Duration(seconds: 5),
+        duration: const Duration(seconds: 6),
       ),
     );
 
@@ -426,7 +703,63 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
     if (mounted) {
       Navigator.of(context).pop(true);
     }
+
+  } catch (e) {
+    debugPrint('❌ Error al crear petición de reserva recurrente: $e');
+    throw Exception('Error al crear la petición: $e');
   }
+}
+
+
+
+  Future<void> _cargarEstadoControlTotal() async {
+    try {
+      final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
+      await peticionProvider.cargarConfiguracionControl();
+      
+      if (mounted) {
+        setState(() {
+          _controlTotalActivado = peticionProvider.controlTotalActivado;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error cargando estado control total: $e');
+      // En caso de error, asumir que está desactivado (más seguro)
+      if (mounted) {
+        setState(() {
+          _controlTotalActivado = false;
+        });
+      }
+    }
+  }
+
+
+  Future<void> _verificarRolUsuario() async {
+  try {
+    final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
+    
+    final results = await Future.wait([
+      peticionProvider.esSuperAdmin(),
+      peticionProvider.esAdmin(),
+    ]).timeout(const Duration(seconds: 5));
+    
+    if (mounted) {
+      setState(() {
+        _esSuperAdmin = results[0];
+        _esAdmin = results[1];
+      });
+    }
+  } catch (e) {
+    debugPrint('Error verificando rol: $e');
+    if (mounted) {
+      setState(() {
+        _esSuperAdmin = false;
+        _esAdmin = false;
+      });
+    }
+  }
+}
+
 
   double _redondearANumeroLimpio(double valor) {
     if (valor < 1000) {
@@ -553,13 +886,13 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: _esReservaRecurrente
-            ? _secondaryColor.withOpacity(0.05)
-            : Colors.grey.withOpacity(0.05),
+            ? Color.fromRGBO(66, 133, 244, 0.05)
+            : Color.fromRGBO(158, 158, 158, 0.05),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
           color: _esReservaRecurrente
-              ? _secondaryColor.withOpacity(0.3)
-              : Colors.grey.withOpacity(0.2),
+              ? Color.fromRGBO(66, 133, 244, 0.3)
+              : Color.fromRGBO(158, 158, 158, 0.2),
         ),
       ),
       child: Column(
@@ -571,8 +904,8 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                 color: _esReservaRecurrente 
                     ? _secondaryColor 
                     : puedeActivarRecurrencia 
-                        ? Colors.grey 
-                        : Colors.grey.withOpacity(0.5),
+                        ? Color.fromRGBO(158, 158, 158, 1.0) 
+                        : Color.fromRGBO(158, 158, 158, 0.5),
                 size: 20,
               ),
               const SizedBox(width: 8),
@@ -587,7 +920,7 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                         fontWeight: FontWeight.w500,
                         color: puedeActivarRecurrencia 
                             ? _primaryColor 
-                            : _primaryColor.withOpacity(0.5),
+                            : Color.fromRGBO(60, 64, 67, 0.5),
                       ),
                     ),
                     Text(
@@ -597,8 +930,8 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                       style: GoogleFonts.montserrat(
                         fontSize: 12,
                         color: puedeActivarRecurrencia 
-                            ? _primaryColor.withOpacity(0.6)
-                            : Colors.orange.withOpacity(0.7),
+                            ? Color.fromRGBO(60, 64, 67, 0.6)
+                            : Color.fromRGBO(255, 152, 0, 0.7),
                       ),
                     ),
                   ],
@@ -630,9 +963,9 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
             Container(
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: Colors.orange.withOpacity(0.1),
+                color: Color.fromRGBO(255, 152, 0, 0.1),
                 borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: Colors.orange.withOpacity(0.3)),
+                border: Border.all(color: Color.fromRGBO(255, 152, 0, 0.3)),
               ),
               child: Row(
                 children: [
@@ -722,9 +1055,9 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: _secondaryColor.withOpacity(0.1),
+                  color: Color.fromRGBO(66, 133, 244, 0.1),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: _secondaryColor.withOpacity(0.3)),
+                  border: Border.all(color: Color.fromRGBO(66, 133, 244, 0.3)),
                 ),
                 child: Row(
                   children: [
@@ -787,7 +1120,7 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                             'Fecha fin (opcional)',
                             style: GoogleFonts.montserrat(
                               fontSize: 12,
-                              color: _primaryColor.withOpacity(0.6),
+                              color: Color.fromRGBO(60, 64, 67, 0.6),
                             ),
                           ),
                           Text(
@@ -822,7 +1155,7 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
               decoration: InputDecoration(
                 labelText: 'Notas (opcional)',
                 hintText: 'Ej: Cliente fijo todos los martes',
-                labelStyle: GoogleFonts.montserrat(color: _primaryColor.withOpacity(0.6)),
+                labelStyle: GoogleFonts.montserrat(color: Color.fromRGBO(60, 64, 67, 0.6)),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(8),
                   borderSide: BorderSide(color: _disabledColor),
@@ -831,233 +1164,10 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                   borderRadius: BorderRadius.circular(8),
                   borderSide: BorderSide(color: _disabledColor),
                 ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: _secondaryColor),
-                ),
               ),
-              style: GoogleFonts.montserrat(color: _primaryColor),
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _buildConflictosWidget() {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.orange.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.orange.withOpacity(0.3)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.warning_outlined, color: Colors.orange, size: 18),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'Conflictos detectados (${_conflictosDetectados.length})',
-                  style: GoogleFonts.montserrat(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.orange[700],
-                  ),
-                ),
-              ),
-              TextButton(
-                onPressed: () {
-                  setState(() {
-                    _mostrandoConflictos = !_mostrandoConflictos;
-                  });
-                },
-                child: Text(
-                  _mostrandoConflictos ? 'Ocultar' : 'Ver detalles',
-                  style: GoogleFonts.montserrat(
-                    fontSize: 12,
-                    color: _secondaryColor,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          if (_mostrandoConflictos) ...[
-            const SizedBox(height: 8),
-            Text(
-              'Estas fechas serán excluidas automáticamente:',
-              style: GoogleFonts.montserrat(
-                fontSize: 12,
-                color: Colors.orange[700],
-              ),
-            ),
-            const SizedBox(height: 8),
-            ...(_conflictosDetectados.take(5).map((conflicto) => Container(
-              margin: const EdgeInsets.only(bottom: 4),
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: Colors.orange.withOpacity(0.2)),
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '${conflicto['fechaStr']} - ${conflicto['horario']}',
-                          style: GoogleFonts.montserrat(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: _primaryColor,
-                          ),
-                        ),
-                        Text(
-                          '${conflicto['nombre']} - COP ${NumberFormat('#,###', 'es_CO').format((conflicto['precio'] as double).toInt())}',
-                          style: GoogleFonts.montserrat(
-                            fontSize: 11,
-                            color: _primaryColor.withOpacity(0.7),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ))),
-            if (_conflictosDetectados.length > 5)
-              Text(
-                'Y ${_conflictosDetectados.length - 5} más...',
-                style: GoogleFonts.montserrat(
-                  fontSize: 11,
-                  color: Colors.orange[600],
-                  fontStyle: FontStyle.italic,
-                ),
-              ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildInfoRow(IconData icon, String label, String value) {
-    return Row(
-      children: [
-        Icon(icon, color: _secondaryColor, size: 20),
-        const SizedBox(width: 8),
-        Text(
-          '$label: ',
-          style: GoogleFonts.montserrat(
-            fontSize: 16,
-            color: _primaryColor,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-        Flexible(
-          child: Text(
-            value,
-            style: GoogleFonts.montserrat(
-              fontSize: 16,
-              color: _primaryColor,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildHorariosSection() {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: _disabledColor.withOpacity(0.5)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.access_time, color: _secondaryColor, size: 20),
-              const SizedBox(width: 8),
-              Text(
-                'Hora${widget.horarios.length > 1 ? 's seleccionadas' : ' seleccionada'}:',
-                style: GoogleFonts.montserrat(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w500,
-                  color: _primaryColor,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Column(
-            children: widget.horarios.map((horario) {
-              final precio = Reserva.calcularMontoTotal(widget.cancha, widget.fecha, horario);
-              return Container(
-                margin: const EdgeInsets.only(bottom: 8),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  color: _secondaryColor.withOpacity(0.08),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
-                    color: _secondaryColor.withOpacity(0.2),
-                    width: 1,
-                  ),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          width: 8,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            color: _secondaryColor,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          horario.horaFormateada,
-                          style: GoogleFonts.montserrat(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                            color: _primaryColor,
-                          ),
-                        ),
-                      ],
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: _secondaryColor.withOpacity(0.3)),
-                      ),
-                      child: Text(
-                        'COP ${NumberFormat('#,###', 'es_CO').format(precio.toInt())}',
-                        style: GoogleFonts.montserrat(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: _secondaryColor,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            }).toList(),
-          ),
-        ],
       ),
     );
   }
@@ -1067,13 +1177,13 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: _precioEditableActivado
-            ? _secondaryColor.withOpacity(0.05)
-            : Colors.grey.withOpacity(0.05),
+            ? Color.fromRGBO(66, 133, 244, 0.05)
+            : Color.fromRGBO(158, 158, 158, 0.05),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
           color: _precioEditableActivado
-              ? _secondaryColor.withOpacity(0.3)
-              : Colors.grey.withOpacity(0.2),
+              ? Color.fromRGBO(66, 133, 244, 0.3)
+              : Color.fromRGBO(158, 158, 158, 0.2),
         ),
       ),
       child: Column(
@@ -1082,7 +1192,7 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
             children: [
               Icon(
                 Icons.edit_outlined,
-                color: _precioEditableActivado ? _secondaryColor : Colors.grey,
+                color: _precioEditableActivado ? _secondaryColor : Color.fromRGBO(158, 158, 158, 1.0),
                 size: 20,
               ),
               const SizedBox(width: 8),
@@ -1110,16 +1220,110 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
               ),
             ],
           ),
+          
+          // Mostrar indicador del estado del control total
           if (_precioEditableActivado) ...[
+            const SizedBox(height: 12),
+            Container(
+  padding: const EdgeInsets.all(8),
+  decoration: BoxDecoration(
+    color: _esSuperAdmin || _controlTotalActivado
+        ? Color.fromRGBO(0, 128, 0, 0.1)
+        : Color.fromRGBO(255, 152, 0, 0.1),
+    borderRadius: BorderRadius.circular(6),
+    border: Border.all(
+      color: _esSuperAdmin || _controlTotalActivado
+          ? Color.fromRGBO(0, 128, 0, 0.3)
+          : Color.fromRGBO(255, 152, 0, 0.3),
+    ),
+  ),
+  child: Row(
+    children: [
+      Icon(
+        _esSuperAdmin || _controlTotalActivado ? Icons.check_circle : Icons.pending_actions,
+        size: 16,
+        color: _esSuperAdmin || _controlTotalActivado 
+            ? Colors.green.shade600 
+            : Colors.orange.shade600,
+      ),
+      const SizedBox(width: 6),
+      Expanded(
+        child: Text(
+          _esSuperAdmin || _controlTotalActivado
+              ? (_esReservaRecurrente 
+                  ? 'La reserva recurrente se creará inmediatamente'
+                  : 'Los cambios se aplicarán inmediatamente')
+              : (_esReservaRecurrente
+                  ? 'Se creará petición para la reserva recurrente'
+                  : 'Se creará una petición para aprobación'),
+          style: GoogleFonts.montserrat(
+            fontSize: 11,
+            color: _esSuperAdmin || _controlTotalActivado 
+                ? Colors.green.shade700 
+                : Colors.orange.shade700,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ),
+    ],
+  ),
+),
+
+            
+            // Información adicional para reservas recurrentes
+            if (_esReservaRecurrente && !_esSuperAdmin && !_controlTotalActivado) ...[
+  const SizedBox(height: 8),
+  Container(
+    padding: const EdgeInsets.all(6),
+    decoration: BoxDecoration(
+      color: Color.fromRGBO(0, 0, 255, 0.1),
+      borderRadius: BorderRadius.circular(4),
+      border: Border.all(
+        color: Color.fromRGBO(0, 0, 255, 0.3),
+      ),
+    ),
+    child: Row(
+      children: [
+        Icon(
+          Icons.info_outline,
+          size: 14,
+          color: Colors.blue.shade600,
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            'Las reservas recurrentes con descuento requieren aprobación especial',
+            style: GoogleFonts.montserrat(
+              fontSize: 10,
+              color: Colors.blue.shade700,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+      ],
+    ),
+  ),
+],
+            
             const SizedBox(height: 16),
             TextFormField(
               controller: _precioTotalController,
               decoration: InputDecoration(
-                labelText: 'Nuevo precio total',
+                labelText: _esReservaRecurrente 
+                    ? 'Precio por reserva individual' 
+                    : 'Nuevo precio total',
                 prefixText: 'COP ',
                 suffixIcon: Icon(Icons.attach_money, color: _secondaryColor),
+                helperText: _esReservaRecurrente 
+                    ? 'Este precio se aplicará a cada reserva de la recurrencia'
+                    : null,
+                helperMaxLines: 2,
                 labelStyle: GoogleFonts.montserrat(
-                  color: _primaryColor.withOpacity(0.7),
+                  color: Color.fromRGBO(60, 64, 67, 0.7),
+                ),
+                helperStyle: GoogleFonts.montserrat(
+                  fontSize: 11,
+                  color: Colors.blue.shade600,
                 ),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(8),
@@ -1145,7 +1349,135 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
               keyboardType: TextInputType.number,
               onChanged: (value) {
                 setState(() {});
+                
+                // 🆕 MOSTRAR INFORMACIÓN DEL DESCUENTO EN TIEMPO REAL
+                if (_esReservaRecurrente && value.isNotEmpty) {
+                  final precioPersonalizado = double.tryParse(value) ?? 0;
+                  final precioOriginal = Reserva.calcularMontoTotal(widget.cancha, widget.fecha, widget.horarios.first);
+                  final descuento = precioOriginal - precioPersonalizado;
+                  
+                  if (descuento > 0) {
+                    debugPrint('📊 Descuento por reserva: COP ${descuento.toStringAsFixed(0)}');
+                  }
+                }
               },
+              validator: (value) {
+                if (!_precioEditableActivado) return null;
+                
+                if (value == null || value.isEmpty) {
+                  return 'Ingrese el nuevo precio';
+                }
+                
+                final precio = double.tryParse(value);
+                if (precio == null || precio <= 0) {
+                  return 'Ingrese un precio válido';
+                }
+                
+                // Validación específica para reservas recurrentes
+                if (_esReservaRecurrente) {
+                  final precioOriginal = Reserva.calcularMontoTotal(widget.cancha, widget.fecha, widget.horarios.first);
+                  if (precio >= precioOriginal) {
+                    return 'El precio debe ser menor al original (COP ${precioOriginal.toStringAsFixed(0)})';
+                  }
+                }
+                
+                return null;
+              },
+            ),
+            
+            // 🆕 MOSTRAR INFORMACIÓN DEL DESCUENTO CALCULADO
+            if (_precioTotalController.text.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              _buildDescuentoInfo(),
+            ],
+          ],
+          ],
+      ),
+    );
+  }
+
+  Widget _buildDescuentoInfo() {
+    final precioPersonalizado = double.tryParse(_precioTotalController.text) ?? 0;
+    if (precioPersonalizado <= 0) return const SizedBox.shrink();
+    
+    final precioOriginal = _esReservaRecurrente 
+        ? Reserva.calcularMontoTotal(widget.cancha, widget.fecha, widget.horarios.first)
+        : widget.horarios.map((h) => Reserva.calcularMontoTotal(widget.cancha, widget.fecha, h)).reduce((a, b) => a + b);
+        
+    final descuento = precioOriginal - (_esReservaRecurrente ? precioPersonalizado : _calcularMontoTotal());
+    
+    if (descuento <= 0) return const SizedBox.shrink();
+    
+    final formatter = NumberFormat('#,##0', 'es_CO');
+    final porcentajeDescuento = (descuento / precioOriginal * 100);
+    
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Color.fromRGBO(0, 255, 0, 0.2), Color.fromRGBO(0, 255, 0, 0.4)],
+        ),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.green.shade300),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Icon(Icons.savings, color: Colors.green.shade600, size: 16),
+              const SizedBox(width: 6),
+              Text(
+                'Descuento calculado',
+                style: GoogleFonts.montserrat(
+                  fontWeight: FontWeight.w600,
+                  color: Colors.green.shade800,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                _esReservaRecurrente ? 'Por reserva:' : 'Total:',
+                style: GoogleFonts.montserrat(
+                  fontSize: 11,
+                  color: Colors.green.shade700,
+                ),
+              ),
+              Text(
+                'COP ${formatter.format(descuento)} (${porcentajeDescuento.toStringAsFixed(1)}%)',
+                style: GoogleFonts.montserrat(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.green.shade800,
+                ),
+              ),
+            ],
+          ),
+          if (_esReservaRecurrente && _diasSeleccionados.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Por semana (${_diasSeleccionados.length} días):',
+                  style: GoogleFonts.montserrat(
+                    fontSize: 11,
+                    color: Colors.green.shade700,
+                  ),
+                ),
+                Text(
+                  'COP ${formatter.format(descuento * _diasSeleccionados.length)}',
+                  style: GoogleFonts.montserrat(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.green.shade800,
+                  ),
+                ),
+              ],
             ),
           ],
         ],
@@ -1153,103 +1485,39 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
     );
   }
 
-  Widget _buildTotalSection(double total) {
-    final hasDiscount = _precioEditableActivado && _precioTotalController.text.isNotEmpty;
-    double originalTotal = 0.0;
-
-    if (hasDiscount) {
-      for (final horario in widget.horarios) {
-        originalTotal += Reserva.calcularMontoTotal(widget.cancha, widget.fecha, horario);
-      }
-    }
-
+  Widget _buildConflictosWidget() {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            _secondaryColor.withOpacity(0.1),
-            _secondaryColor.withOpacity(0.05),
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: _secondaryColor.withOpacity(0.3)),
+        color: Color.fromRGBO(255, 0, 0, 0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Color.fromRGBO(255, 0, 0, 0.3)),
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (hasDiscount && originalTotal > total) ...[
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Precio original:',
-                  style: GoogleFonts.montserrat(
-                    fontSize: 14,
-                    color: Colors.grey[600],
-                  ),
-                ),
-                Text(
-                  'COP ${NumberFormat('#,###', 'es_CO').format(originalTotal.toInt())}',
-                  style: GoogleFonts.montserrat(
-                    fontSize: 14,
-                    color: Colors.grey[600],
-                    decoration: TextDecoration.lineThrough,
-                  ),
-                ),
-              ],
-            ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Descuento:',
-                  style: GoogleFonts.montserrat(
-                    fontSize: 14,
-                    color: Colors.green[700],
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                Text(
-                  '- COP ${NumberFormat('#,###', 'es_CO').format((originalTotal - total).toInt())}',
-                  style: GoogleFonts.montserrat(
-                    fontSize: 14,
-                    color: Colors.green[700],
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
-            ),
-            const Divider(height: 16),
-          ],
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(
-                children: [
-                  Icon(Icons.monetization_on, color: _secondaryColor, size: 24),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Total a pagar:',
-                    style: GoogleFonts.montserrat(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: _primaryColor,
-                    ),
-                  ),
-                ],
-              ),
+              Icon(Icons.warning, color: Colors.red, size: 20),
+              const SizedBox(width: 8),
               Text(
-                'COP ${NumberFormat('#,###', 'es_CO').format(total.toInt())}',
+                'Conflictos detectados (${_conflictosDetectados.length})',
                 style: GoogleFonts.montserrat(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color: hasDiscount && originalTotal > total ? Colors.green[700] : _secondaryColor,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.red,
                 ),
               ),
             ],
           ),
+          const SizedBox(height: 8),
+          ..._conflictosDetectados.map((conflicto) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Text(
+                  '${conflicto['fechaStr']} - ${conflicto['horario']} - ${conflicto['nombre']}',
+                  style: GoogleFonts.montserrat(fontSize: 14),
+                ),
+              )),
         ],
       ),
     );
@@ -1290,6 +1558,80 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
             _buildTotalSection(total),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(IconData icon, String label, String value) {
+    return Row(
+      children: [
+        Icon(icon, color: _secondaryColor, size: 20),
+        const SizedBox(width: 12),
+        Text(
+          '$label: ',
+          style: GoogleFonts.montserrat(
+            fontWeight: FontWeight.w500,
+            color: _primaryColor,
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: GoogleFonts.montserrat(color: _primaryColor),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHorariosSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Horarios',
+          style: GoogleFonts.montserrat(
+            fontSize: 16,
+            fontWeight: FontWeight.w500,
+            color: _primaryColor,
+          ),
+        ),
+        const SizedBox(height: 8),
+        ...widget.horarios.map((horario) => Text(
+              horario.horaFormateada,
+              style: GoogleFonts.montserrat(fontSize: 14),
+            )),
+      ],
+    );
+  }
+
+  Widget _buildTotalSection(double total) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Color.fromRGBO(66, 133, 244, 0.1),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            'Total:',
+            style: GoogleFonts.montserrat(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: _primaryColor,
+            ),
+          ),
+          Text(
+            'COP ${total.toStringAsFixed(0)}',
+            style: GoogleFonts.montserrat(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: _secondaryColor,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1345,9 +1687,9 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                     labelText: 'Seleccionar Cliente',
                     labelStyle: GoogleFonts.montserrat(
                       color: Color.fromRGBO(
-                          (_primaryColor.r * 255).toInt(),
-                          (_primaryColor.g * 255).toInt(),
-                          (_primaryColor.b * 255).toInt(),
+                          (_primaryColor.red * 255).toInt(),
+                          (_primaryColor.green * 255).toInt(),
+                          (_primaryColor.blue * 255).toInt(),
                           0.6),
                     ),
                     border: OutlineInputBorder(
@@ -1414,16 +1756,16 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Color.fromRGBO(
-            (_secondaryColor.r * 255).toInt(),
-            (_secondaryColor.g * 255).toInt(),
-            (_secondaryColor.b * 255).toInt(),
+            (_secondaryColor.red * 255).toInt(),
+            (_secondaryColor.green * 255).toInt(),
+            (_secondaryColor.blue * 255).toInt(),
             0.1),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
           color: Color.fromRGBO(
-              (_secondaryColor.r * 255).toInt(),
-              (_secondaryColor.g * 255).toInt(),
-              (_secondaryColor.b * 255).toInt(),
+              (_secondaryColor.red * 255).toInt(),
+              (_secondaryColor.green * 255).toInt(),
+              (_secondaryColor.blue * 255).toInt(),
               0.3),
         ),
       ),
@@ -1493,7 +1835,7 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                 ],
               ),
             );
-          }).toList(),
+          }),
         ],
       ),
     );
@@ -1530,9 +1872,9 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                         'Procesando...',
                         style: GoogleFonts.montserrat(
                           color: Color.fromRGBO(
-                              (_primaryColor.r * 255).toInt(),
-                              (_primaryColor.g * 255).toInt(),
-                              (_primaryColor.b * 255).toInt(),
+                              (_primaryColor.red * 255).toInt(),
+                              (_primaryColor.green * 255).toInt(),
+                              (_primaryColor.blue * 255).toInt(),
                               0.6),
                           fontSize: 16,
                         ),
@@ -1633,70 +1975,17 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                 ),
               ),
               const SizedBox(height: 16),
-              if (_esReservaRecurrente) ...[
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: _secondaryColor.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: _secondaryColor.withOpacity(0.3)),
-                  ),
-                  child: Column(
-                    children: [
-                      Row(
-                        children: [
-                          Icon(Icons.info_outline, color: _secondaryColor, size: 16),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'Configuración de Reserva Recurrente',
-                              style: GoogleFonts.montserrat(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w500,
-                                color: _primaryColor,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      if (_diasSeleccionados.isNotEmpty)
-                        Text(
-                          'Días: ${_diasSeleccionados.join(', ')}',
-                          style: GoogleFonts.montserrat(
-                            fontSize: 12,
-                            color: _primaryColor.withOpacity(0.7),
-                          ),
-                        ),
-                      Text(
-                        'Horario: ${widget.horarios.first.horaFormateada}',
-                        style: GoogleFonts.montserrat(
-                          fontSize: 12,
-                          color: _primaryColor.withOpacity(0.7),
-                        ),
-                      ),
-                      Text(
-                        'Total: COP ${_calcularMontoTotal().toStringAsFixed(0)}',
-                        style: GoogleFonts.montserrat(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: _secondaryColor,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 16),
-              ],
+              
+              // TextFormFields
               TextFormField(
                 controller: _nombreController,
                 decoration: InputDecoration(
                   labelText: 'Nombre',
                   labelStyle: GoogleFonts.montserrat(
                     color: Color.fromRGBO(
-                        (_primaryColor.r * 255).toInt(),
-                        (_primaryColor.g * 255).toInt(),
-                        (_primaryColor.b * 255).toInt(),
+                        (_primaryColor.red * 255).toInt(),
+                        (_primaryColor.green * 255).toInt(),
+                        (_primaryColor.blue * 255).toInt(),
                         0.6),
                   ),
                   border: OutlineInputBorder(
@@ -1727,9 +2016,9 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                   labelText: 'Teléfono',
                   labelStyle: GoogleFonts.montserrat(
                     color: Color.fromRGBO(
-                        (_primaryColor.r * 255).toInt(),
-                        (_primaryColor.g * 255).toInt(),
-                        (_primaryColor.b * 255).toInt(),
+                        (_primaryColor.red * 255).toInt(),
+                        (_primaryColor.green * 255).toInt(),
+                        (_primaryColor.blue * 255).toInt(),
                         0.6),
                   ),
                   border: OutlineInputBorder(
@@ -1761,9 +2050,9 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                   labelText: 'Correo',
                   labelStyle: GoogleFonts.montserrat(
                     color: Color.fromRGBO(
-                        (_primaryColor.r * 255).toInt(),
-                        (_primaryColor.g * 255).toInt(),
-                        (_primaryColor.b * 255).toInt(),
+                        (_primaryColor.red * 255).toInt(),
+                        (_primaryColor.green * 255).toInt(),
+                        (_primaryColor.blue * 255).toInt(),
                         0.6),
                   ),
                   border: OutlineInputBorder(
@@ -1798,9 +2087,9 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                     labelText: 'Abono',
                     labelStyle: GoogleFonts.montserrat(
                       color: Color.fromRGBO(
-                          (_primaryColor.r * 255).toInt(),
-                          (_primaryColor.g * 255).toInt(),
-                          (_primaryColor.b * 255).toInt(),
+                          (_primaryColor.red * 255).toInt(),
+                          (_primaryColor.green * 255).toInt(),
+                          (_primaryColor.blue * 255).toInt(),
                           0.6),
                     ),
                     border: OutlineInputBorder(
@@ -1836,9 +2125,9 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                   labelText: 'Estado de pago',
                   labelStyle: GoogleFonts.montserrat(
                     color: Color.fromRGBO(
-                        (_primaryColor.r * 255).toInt(),
-                        (_primaryColor.g * 255).toInt(),
-                        (_primaryColor.b * 255).toInt(),
+                        (_primaryColor.red * 255).toInt(),
+                        (_primaryColor.green * 255).toInt(),
+                        (_primaryColor.blue * 255).toInt(),
                         0.6),
                   ),
                   border: OutlineInputBorder(
@@ -1883,34 +2172,217 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                 },
               ),
               const SizedBox(height: 24),
+              
+              // Botón modificado para mostrar el tipo de acción
               ElevatedButton(
-                onPressed: (_esReservaRecurrente && widget.horarios.length > 1) ||
-                        (_esReservaRecurrente && _diasSeleccionados.isEmpty)
-                    ? null
-                    : _crearReserva,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _secondaryColor,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  elevation: 0,
-                ),
-                child: Text(
-                  _esReservaRecurrente
-                      ? 'Crear Reserva Recurrente'
-                      : 'Confirmar Reserva${widget.horarios.length > 1 ? 's' : ''}',
-                  style: GoogleFonts.montserrat(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
+  onPressed: (_esReservaRecurrente && widget.horarios.length > 1) ||
+          (_esReservaRecurrente && _diasSeleccionados.isEmpty)
+      ? null
+      : _crearReserva,
+  style: ElevatedButton.styleFrom(
+    backgroundColor: _precioEditableActivado && !_esSuperAdmin && !_controlTotalActivado
+        ? Colors.orange.shade600 
+        : _secondaryColor,
+    foregroundColor: Colors.white,
+    padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(8),
+    ),
+    elevation: 0,
+  ),
+  child: Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      if (_precioEditableActivado && !_esSuperAdmin && !_controlTotalActivado)
+        Icon(Icons.pending_actions, size: 18)
+      else if (_precioEditableActivado && (_esSuperAdmin || _controlTotalActivado))
+        Icon(Icons.check_circle, size: 18)
+      else
+        Icon(Icons.add_circle, size: 18),
+      const SizedBox(width: 8),
+      Flexible(
+        child: Text(
+          _esReservaRecurrente
+              ? 'Crear Reserva Recurrente'
+              : _precioEditableActivado && !_esSuperAdmin && !_controlTotalActivado
+                  ? 'Crear Petición (Precio Personalizado)'
+                  : 'Confirmar Reserva${widget.horarios.length > 1 ? 's' : ''}',
+          style: GoogleFonts.montserrat(
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+          ),
+          textAlign: TextAlign.center,
+        ),
+      ),
+    ],
+  ),
+),
+
             ],
           ),
         ),
       ),
     );
+  }
+
+  Future<void> _crearPeticionReserva() async {
+  try {
+    final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
+    
+    // Calcular precios originales y nuevos para la petición
+    double precioOriginalTotal = 0.0;
+    for (final horario in widget.horarios) {
+      precioOriginalTotal += Reserva.calcularMontoTotal(widget.cancha, widget.fecha, horario);
+    }
+    
+    final precioPersonalizadoTotal = double.tryParse(_precioTotalController.text) ?? precioOriginalTotal;
+    final abonoTotal = _selectedTipo == TipoAbono.completo ? precioPersonalizadoTotal : double.parse(_abonoController.text);
+    
+    // Crear datos de la reserva temporal (no se guarda hasta que se apruebe)
+    final datosReservaTemporal = {
+      'cancha_id': widget.cancha.id,
+      'cancha_nombre': widget.cancha.nombre,
+      'fecha': DateFormat('yyyy-MM-dd').format(widget.fecha),
+      'horarios': widget.horarios.map((h) => h.horaFormateada).toList(),
+      'sede': widget.sede,
+      'cliente_nombre': _nombreController.text,
+      'cliente_telefono': _telefonoController.text,
+      'cliente_email': _emailController.text.isEmpty ? null : _emailController.text,
+      'tipo_abono': _selectedTipo?.toString() ?? 'TipoAbono.parcial',
+      'precio_original_total': precioOriginalTotal,
+      'precio_personalizado_total': precioPersonalizadoTotal,
+      'monto_pagado': abonoTotal,
+      'descuento_aplicado': precioOriginalTotal - precioPersonalizadoTotal,
+      'confirmada': true,
+    };
+
+    // Crear valores para la petición
+    final valoresAntiguos = {
+      'tipo': 'nueva_reserva_precio_personalizado',
+      'precio_original': precioOriginalTotal,
+      'precio_aplicado': precioOriginalTotal,
+      'precio_personalizado': false,
+    };
+
+    final valoresNuevos = {
+      'tipo': 'nueva_reserva_precio_personalizado',
+      'datos_reserva': datosReservaTemporal,
+      'precio_original': precioOriginalTotal,
+      'precio_aplicado': precioPersonalizadoTotal,
+      'precio_personalizado': true,
+      'descuento_aplicado': precioOriginalTotal - precioPersonalizadoTotal,
+      'cantidad_horarios': widget.horarios.length,
+      'prioridad': 'alta', // Prioridad alta por descuentos
+    };
+
+    // Crear la petición usando un ID temporal
+    final peticionId = 'temporal_${DateTime.now().millisecondsSinceEpoch}';
+    await peticionProvider.crearPeticionMejorada(
+      reservaId: peticionId,
+      valoresAntiguos: valoresAntiguos,
+      valoresNuevos: valoresNuevos,
+    );
+
+    // 🔥 AGREGAR AUDITORÍA AQUÍ - Después de crear la petición
+    try {
+      final descuentoAplicado = precioOriginalTotal - precioPersonalizadoTotal;
+      
+      final datosParaAuditoria = {
+        'nombre': _nombreController.text,
+        'telefono': _telefonoController.text,
+        'correo': _emailController.text.isEmpty ? null : _emailController.text,
+        'fecha': DateFormat('yyyy-MM-dd').format(widget.fecha),
+        'horarios': widget.horarios.map((h) => h.horaFormateada).toList(),
+        'cancha_nombre': widget.cancha.nombre,
+        'cancha_id': widget.cancha.id,
+        'sede': widget.sede,
+        'montoTotal': precioPersonalizadoTotal,
+        'montoPagado': abonoTotal,
+        'estado': abonoTotal >= precioPersonalizadoTotal ? 'completo' : 'parcial',
+        'precio_personalizado': true,
+      };
+
+      await ReservaAuditUtils.auditarCreacionReserva(
+        reservaId: peticionId,
+        datosReserva: datosParaAuditoria,
+        tieneDescuento: true,
+        descuentoAplicado: descuentoAplicado,
+        esReservaGrupal: widget.horarios.length > 1,
+        cantidadHoras: widget.horarios.length,
+        contextoPrecio: {
+          'precio_original': precioOriginalTotal,
+          'precio_aplicado': precioPersonalizadoTotal,
+          'metodo_creacion': 'peticion_precio_personalizado',
+          'requiere_aprobacion': true,
+          'tipo_peticion': 'nueva_reserva_precio_personalizado',
+          'estado_peticion': 'pendiente',
+        },
+      );
+    } catch (e) {
+      debugPrint('⚠️ Error en auditoría de petición: $e');
+      // No interrumpir el flujo si la auditoría falla
+    }
+
+    if (!mounted) return;
+
+    // Mostrar mensaje de éxito
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '📋 Petición creada exitosamente',
+              style: GoogleFonts.montserrat(
+                fontWeight: FontWeight.w600,
+                color: Colors.white,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'La reserva con precio personalizado requiere aprobación del superadministrador.',
+              style: GoogleFonts.montserrat(
+                fontSize: 13,
+                color: Colors.white.withOpacity(0.9),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Descuento: COP ${NumberFormat('#,###', 'es_CO').format((precioOriginalTotal - precioPersonalizadoTotal).toInt())}',
+              style: GoogleFonts.montserrat(
+                fontSize: 12,
+                color: Colors.white.withOpacity(0.8),
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: Colors.orange.shade600,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        margin: const EdgeInsets.all(12),
+        duration: const Duration(seconds: 6),
+      ),
+    );
+
+    await Future.delayed(const Duration(milliseconds: 100));
+    if (mounted) {
+      Navigator.of(context).pop(true);
+    }
+
+  } catch (e) {
+    throw Exception('Error al crear petición de reserva: $e');
+  }
+}
+}
+
+
+
+extension StringCapitalize on String {
+  String capitalize() {
+    return "${this[0].toUpperCase()}${this.substring(1)}";
   }
 }

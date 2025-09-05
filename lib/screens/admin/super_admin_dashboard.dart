@@ -99,7 +99,7 @@ class SuperAdminDashboardScreenState extends State<SuperAdminDashboardScreen>
     {
       'icon': Icons.security_rounded,
       'title': 'Auditoría',
-      'screen': const AuditScreen(), // Cambiar por AuditoriaScreen cuando esté disponible
+      'screen':  AuditScreen(), // Cambiar por AuditoriaScreen cuando esté disponible
       'hasNotification': false,
     },
   ];

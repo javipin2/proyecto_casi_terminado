@@ -73,7 +73,7 @@ class _ReservaScreenState extends State<ReservaScreen> with SingleTickerProvider
       error = 'El nombre es requerido';
       validos = false;
     } else if (telefono.length < 10) {
-      error = 'El teléfono debe tener al menos 10 dígitos';
+      error = 'El whatsapp debe del titular para enviar la confirmacion de la reserva';
       validos = false;
     } else if (email.isEmpty || !email.contains('@') || !email.contains('.')) {
       error = 'Ingresa un correo electrónico válido';
@@ -983,7 +983,7 @@ String _normalizarHoraFormato(String horaStr) {
                         const SizedBox(height: 20),
                         _buildTextField(
                           controller: _telefonoController,
-                          label: 'Teléfono',
+                          label: 'Whatsapp del titular',
                           icon: Icons.phone_outlined,
                           keyboardType: TextInputType.phone,
                           validatorMsg: 'Por favor ingresa tu teléfono',

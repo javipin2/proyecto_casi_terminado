@@ -1,147 +1,141 @@
-// lib/models/audit_log.dart
+// lib/models/audit_entry.dart
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
-enum CategoriaLog {
-  reservas,
-  canchas,
-  precios,
-  sistema,
-  seguridad,
-  clientes,
-  configuracion,
-  usuarios,
-  reportes
-}
-
-enum SeveridadLog {
-  info,     // Verde - Operaciones normales
-  warning,  // Amarillo - Precaución
-  error,    // Naranja - Error no crítico
-  critical  // Rojo - Crítico/Sospechoso
-}
-
-enum TipoAccion {
-  crear,
-  editar,
-  eliminar,
-  login,
-  logout,
-  cambio_precio,
-  descuento_aplicado,
-  reserva_masiva,
-  acceso_no_autorizado
-}
-
-class AuditLog {
+class AuditEntry {
   final String id;
-  final CategoriaLog categoria;
-  final SeveridadLog severidad;
-  final TipoAccion accion;
+  final String accion;
+  final String entidad;
+  final String entidadId;
   final String usuarioId;
   final String usuarioNombre;
-  final String descripcion;
-  final String? entidadId;
-  final String? entidadTipo;
-  final Map<String, dynamic> datosAnteriores;
+  final String usuarioRol;
+  final Timestamp timestamp;
+  final Map<String, dynamic> datosAntiguos;
   final Map<String, dynamic> datosNuevos;
   final Map<String, dynamic> metadatos;
-  final DateTime timestamp;
-  final String? ipAddress;
-  final String? userAgent;
+  final String descripcion;
+  final String nivelRiesgo;
+  final List<String> alertas;
+  final List<String> cambiosDetectados;
+  final String ipAddress;
+  final String userAgent;
 
-  AuditLog({
+  AuditEntry({
     required this.id,
-    required this.categoria,
-    required this.severidad,
     required this.accion,
+    required this.entidad,
+    required this.entidadId,
     required this.usuarioId,
     required this.usuarioNombre,
-    required this.descripcion,
-    this.entidadId,
-    this.entidadTipo,
-    this.datosAnteriores = const {},
-    this.datosNuevos = const {},
-    this.metadatos = const {},
+    required this.usuarioRol,
     required this.timestamp,
-    this.ipAddress,
-    this.userAgent,
+    required this.datosAntiguos,
+    required this.datosNuevos,
+    required this.metadatos,
+    required this.descripcion,
+    required this.nivelRiesgo,
+    required this.alertas,
+    required this.cambiosDetectados,
+    required this.ipAddress,
+    required this.userAgent,
   });
 
-  factory AuditLog.fromFirestore(DocumentSnapshot doc) {
+  factory AuditEntry.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
-    
-    return AuditLog(
+    return AuditEntry(
       id: doc.id,
-      categoria: CategoriaLog.values.firstWhere(
-        (e) => e.name == data['categoria'],
-        orElse: () => CategoriaLog.sistema,
-      ),
-      severidad: SeveridadLog.values.firstWhere(
-        (e) => e.name == data['severidad'],
-        orElse: () => SeveridadLog.info,
-      ),
-      accion: TipoAccion.values.firstWhere(
-        (e) => e.name == data['accion'],
-        orElse: () => TipoAccion.crear,
-      ),
-      usuarioId: data['usuarioId'] ?? '',
-      usuarioNombre: data['usuarioNombre'] ?? 'Usuario desconocido',
-      descripcion: data['descripcion'] ?? '',
-      entidadId: data['entidadId'],
-      entidadTipo: data['entidadTipo'],
-      datosAnteriores: Map<String, dynamic>.from(data['datosAnteriores'] ?? {}),
-      datosNuevos: Map<String, dynamic>.from(data['datosNuevos'] ?? {}),
+      accion: data['accion'] ?? '',
+      entidad: data['entidad'] ?? '',
+      entidadId: data['entidad_id'] ?? '',
+      usuarioId: data['usuario_id'] ?? '',
+      usuarioNombre: data['usuario_nombre'] ?? '',
+      usuarioRol: data['usuario_rol'] ?? '',
+      timestamp: data['timestamp'] ?? Timestamp.now(),
+      datosAntiguos: Map<String, dynamic>.from(data['datos_antiguos'] ?? {}),
+      datosNuevos: Map<String, dynamic>.from(data['datos_nuevos'] ?? {}),
       metadatos: Map<String, dynamic>.from(data['metadatos'] ?? {}),
-      timestamp: (data['timestamp'] as Timestamp).toDate(),
-      ipAddress: data['ipAddress'],
-      userAgent: data['userAgent'],
+      descripcion: data['descripcion'] ?? '',
+      nivelRiesgo: data['nivel_riesgo'] ?? 'bajo',
+      alertas: List<String>.from(data['alertas'] ?? []),
+      cambiosDetectados: List<String>.from(data['cambios_detectados'] ?? []),
+      ipAddress: data['ip_address'] ?? '',
+      userAgent: data['user_agent'] ?? '',
     );
   }
 
   Map<String, dynamic> toFirestore() {
     return {
-      'categoria': categoria.name,
-      'severidad': severidad.name,
-      'accion': accion.name,
-      'usuarioId': usuarioId,
-      'usuarioNombre': usuarioNombre,
-      'descripcion': descripcion,
-      'entidadId': entidadId,
-      'entidadTipo': entidadTipo,
-      'datosAnteriores': datosAnteriores,
-      'datosNuevos': datosNuevos,
+      'accion': accion,
+      'entidad': entidad,
+      'entidad_id': entidadId,
+      'usuario_id': usuarioId,
+      'usuario_nombre': usuarioNombre,
+      'usuario_rol': usuarioRol,
+      'timestamp': timestamp,
+      'datos_antiguos': datosAntiguos,
+      'datos_nuevos': datosNuevos,
       'metadatos': metadatos,
-      'timestamp': Timestamp.fromDate(timestamp),
-      'ipAddress': ipAddress,
-      'userAgent': userAgent,
+      'descripcion': descripcion,
+      'nivel_riesgo': nivelRiesgo,
+      'alertas': alertas,
+      'cambios_detectados': cambiosDetectados,
+      'ip_address': ipAddress,
+      'user_agent': userAgent,
     };
   }
 
-  String get accionTexto {
-    switch (accion) {
-      case TipoAccion.crear:
-        return 'Creación';
-      case TipoAccion.editar:
-        return 'Modificación';
-      case TipoAccion.eliminar:
-        return 'Eliminación';
-      case TipoAccion.login:
-        return 'Inicio de sesión';
-      case TipoAccion.logout:
-        return 'Cierre de sesión';
-      case TipoAccion.cambio_precio:
-        return 'Cambio de precio';
-      case TipoAccion.descuento_aplicado:
-        return 'Descuento aplicado';
-      case TipoAccion.reserva_masiva:
-        return 'Reserva masiva';
-      case TipoAccion.acceso_no_autorizado:
-        return 'Acceso no autorizado';
+  // Getters útiles
+  DateTime get fechaLocal => timestamp.toDate();
+  String get fechaFormateada => DateFormat('dd/MM/yyyy HH:mm:ss').format(fechaLocal);
+  
+  Color get colorNivelRiesgo {
+    switch (nivelRiesgo) {
+      case 'critico':
+        return Colors.red.shade700;
+      case 'alto':
+        return Colors.orange.shade700;
+      case 'medio':
+        return Colors.yellow.shade700;
+      case 'bajo':
+        return Colors.green.shade700;
+      default:
+        return Colors.grey;
     }
   }
 
-  String get fechaFormateada {
-    return DateFormat('dd/MM/yyyy HH:mm:ss').format(timestamp);
+  IconData get iconoNivelRiesgo {
+    switch (nivelRiesgo) {
+      case 'critico':
+        return Icons.error;
+      case 'alto':
+        return Icons.warning;
+      case 'medio':
+        return Icons.info;
+      case 'bajo':
+        return Icons.check_circle;
+      default:
+        return Icons.help;
+    }
   }
+
+  String get nombreNivelRiesgo {
+    switch (nivelRiesgo) {
+      case 'critico':
+        return 'Crítico';
+      case 'alto':
+        return 'Alto';
+      case 'medio':
+        return 'Medio';
+      case 'bajo':
+        return 'Bajo';
+      default:
+        return 'Desconocido';
+    }
+  }
+
+  bool get tieneAlertas => alertas.isNotEmpty;
+  bool get tieneCambios => cambiosDetectados.isNotEmpty;
 }

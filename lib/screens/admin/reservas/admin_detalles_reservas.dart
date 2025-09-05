@@ -7,6 +7,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'package:reserva_canchas/models/cancha.dart';
 import 'package:reserva_canchas/providers/sede_provider.dart';
+import 'package:reserva_canchas/utils/reserva_audit_utils.dart';
 
 import '../../../models/reserva.dart';
 import '../../../models/horario.dart';
@@ -399,9 +400,14 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
   }
 
   Future<void> _deleteReserva() async {
-    bool? confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
+  // Mostrar diálogo con campo opcional para motivo
+  String? motivo;
+  bool? confirm = await showDialog<bool>(
+    context: context,
+    builder: (context) {
+      final TextEditingController motivoController = TextEditingController();
+      
+      return AlertDialog(
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
         ),
@@ -413,12 +419,38 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
             color: _primaryColor,
           ),
         ),
-        content: Text(
-          '¿Estás seguro que deseas eliminar esta reserva?',
-          style: GoogleFonts.montserrat(
-            fontSize: 16,
-            color: _primaryColor,
-          ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '¿Estás seguro que deseas eliminar esta reserva?',
+              style: GoogleFonts.montserrat(
+                fontSize: 16,
+                color: _primaryColor,
+              ),
+            ),
+            SizedBox(height: 16),
+            Text(
+              'Esta acción no se puede deshacer y será registrada en el sistema de auditoría.',
+              style: GoogleFonts.montserrat(
+                fontSize: 14,
+                color: Colors.orange.shade700,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            SizedBox(height: 16),
+            TextField(
+              controller: motivoController,
+              decoration: InputDecoration(
+                labelText: 'Motivo (opcional)',
+                hintText: 'Ej: Cancelación del cliente, error en reserva...',
+                border: OutlineInputBorder(),
+              ),
+              maxLines: 2,
+              onChanged: (value) => motivo = value,
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -439,7 +471,10 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
                 borderRadius: BorderRadius.circular(8),
               ),
             ),
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () {
+              motivo = motivoController.text.trim();
+              Navigator.of(context).pop(true);
+            },
             child: Text(
               'Eliminar',
               style: GoogleFonts.montserrat(
@@ -448,27 +483,58 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
             ),
           ),
         ],
-      ),
+      );
+    },
+  );
+
+  if (confirm != true) return;
+
+  try {
+    // 🔍 OBTENER DATOS ACTUALES ANTES DE ELIMINAR PARA AUDITORÍA
+    final datosReservaParaAuditoria = {
+      'nombre': widget.reserva.nombre,
+      'telefono': widget.reserva.telefono,
+      'correo': widget.reserva.email,
+      'fecha': DateFormat('yyyy-MM-dd').format(widget.reserva.fecha),
+      'horario': widget.reserva.horario.horaFormateada,
+      'montoTotal': widget.reserva.montoTotal,
+      'montoPagado': widget.reserva.montoPagado,
+      'cancha_nombre': widget.reserva.cancha.nombre,
+      'cancha_id': widget.reserva.cancha.id,
+      'sede': widget.reserva.sede,
+      'estado': widget.reserva.tipoAbono.toString(),
+      'confirmada': widget.reserva.confirmada,
+      'precio_personalizado': widget.reserva.precioPersonalizado ?? false,
+      'precio_original': widget.reserva.precioOriginal,
+      'descuento_aplicado': widget.reserva.descuentoAplicado,
+    };
+
+    // Eliminar de Firestore
+    await FirebaseFirestore.instance
+        .collection('reservas')
+        .doc(widget.reserva.id)
+        .delete();
+
+    // 🔍 AUDITORÍA AUTOMÁTICA - Registrar eliminación
+    await ReservaAuditUtils.auditarEliminacionReserva(
+      reservaId: widget.reserva.id,
+      datosReserva: datosReservaParaAuditoria,
+      motivo: motivo?.isNotEmpty == true ? motivo : 'Eliminación desde pantalla de edición',
     );
 
-    if (confirm != true) return;
+    if (!mounted) return;
 
-    try {
-      await FirebaseFirestore.instance
-          .collection('reservas')
-          .doc(widget.reserva.id)
-          .delete();
-
-      if (!mounted) return;
-
-      _mostrarExito('Reserva eliminada con éxito.');
-      Navigator.of(context).pop(true);
-    } catch (e) {
-      debugPrint('Error al eliminar la reserva: $e');
-      if (!mounted) return;
-      _mostrarError('Error al eliminar la reserva: $e');
-    }
+    _mostrarExito('Reserva eliminada con éxito.');
+    Navigator.of(context).pop(true);
+  } catch (e) {
+    debugPrint('Error al eliminar la reserva: $e');
+    if (!mounted) return;
+    _mostrarError('Error al eliminar la reserva: $e');
   }
+}
+
+
+
 
   Widget _buildGrupoInfoCard() {
     if (!_isGrupoReserva || _grupoInfo == null) return const SizedBox.shrink();
@@ -484,7 +550,7 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
       color: Colors.white,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(20),
-        side: BorderSide(color: Colors.blue.withValues(alpha: 0.2), width: 1.5),
+        side: BorderSide(color: Colors.blue.withOpacity(0.2), width: 1.5),
       ),
       child: Container(
         decoration: BoxDecoration(
@@ -493,9 +559,9 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: [
-              Colors.blue.withValues(alpha: 0.03),
+              Colors.blue.withOpacity(0.03),
               Colors.white,
-              Colors.blue.withValues(alpha: 0.01),
+              Colors.blue.withOpacity(0.01),
             ],
           ),
         ),
@@ -508,9 +574,9 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: Colors.blue.withValues(alpha: 0.08),
+                  color: Colors.blue.withOpacity(0.08),
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.blue.withValues(alpha: 0.2)),
+                  border: Border.all(color: Colors.blue.withOpacity(0.2)),
                 ),
                 child: Row(
                   children: [
@@ -554,7 +620,7 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                       decoration: BoxDecoration(
-                        color: Colors.blue,
+                        color: Colors.blue.withOpacity(0.1),
                         borderRadius: BorderRadius.circular(20),
                       ),
                       child: Text(
@@ -578,7 +644,7 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
                 decoration: BoxDecoration(
                   color: Colors.grey[50],
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+                  border: Border.all(color: Colors.grey.withOpacity(0.2)),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -634,13 +700,13 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
                       padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(
                         color: pendiente > 0 
-                            ? Colors.orange.withValues(alpha: 0.1)
-                            : Colors.green.withValues(alpha: 0.1),
+                            ? Colors.orange.withOpacity(0.1)
+                            : Colors.green.withOpacity(0.1),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
                           color: pendiente > 0 
-                              ? Colors.orange.withValues(alpha: 0.3)
-                              : Colors.green.withValues(alpha: 0.3),
+                              ? Colors.orange.withOpacity(0.3)
+                              : Colors.green.withOpacity(0.3),
                         ),
                       ),
                       child: Column(
@@ -694,18 +760,18 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
                       margin: const EdgeInsets.only(bottom: 12),
                       decoration: BoxDecoration(
                         color: isCurrentReserva 
-                            ? Colors.blue.withValues(alpha: 0.08)
+                            ? Colors.blue.withOpacity(0.08)
                             : Colors.white,
                         borderRadius: BorderRadius.circular(16),
                         border: Border.all(
                           color: isCurrentReserva 
-                              ? Colors.blue.withValues(alpha: 0.4)
-                              : Colors.grey.withValues(alpha: 0.2),
+                              ? Colors.blue.withOpacity(0.4)
+                              : Colors.grey.withOpacity(0.2),
                           width: isCurrentReserva ? 2 : 1,
                         ),
                         boxShadow: isCurrentReserva ? [
                           BoxShadow(
-                            color: Colors.blue.withValues(alpha: 0.1),
+                            color: Colors.blue.withOpacity(0.1),
                             blurRadius: 8,
                             offset: const Offset(0, 2),
                           ),
@@ -780,7 +846,7 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
                                           'Valor: ${_formatCurrency(reserva['valor'])}',
                                           style: GoogleFonts.montserrat(
                                             fontSize: 13,
-                                            color: _primaryColor.withValues(alpha: 0.8),
+                                            color: _primaryColor.withOpacity(0.8),
                                           ),
                                         ),
                                       ),
@@ -804,8 +870,8 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
                               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                               decoration: BoxDecoration(
                                 color: isPagadoCompleto 
-                                    ? Colors.green.withValues(alpha: 0.15)
-                                    : Colors.orange.withValues(alpha: 0.15),
+                                    ? Colors.green.withOpacity(0.15)
+                                    : Colors.orange.withOpacity(0.15),
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: Row(
@@ -1008,7 +1074,7 @@ Widget build(BuildContext context) {
                 colors: [
                   _cardColor,
                   Colors.white,
-                  _cardColor.withOpacity(0.5),
+                  _cardColor,
                 ],
               ),
             ),
@@ -1022,7 +1088,7 @@ Widget build(BuildContext context) {
                       Container(
                         padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
-                          color: _secondaryColor.withOpacity(0.1),
+                          color: _secondaryColor,
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Icon(
@@ -1081,16 +1147,16 @@ Widget build(BuildContext context) {
                   Container(
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
-                      color: _secondaryColor.withOpacity(0.08),
+                      color: _secondaryColor.withOpacity(0.1),
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: _secondaryColor.withOpacity(0.2)),
+                      border: Border.all(color: _secondaryColor.withOpacity(0.3)),
                     ),
                     child: Row(
                       children: [
                         Container(
                           padding: const EdgeInsets.all(8),
                           decoration: BoxDecoration(
-                            color: _secondaryColor,
+                            color: _secondaryColor.withOpacity(0.2),
                             borderRadius: BorderRadius.circular(10),
                           ),
                           child: const Icon(
@@ -1109,7 +1175,7 @@ Widget build(BuildContext context) {
                                 style: GoogleFonts.montserrat(
                                   fontSize: 14,
                                   fontWeight: FontWeight.w500,
-                                  color: _primaryColor.withOpacity(0.7),
+                                  color: _primaryColor,
                                 ),
                               ),
                               const SizedBox(height: 2),
@@ -1145,7 +1211,7 @@ Widget build(BuildContext context) {
       children: [
         Icon(
           icon,
-          color: _secondaryColor.withOpacity(0.7),
+          color: _secondaryColor,
           size: 20,
         ),
         const SizedBox(width: 12),
@@ -1158,7 +1224,7 @@ Widget build(BuildContext context) {
                 style: GoogleFonts.montserrat(
                   fontSize: 13,
                   fontWeight: FontWeight.w500,
-                  color: _primaryColor.withOpacity(0.6),
+                  color: _primaryColor,
                 ),
               ),
               const SizedBox(height: 2),
@@ -1193,9 +1259,9 @@ Widget build(BuildContext context) {
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: [
-              Colors.green.withOpacity(0.02),
+              Colors.green.withOpacity(0.05),
               Colors.white,
-              Colors.green.withOpacity(0.01),
+              Colors.green.withOpacity(0.05),
             ],
           ),
         ),
@@ -1209,7 +1275,7 @@ Widget build(BuildContext context) {
                   Container(
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
-                      color: Colors.green.withOpacity(0.1),
+                      color: Colors.green.withOpacity(0.2),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: const Icon(
@@ -1259,13 +1325,13 @@ Widget build(BuildContext context) {
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                   color: reserva.tipoAbono == TipoAbono.completo
-                      ? Colors.green.withOpacity(0.08)
-                      : Colors.orange.withOpacity(0.08),
+                      ? Colors.green.withOpacity(0.1)
+                      : Colors.orange.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(
                     color: reserva.tipoAbono == TipoAbono.completo
-                        ? Colors.green.withOpacity(0.2)
-                        : Colors.orange.withOpacity(0.2),
+                        ? Colors.green.withOpacity(0.3)
+                        : Colors.orange.withOpacity(0.3),
                   ),
                 ),
                 child: Column(
@@ -1276,8 +1342,8 @@ Widget build(BuildContext context) {
                           padding: const EdgeInsets.all(8),
                           decoration: BoxDecoration(
                             color: reserva.tipoAbono == TipoAbono.completo
-                                ? Colors.green
-                                : Colors.orange,
+                                ? Colors.green.withOpacity(0.2)
+                                : Colors.orange.withOpacity(0.2),
                             borderRadius: BorderRadius.circular(10),
                           ),
                           child: Icon(
@@ -1298,7 +1364,7 @@ Widget build(BuildContext context) {
                                 style: GoogleFonts.montserrat(
                                   fontSize: 14,
                                   fontWeight: FontWeight.w500,
-                                  color: _primaryColor.withOpacity(0.7),
+                                  color: _primaryColor,
                                 ),
                               ),
                               const SizedBox(height: 2),
@@ -1331,7 +1397,7 @@ Widget build(BuildContext context) {
                                 style: GoogleFonts.montserrat(
                                   fontSize: 13,
                                   fontWeight: FontWeight.w500,
-                                  color: _primaryColor.withOpacity(0.6),
+                                  color: _primaryColor,
                                 ),
                               ),
                               const SizedBox(height: 2),
@@ -1367,7 +1433,7 @@ Widget build(BuildContext context) {
       children: [
         Icon(
           icon,
-          color: Colors.green.withOpacity(0.7),
+          color: Colors.green,
           size: 20,
         ),
         const SizedBox(width: 12),
@@ -1380,7 +1446,7 @@ Widget build(BuildContext context) {
                 style: GoogleFonts.montserrat(
                   fontSize: 13,
                   fontWeight: FontWeight.w500,
-                  color: _primaryColor.withOpacity(0.6),
+                  color: _primaryColor,
                 ),
               ),
               const SizedBox(height: 2),

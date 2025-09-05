@@ -1,17 +1,24 @@
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:reserva_canchas/providers/audit_provider.dart';
 import 'package:reserva_canchas/providers/peticion_provider.dart';
+import 'package:reserva_canchas/utils/reserva_audit_utils.dart';
 import '../../../../models/reserva.dart';
 import '../../../../providers/cancha_provider.dart';
 import '../../../../providers/sede_provider.dart';
 import '../../../../providers/reserva_recurrente_provider.dart';
 import '../../../../models/reserva_recurrente.dart';
+import 'dart:html' as html;
+import 'dart:convert';
+import 'package:flutter/services.dart' show rootBundle, ByteData;
+import 'dart:async';
 
 class AdminRegistroReservasScreen extends StatefulWidget {
   const AdminRegistroReservasScreen({super.key});
@@ -80,146 +87,224 @@ class AdminRegistroReservasScreenState
   }
 
   Future<void> _loadReservasWithFilters() async {
+  if (!mounted) return;
+  
+  setState(() {
+    _isLoading = true;
+    _reservas.clear();
+  });
+  
+  try {
+    final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
+    final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
+    final reservaRecurrenteProvider = Provider.of<ReservaRecurrenteProvider>(context, listen: false);
+    
+    await Future.wait([
+      canchaProvider.fetchAllCanchas(),
+      canchaProvider.fetchHorasReservadas(),
+      sedeProvider.fetchSedes(),
+      reservaRecurrenteProvider.fetchReservasRecurrentes(sede: _selectedSedeId),
+    ]);
+
     if (!mounted) return;
+
+    final canchasMap = {
+      for (var cancha in canchaProvider.canchas) cancha.id: cancha
+    };
+
+    Query<Map<String, dynamic>> query = FirebaseFirestore.instance
+        .collection('reservas')
+        .where('confirmada', isEqualTo: true)
+        .limit(50);
+
+    if (_selectedDate != null) {
+      final String dateStr = DateFormat('yyyy-MM-dd').format(_selectedDate!);
+      query = query.where('fecha', isEqualTo: dateStr);
+    }
+
+    if (_selectedSedeId != null) {
+      query = query.where('sede', isEqualTo: _selectedSedeId);
+    }
+
+    if (_selectedCanchaId != null) {
+      query = query.where('cancha_id', isEqualTo: _selectedCanchaId);
+    }
+
+    QuerySnapshot querySnapshot = await query
+        .get()
+        .timeout(const Duration(seconds: 10), onTimeout: () {
+          throw TimeoutException('La consulta a Firestore tardó demasiado');
+        });
+
+    if (!mounted) return;
+
+    List<Reserva> reservasTemp = [];
     
-    setState(() {
-      _isLoading = true;
-      _reservas.clear();
-    });
+    // 🔥 PASO 1: Cargar reservas individuales existentes
+    Set<String> reservasIndividualesNormales = {}; // 🔥 CAMBIO: Solo las que NO son personalizaciones
+    Set<String> reservasIndividualesPersonalizadas = {}; // 🔥 NUEVO: Las que SÍ son personalizaciones
     
-    try {
-      final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
-      final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
-      final reservaRecurrenteProvider = Provider.of<ReservaRecurrenteProvider>(context, listen: false);
-      
-      await Future.wait([
-        canchaProvider.fetchAllCanchas(),
-        canchaProvider.fetchHorasReservadas(),
-        sedeProvider.fetchSedes(),
-        reservaRecurrenteProvider.fetchReservasRecurrentes(sede: _selectedSedeId),
-      ]);
-
-      if (!mounted) return;
-
-      final canchasMap = {
-        for (var cancha in canchaProvider.canchas) cancha.id: cancha
-      };
-
-      Query<Map<String, dynamic>> query = FirebaseFirestore.instance
-          .collection('reservas')
-          .where('confirmada', isEqualTo: true)
-          .limit(50);
-
-      if (_selectedDate != null) {
-        final String dateStr = DateFormat('yyyy-MM-dd').format(_selectedDate!);
-        query = query.where('fecha', isEqualTo: dateStr);
-      }
-
-      if (_selectedSedeId != null) {
-        query = query.where('sede', isEqualTo: _selectedSedeId);
-      }
-
-      if (_selectedCanchaId != null) {
-        query = query.where('cancha_id', isEqualTo: _selectedCanchaId);
-      }
-
-      QuerySnapshot querySnapshot = await query
-
-      
-          .get()
-          .timeout(const Duration(seconds: 10), onTimeout: () {
-            throw TimeoutException('La consulta a Firestore tardó demasiado');
-          });
-
-      if (!mounted) return;
-
-      List<Reserva> reservasTemp = [];
-      
-      for (var doc in querySnapshot.docs) {
-        try {
-          final data = doc.data() as Map<String, dynamic>?;
-          if (data == null ||
-              !data.containsKey('fecha') ||
-              !data.containsKey('cancha_id') ||
-              !data.containsKey('sede') ||
-              !data.containsKey('horario')) {
-            continue;
-          }
-
-          final confirmada = data['confirmada'] as bool? ?? false;
-          if (!confirmada) {
-            continue;
-          }
-
-          final reserva = Reserva.fromFirestoreWithCanchas(doc, canchasMap);
-          if (reserva.cancha.id.isNotEmpty) {
-            reservasTemp.add(reserva);
-          }
-        } catch (e) {
-          debugPrint('Error al procesar documento: $e');
+    for (var doc in querySnapshot.docs) {
+      try {
+        final data = doc.data() as Map<String, dynamic>?;
+        if (data == null ||
+            !data.containsKey('fecha') ||
+            !data.containsKey('cancha_id') ||
+            !data.containsKey('sede') ||
+            !data.containsKey('horario')) {
+          continue;
         }
-      }
 
-      if (_selectedDate != null) {
-        final fechaInicio = _selectedDate!;
-        final fechaFin = _selectedDate!;
-        
-        final reservasRecurrentes = await reservaRecurrenteProvider
-            .generarReservasDesdeRecurrentes(fechaInicio, fechaFin, canchasMap);
-        
-        final reservasRecurrentesFiltradas = reservasRecurrentes.where((reserva) {
-          if (_selectedCanchaId != null && reserva.cancha.id != _selectedCanchaId) {
-            return false;
+        final confirmada = data['confirmada'] as bool? ?? false;
+        if (!confirmada) {
+          continue;
+        }
+
+        final reserva = Reserva.fromFirestoreWithCanchas(doc, canchasMap);
+        if (reserva.cancha.id.isNotEmpty) {
+          reservasTemp.add(reserva);
+          
+          // 🔥 NUEVA LÓGICA: Separar reservas individuales normales de personalizaciones
+          String claveReserva = '${DateFormat('yyyy-MM-dd').format(reserva.fecha)}_${reserva.cancha.id}_${reserva.horario.horaFormateada}';
+          
+          // 🔥 Verificar si es una personalización de día específico
+          final esPrecioIndependiente = data['precio_independiente_de_recurrencia'] as bool? ?? false;
+          
+          if (esPrecioIndependiente) {
+            reservasIndividualesPersonalizadas.add(claveReserva);
+            debugPrint('📝 Reserva individual PERSONALIZADA cargada: $claveReserva - Precio: ${reserva.montoTotal}');
+          } else {
+            reservasIndividualesNormales.add(claveReserva);
+            debugPrint('📝 Reserva individual NORMAL cargada: $claveReserva - Precio: ${reserva.montoTotal}');
           }
-          return true;
-        }).toList();
-        
-        reservasTemp.addAll(reservasRecurrentesFiltradas);
-      } else {
-        final hoy = DateTime.now();
-        final reservasRecurrentes = await reservaRecurrenteProvider
-            .generarReservasDesdeRecurrentes(hoy, hoy, canchasMap);
-        
-        final reservasRecurrentesFiltradas = reservasRecurrentes.where((reserva) {
-          if (_selectedCanchaId != null && reserva.cancha.id != _selectedCanchaId) {
-            return false;
-          }
-          return true;
-        }).toList();
-        
-        reservasTemp.addAll(reservasRecurrentesFiltradas);
-      }
-
-      if (_selectedEstado != null) {
-        reservasTemp = reservasTemp.where((reserva) {
-          final estadoReserva = reserva.tipoAbono == TipoAbono.completo ? 'completo' : 'parcial';
-          return estadoReserva == _selectedEstado;
-        }).toList();
-      }
-
-      if (mounted) {
-        setState(() {
-          _reservas = reservasTemp..sort((a, b) => a.horario.hora.compareTo(b.horario.hora));
-        });
-        
-        debugPrint('📊 Total reservas cargadas: ${_reservas.length}');
-        debugPrint('📊 Reservas recurrentes: ${_reservas.where((r) => r.esReservaRecurrente).length}');
-        debugPrint('📊 Reservas normales: ${_reservas.where((r) => !r.esReservaRecurrente).length}');
-      }
-    } catch (e) {
-      if (mounted) {
-        _showErrorSnackBar('Error al cargar reservas: $e');
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-        _fadeController.reset();
-        _fadeController.forward();
+        }
+      } catch (e) {
+        debugPrint('Error al procesar documento: $e');
       }
     }
+
+    // 🔥 PASO 2: Generar reservas recurrentes (ya incluye precios personalizados internamente)
+    if (_selectedDate != null) {
+      final fechaInicio = _selectedDate!;
+      final fechaFin = _selectedDate!;
+      
+      // 🔥 NUEVA LLAMADA: Ahora el método internamente maneja precios personalizados
+      final reservasRecurrentes = await reservaRecurrenteProvider
+          .generarReservasDesdeRecurrentes(fechaInicio, fechaFin, canchasMap);
+      
+      // 🔥 NUEVA LÓGICA DE FILTRADO
+      final reservasRecurrentesFiltradas = reservasRecurrentes.where((reserva) {
+        if (_selectedCanchaId != null && reserva.cancha.id != _selectedCanchaId) {
+          return false;
+        }
+        
+        String claveReserva = '${DateFormat('yyyy-MM-dd').format(reserva.fecha)}_${reserva.cancha.id}_${reserva.horario.horaFormateada}';
+        
+        // 🔥 NUEVA LÓGICA: Solo bloquear si existe una reserva individual NORMAL (no personalizada)
+        if (reservasIndividualesNormales.contains(claveReserva)) {
+          debugPrint('⚠️ Saltando reserva recurrente porque ya existe individual NORMAL: $claveReserva');
+          return false; // Bloquear porque hay una reserva individual completamente independiente
+        }
+        
+        // 🔥 Si existe una personalización, NO bloquear porque la recurrente ya viene con el precio correcto
+        if (reservasIndividualesPersonalizadas.contains(claveReserva)) {
+          debugPrint('✅ Permitiendo reserva recurrente CON precio personalizado: $claveReserva - Precio: ${reserva.montoTotal}');
+        } else {
+          debugPrint('✅ Agregando reserva recurrente NORMAL: $claveReserva - Precio: ${reserva.montoTotal}');
+        }
+        
+        return true;
+      }).toList();
+      
+      reservasTemp.addAll(reservasRecurrentesFiltradas);
+      
+    } else {
+      // 🔥 PARA FECHAS NO ESPECÍFICAS (mostrar hoy)
+      final hoy = DateTime.now();
+      final reservasRecurrentes = await reservaRecurrenteProvider
+          .generarReservasDesdeRecurrentes(hoy, hoy, canchasMap);
+      
+      final reservasRecurrentesFiltradas = reservasRecurrentes.where((reserva) {
+        if (_selectedCanchaId != null && reserva.cancha.id != _selectedCanchaId) {
+          return false;
+        }
+        
+        String claveReserva = '${DateFormat('yyyy-MM-dd').format(reserva.fecha)}_${reserva.cancha.id}_${reserva.horario.horaFormateada}';
+        
+        // 🔥 MISMA LÓGICA: Solo bloquear reservas individuales NORMALES
+        if (reservasIndividualesNormales.contains(claveReserva)) {
+          debugPrint('⚠️ Saltando reserva recurrente porque ya existe individual NORMAL: $claveReserva');
+          return false;
+        }
+        
+        if (reservasIndividualesPersonalizadas.contains(claveReserva)) {
+          debugPrint('✅ Permitiendo reserva recurrente CON precio personalizado: $claveReserva - Precio: ${reserva.montoTotal}');
+        } else {
+          debugPrint('✅ Agregando reserva recurrente NORMAL: $claveReserva - Precio: ${reserva.montoTotal}');
+        }
+        
+        return true;
+      }).toList();
+      
+      reservasTemp.addAll(reservasRecurrentesFiltradas);
+    }
+
+    // 🔥 PASO 3: Aplicar filtro de estado (sin cambios)
+    if (_selectedEstado != null) {
+      reservasTemp = reservasTemp.where((reserva) {
+        final estadoReserva = reserva.tipoAbono == TipoAbono.completo ? 'completo' : 'parcial';
+        return estadoReserva == _selectedEstado;
+      }).toList();
+    }
+
+    // 🔥 PASO 4: Eliminar duplicados finales (por si acaso)
+    Map<String, Reserva> reservasUnicas = {};
+    for (var reserva in reservasTemp) {
+      String claveUnica = '${DateFormat('yyyy-MM-dd').format(reserva.fecha)}_${reserva.cancha.id}_${reserva.horario.horaFormateada}';
+      
+      // 🔥 Priorizar reservas individuales sobre recurrentes en caso de conflicto
+      if (reservasUnicas.containsKey(claveUnica)) {
+        final existente = reservasUnicas[claveUnica]!;
+        // Si la existente es recurrente y la nueva es individual, reemplazar
+        if (existente.esReservaRecurrente && !reserva.esReservaRecurrente) {
+          reservasUnicas[claveUnica] = reserva;
+          debugPrint('🔄 Reemplazando recurrente con individual para: $claveUnica');
+        }
+        // Si ambas son del mismo tipo, mantener la existente
+      } else {
+        reservasUnicas[claveUnica] = reserva;
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _reservas = reservasUnicas.values.toList()
+          ..sort((a, b) => a.horario.hora.compareTo(b.horario.hora));
+      });
+      
+      debugPrint('📊 === RESUMEN FINAL ===');
+      debugPrint('📊 Total reservas cargadas: ${_reservas.length}');
+      debugPrint('📊 Reservas recurrentes: ${_reservas.where((r) => r.esReservaRecurrente).length}');
+      debugPrint('📊 Reservas normales: ${_reservas.where((r) => !r.esReservaRecurrente).length}');
+      debugPrint('📊 Reservas con precio personalizado: ${_reservas.where((r) => r.precioPersonalizado).length}');
+      debugPrint('📊 Reservas individuales normales que bloquean: ${reservasIndividualesNormales.length}');
+      debugPrint('📊 Reservas individuales personalizadas: ${reservasIndividualesPersonalizadas.length}');
+    }
+  } catch (e) {
+    if (mounted) {
+      _showErrorSnackBar('Error al cargar reservas: $e');
+    }
+  } finally {
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+      });
+      _fadeController.reset();
+      _fadeController.forward();
+    }
   }
+}
+
 
   void _showErrorSnackBar(String message) {
     if (!mounted) return;
@@ -358,107 +443,941 @@ class AdminRegistroReservasScreenState
     _loadReservasWithFilters();
   }
 
-  Future<void> _editReserva(Reserva reserva) async {
-    if (!mounted) return;
-    
-    if (reserva.esReservaRecurrente) {
-      final result = await showDialog<String>(
-        context: context,
-        builder: (context) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-          title: Text('Reserva Recurrente', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
-          content: Text(
-            'Esta es una reserva recurrente. ¿Qué deseas hacer?',
-            style: GoogleFonts.montserrat(color: _primaryColor),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'cancelar'),
-              child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'editar_solo_hoy'),
-              child: Text('Editar solo hoy', style: GoogleFonts.montserrat(color: _secondaryColor)),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'ver_recurrente'),
-              child: Text('Ver reserva recurrente', style: GoogleFonts.montserrat(color: _secondaryColor)),
-            ),
-          ],
-        ),
-      );
 
-      if (result == 'ver_recurrente') {
-        _mostrarDetallesReservaRecurrente(reserva);
-        return;
-      } else if (result == 'editar_solo_hoy') {
-        _mostrarDialogoExcluirDiaRecurrente(reserva);
-        return;
-      } else {
-        return;
+
+
+
+  Future<void> _editReserva(Reserva reserva) async {
+  if (!mounted) return;
+  
+  if (reserva.esReservaRecurrente) {
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+        title: Text('Reserva Recurrente', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
+        content: Text(
+          'Esta es una reserva recurrente. ¿Qué deseas hacer?',
+          style: GoogleFonts.montserrat(color: _primaryColor),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'cancelar'),
+            child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'editar_solo_hoy'),
+            child: Text('Editar solo este día', style: GoogleFonts.montserrat(color: _secondaryColor)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'ver_recurrente'),
+            child: Text('Ver reserva recurrente', style: GoogleFonts.montserrat(color: _secondaryColor)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'editar_precio_recurrente'),
+            child: Text('Editar toda la recurrencia', style: GoogleFonts.montserrat(color: Colors.orange)),
+          ),
+        ],
+      ),
+    );
+
+    if (result == 'ver_recurrente') {
+      _mostrarDetallesReservaRecurrente(reserva);
+      return;
+    } else if (result == 'editar_solo_hoy') {
+      await _editarReservaDiaEspecifico(reserva);
+      return;
+    } else if (result == 'editar_precio_recurrente') {
+      await _editarPrecioReservaRecurrente(reserva);
+      return;
+    } else {
+      return; // Usuario canceló
+    }
+  }
+
+  // Editar reserva normal (con sistema de peticiones integrado)
+  await _editarReservaNormal(reserva);
+
+}
+
+
+
+
+
+Future<void> _editarReservaDiaEspecifico(Reserva reserva) async {
+  if (!mounted || reserva.reservaRecurrenteId == null) {
+    debugPrint('❌ No se puede editar: mounted=$mounted, reservaRecurrenteId=${reserva.reservaRecurrenteId}');
+    return;
+  }
+
+  debugPrint('🔄 Iniciando edición de día específico para reserva: ${reserva.id}');
+  debugPrint('🔄 ReservaRecurrenteId: ${reserva.reservaRecurrenteId}');
+
+  // Capturar datos antiguos antes de la edición
+  final datosAntiguos = _prepararDatosEspecificoParaAuditoria(reserva);
+
+  final _formKey = GlobalKey<FormState>();
+  final nombreController = TextEditingController(text: reserva.nombre ?? '');
+  final telefonoController = TextEditingController(text: reserva.telefono ?? '');
+  final emailController = TextEditingController(text: reserva.email ?? '');
+  final precioController = TextEditingController(text: reserva.montoTotal.toString());
+
+  // Obtener estado del control total
+  final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
+  final puedeHacerCambiosDirectos = await peticionProvider.puedeHacerCambiosDirectos();
+
+  final result = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+      title: Row(
+        children: [
+          Text('Editar Solo Este Día', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: puedeHacerCambiosDirectos ? Colors.green.withOpacity(0.2) : Colors.orange.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: puedeHacerCambiosDirectos ? Colors.green.withOpacity(0.5) : Colors.orange.withOpacity(0.5),
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  puedeHacerCambiosDirectos ? Icons.check_circle : Icons.pending,
+                  size: 14,
+                  color: puedeHacerCambiosDirectos ? Colors.green.shade700 : Colors.orange.shade700,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  puedeHacerCambiosDirectos ? 'DIRECTO' : 'PETICIÓN',
+                  style: GoogleFonts.montserrat(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: puedeHacerCambiosDirectos ? Colors.green.shade700 : Colors.orange.shade700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      content: SingleChildScrollView(
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Banner informativo
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: puedeHacerCambiosDirectos 
+                      ? [Colors.blue.withOpacity(0.1), Colors.green.withOpacity(0.1)]
+                      : [Colors.orange.withOpacity(0.1), Colors.amber.withOpacity(0.1)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: puedeHacerCambiosDirectos ? Colors.blue.withOpacity(0.3) : Colors.orange.withOpacity(0.3),
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.edit_calendar,
+                          color: puedeHacerCambiosDirectos ? Colors.blue[700] : Colors.orange[700],
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            puedeHacerCambiosDirectos 
+                              ? 'Edición de Día Específico - Modo Directo'
+                              : 'Edición de Día Específico - Modo Petición',
+                            style: GoogleFonts.montserrat(
+                              color: puedeHacerCambiosDirectos ? Colors.blue[700] : Colors.orange[700],
+                              fontWeight: FontWeight.w600,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      puedeHacerCambiosDirectos 
+                          ? '✓ Solo esta fecha será modificada\n✓ La reserva recurrente permanece intacta\n✓ Cambios se aplicarán inmediatamente'
+                          : '📋 Se creará petición para este día específico\n⏳ Requiere aprobación del SuperAdmin\n🔒 La reserva recurrente no se verá afectada',
+                      style: GoogleFonts.montserrat(
+                        fontSize: 11,
+                        color: puedeHacerCambiosDirectos ? Colors.blue[600] : Colors.orange[600],
+                        height: 1.3,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Información de la reserva
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: _secondaryColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.calendar_today, color: _secondaryColor, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '${reserva.cancha.nombre} - ${DateFormat('dd/MM/yyyy').format(reserva.fecha)}',
+                            style: GoogleFonts.montserrat(fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Icon(Icons.access_time, color: Colors.grey[600], size: 16),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Horario: ${reserva.horario.horaFormateada}',
+                          style: GoogleFonts.montserrat(color: Colors.grey[600]),
+                        ),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        Icon(Icons.repeat, color: Colors.purple, size: 16),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Parte de reserva recurrente',
+                          style: GoogleFonts.montserrat(
+                            color: Colors.purple,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              
+              // Campos del formulario
+              _buildCampoFormulario(
+                controller: nombreController,
+                label: 'Nombre del Cliente',
+                icon: Icons.person,
+                validator: (value) => value == null || value.trim().isEmpty ? 'Ingrese el nombre' : null,
+              ),
+              const SizedBox(height: 12),
+              
+              _buildCampoFormulario(
+                controller: telefonoController,
+                label: 'Teléfono',
+                icon: Icons.phone,
+                keyboardType: TextInputType.phone,
+                validator: (value) => value == null || value.trim().isEmpty ? 'Ingrese el teléfono' : null,
+              ),
+              const SizedBox(height: 12),
+              
+              _buildCampoFormulario(
+                controller: emailController,
+                label: 'Correo Electrónico',
+                icon: Icons.email,
+                keyboardType: TextInputType.emailAddress,
+                required: false,
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) return null;
+                  final emailRegex = RegExp(r'^[\w\.-]+@([\w-]+\.)+[\w-]{2,4}$');
+                  return emailRegex.hasMatch(value) ? 'Ingrese un correo válido' : null;
+                },
+              ),
+              const SizedBox(height: 12),
+              
+              // Campo de precio con advertencias
+              _buildCampoPrecio(
+                controller: precioController,
+                precioOriginal: reserva.montoTotal ?? reserva.precioOriginal ?? 0.0,
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) return 'Ingrese el precio';
+                  final precio = double.tryParse(value);
+                  if (precio == null || precio <= 0) return 'Ingrese un precio válido';
+                  return null;
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
+        ),
+        ElevatedButton(
+          onPressed: () {
+            if (_formKey.currentState!.validate()) {
+              Navigator.pop(context, true);
+            }
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: puedeHacerCambiosDirectos ? _secondaryColor : Colors.orange,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          ),
+          child: Text(
+            puedeHacerCambiosDirectos ? 'Aplicar Cambios' : 'Crear Petición',
+            style: GoogleFonts.montserrat(color: Colors.white, fontWeight: FontWeight.w600),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  if (result == true && mounted) {
+    await _procesarEdicionDiaEspecifico(
+      reserva: reserva,
+      datosAntiguos: datosAntiguos,
+      nombreController: nombreController,
+      telefonoController: telefonoController,
+      emailController: emailController,
+      precioController: precioController,
+      puedeHacerCambiosDirectos: puedeHacerCambiosDirectos,
+    );
+  }
+
+  // Limpiar controladores
+  nombreController.dispose();
+  telefonoController.dispose();
+  emailController.dispose();
+  precioController.dispose();
+}
+
+Future<void> _procesarEdicionDiaEspecifico({
+  required Reserva reserva,
+  required Map<String, dynamic> datosAntiguos,
+  required TextEditingController nombreController,
+  required TextEditingController telefonoController,
+  required TextEditingController emailController,
+  required TextEditingController precioController,
+  required bool puedeHacerCambiosDirectos,
+}) async {
+  try {
+    final nuevoPrecio = double.parse(precioController.text.trim());
+    final precioOriginal = (reserva.montoTotal != null)
+    ? reserva.montoTotal
+    : (reserva.precioOriginal ?? 0.0);
+    final esPrecioPersonalizado = (nuevoPrecio - precioOriginal).abs() > 0.01;
+    final porcentajeCambio = precioOriginal > 0 ? ((nuevoPrecio - precioOriginal) / precioOriginal * 100).abs() : 0.0;
+    
+    // Preparar datos nuevos para auditoría
+    final datosNuevos = {
+      'nombre': nombreController.text.trim(),
+      'telefono': telefonoController.text.trim(),
+      'correo': emailController.text.trim(),
+      'valor': nuevoPrecio,
+      'montoPagado': reserva.montoPagado,
+      'precio_personalizado': esPrecioPersonalizado,
+      'precio_original': esPrecioPersonalizado ? precioOriginal : null,
+      'descuento_aplicado': esPrecioPersonalizado && nuevoPrecio < precioOriginal 
+          ? (precioOriginal - nuevoPrecio) : null,
+      'tipo': 'reserva_dia_especifico',
+      'porcentaje_cambio': porcentajeCambio,
+      'cancha_nombre': reserva.cancha.nombre,
+      'sede': reserva.sede,
+      'fecha': DateFormat('yyyy-MM-dd').format(reserva.fecha),
+      'horario': reserva.horario.horaFormateada,
+      'reserva_recurrente_id': reserva.reservaRecurrenteId,
+      'precio_independiente_de_recurrencia': true,
+    };
+
+    if (puedeHacerCambiosDirectos) {
+      await _aplicarCambiosDirectosDiaEspecifico(
+        reserva, datosAntiguos, datosNuevos, 
+        nombreController, telefonoController, emailController, nuevoPrecio, porcentajeCambio
+      );
+    } else {
+      await _crearPeticionDiaEspecificoConAuditoriaUnificada(reserva, datosAntiguos, datosNuevos);
+    }
+    
+    await _loadReservasWithFilters();
+    
+  } catch (e) {
+    if (mounted) {
+      _showErrorSnackBar('Error al procesar edición de día específico: $e');
+    }
+  }
+}
+
+Future<void> _aplicarCambiosDirectosDiaEspecifico(
+  Reserva reserva,
+  Map<String, dynamic> datosAntiguos,
+  Map<String, dynamic> datosNuevos,
+  TextEditingController nombreController,
+  TextEditingController telefonoController,
+  TextEditingController emailController,
+  double nuevoPrecio,
+  double porcentajeCambio,
+) async {
+  
+  final precioOriginal = reserva.precioOriginal ?? reserva.montoTotal;
+  final esPrecioPersonalizado = (nuevoPrecio - precioOriginal).abs() > 0.01;
+  final descuento = esPrecioPersonalizado && nuevoPrecio < precioOriginal 
+      ? (precioOriginal - nuevoPrecio) : 0.0;
+  
+  try {
+    // 🔥 PASO 1: VERIFICAR SI EXISTE UNA RESERVA INDIVIDUAL PARA ESTE DÍA
+    final fechaString = DateFormat('yyyy-MM-dd').format(reserva.fecha);
+    
+    // Buscar reserva individual existente
+    final reservaIndividualQuery = await FirebaseFirestore.instance
+        .collection('reservas')
+        .where('reservaRecurrenteId', isEqualTo: reserva.reservaRecurrenteId)
+        .where('fecha', isEqualTo: fechaString)
+        .where('cancha_id', isEqualTo: reserva.cancha.id)
+        .where('horario', isEqualTo: reserva.horario.horaFormateada)
+        .limit(1)
+        .get();
+
+    DocumentReference reservaIndividualRef;
+    bool esReservaExistente = false;
+
+    if (reservaIndividualQuery.docs.isNotEmpty) {
+      // Ya existe una reserva individual para este día
+      reservaIndividualRef = reservaIndividualQuery.docs.first.reference;
+      esReservaExistente = true;
+      debugPrint('✅ Reserva individual existente encontrada: ${reservaIndividualRef.id}');
+    } else {
+      // Crear nueva reserva individual
+      reservaIndividualRef = FirebaseFirestore.instance.collection('reservas').doc();
+      debugPrint('🆕 Creando nueva reserva individual: ${reservaIndividualRef.id}');
+    }
+
+    // Preparar datos para la reserva individual
+    Map<String, dynamic> reservaIndividualData = {
+      'nombre': nombreController.text.trim(),
+      'telefono': telefonoController.text.trim(),
+      'correo': emailController.text.trim(),
+      'valor': nuevoPrecio,
+      'montoTotal': nuevoPrecio,
+      'montoPagado': reserva.montoPagado,
+      'estado': reserva.montoPagado >= nuevoPrecio ? 'completo' : 'parcial',
+      'fecha': fechaString,
+      'cancha_id': reserva.cancha.id,
+      'cancha_nombre': reserva.cancha.nombre,
+      'horario': reserva.horario.horaFormateada,
+      'sede': reserva.sede,
+      'reservaRecurrenteId': reserva.reservaRecurrenteId,
+      'precio_independiente_de_recurrencia': true,
+      'fechaActualizacion': Timestamp.now(),
+      'usuario_modificacion': FirebaseAuth.instance.currentUser?.uid,
+      'confirmada': true, // Marcar como confirmada automáticamente
+    };
+
+    if (esPrecioPersonalizado) {
+      reservaIndividualData.addAll({
+        'precio_personalizado': true,
+        'precioPersonalizado': true,
+        'precio_original': precioOriginal,
+        'precioOriginal': precioOriginal,
+        'descuento_aplicado': descuento > 0 ? descuento : null,
+        'descuentoAplicado': descuento > 0 ? descuento : null,
+        'porcentaje_cambio_precio': porcentajeCambio,
+      });
+    } else {
+      reservaIndividualData.addAll({
+        'precio_personalizado': false,
+        'precioPersonalizado': false,
+        'precio_original': null,
+        'precioOriginal': null,
+        'descuento_aplicado': null,
+        'descuentoAplicado': null,
+      });
+    }
+
+    if (!esReservaExistente) {
+      // Agregar campos adicionales para reserva nueva
+      reservaIndividualData.addAll({
+        'fechaCreacion': Timestamp.now(),
+        'creadaDesdeDiaEspecifico': true,
+      });
+    }
+
+    // 🔥 PASO 2: CREAR O ACTUALIZAR LA RESERVA INDIVIDUAL
+    if (esReservaExistente) {
+      await reservaIndividualRef.update(reservaIndividualData);
+      debugPrint('✅ Reserva individual actualizada');
+    } else {
+      await reservaIndividualRef.set(reservaIndividualData);
+      debugPrint('✅ Nueva reserva individual creada');
+    }
+
+    // 🔥 PASO 3: ACTUALIZAR LA RESERVA RECURRENTE PARA EXCLUIR ESTE DÍA SI ES NECESARIO
+    final reservaRecurrenteRef = FirebaseFirestore.instance
+        .collection('reservas_recurrentes')
+        .doc(reserva.reservaRecurrenteId!);
+
+    final reservaRecurrenteDoc = await reservaRecurrenteRef.get();
+    if (reservaRecurrenteDoc.exists) {
+      final data = reservaRecurrenteDoc.data() as Map<String, dynamic>;
+      List<dynamic> diasExcluidos = List.from(data['diasExcluidos'] ?? []);
+      
+      // Agregar este día a los excluidos si no está ya
+      if (!diasExcluidos.contains(fechaString)) {
+        diasExcluidos.add(fechaString);
+        await reservaRecurrenteRef.update({
+          'diasExcluidos': diasExcluidos,
+          'fechaActualizacion': Timestamp.now(),
+        });
+        debugPrint('✅ Día agregado a excluidos en reserva recurrente');
       }
     }
 
+    // AUDITORÍA UNIFICADA
+    await ReservaAuditUtils.auditarEdicionReserva(
+      reservaId: reservaIndividualRef.id,
+      datosAntiguos: datosAntiguos,
+      datosNuevos: datosNuevos,
+      descripcionPersonalizada: esReservaExistente 
+          ? 'Edición de día específico en reserva recurrente - reserva individual actualizada'
+          : 'Edición de día específico en reserva recurrente - reserva individual creada',
+      metadatosAdicionales: {
+        'metodo_edicion': 'cambio_directo_dia_especifico',
+        'usuario_tipo': 'admin_con_control_total',
+        'interfaz_origen': 'registro_reservas_screen',
+        'timestamp_edicion': DateTime.now().millisecondsSinceEpoch,
+        'reserva_recurrente_id': reserva.reservaRecurrenteId,
+        'es_dia_independiente': true,
+        'reserva_individual_existia': esReservaExistente,
+        'reserva_individual_id': reservaIndividualRef.id,
+        'contexto_financiero': {
+          'diferencia_precio': nuevoPrecio - precioOriginal,
+          'es_aumento': nuevoPrecio > precioOriginal,
+          'es_descuento': nuevoPrecio < precioOriginal,
+          'monto_descuento': descuento,
+          'impacto_financiero': _calcularImpactoFinanciero(precioOriginal, nuevoPrecio),
+          'porcentaje_cambio': porcentajeCambio,
+        },
+        'informacion_reserva': {
+          'dias_hasta_reserva': reserva.fecha.difference(DateTime.now()).inDays,
+          'es_reserva_proxima': reserva.fecha.difference(DateTime.now()).inDays <= 3,
+          'horario_peak': _esHorarioPeak(reserva.horario.horaFormateada),
+          'fin_de_semana': _esFechaFinDeSemana(reserva.fecha),
+          'es_parte_recurrencia': true,
+        },
+      },
+    );
+
+  } catch (e) {
+    debugPrint('❌ Error al aplicar cambios de día específico: $e');
+    
+    String errorMessage = 'Error al actualizar el día específico';
+    if (e.toString().contains('permission-denied')) {
+      errorMessage = 'No tienes permisos para realizar esta acción';
+    } else if (e.toString().contains('network')) {
+      errorMessage = 'Error de conexión. Verifica tu internet';
+    }
+    
+    if (mounted) {
+      _showErrorSnackBar('$errorMessage: ${e.toString()}');
+    }
+    return;
+  }
+
+  if (mounted) {
+    String mensaje = 'Día específico de reserva recurrente actualizado correctamente';
+    Color colorMensaje = _reservedColor;
+    
+    if (porcentajeCambio >= 50) {
+      mensaje = 'CAMBIO CRÍTICO aplicado - Día específico actualizado';
+      colorMensaje = Colors.red;
+    } else if (porcentajeCambio >= 30) {
+      mensaje = 'Cambio significativo aplicado - Día específico actualizado';
+      colorMensaje = Colors.orange;
+    }
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              porcentajeCambio >= 30 ? Icons.warning : Icons.check_circle, 
+              color: Colors.white,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(mensaje, style: GoogleFonts.montserrat(color: Colors.white, fontWeight: FontWeight.w600)),
+                  Text('Solo este día ha sido modificado. La recurrencia permanece intacta.', 
+                       style: GoogleFonts.montserrat(color: Colors.white70, fontSize: 12)),
+                  if (porcentajeCambio > 15)
+                    Text('Cambio registrado en auditoría: ${porcentajeCambio.toStringAsFixed(1)}%', 
+                         style: GoogleFonts.montserrat(color: Colors.white70, fontSize: 12)),
+                ],
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: colorMensaje,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        margin: const EdgeInsets.all(12),
+        duration: Duration(seconds: porcentajeCambio >= 30 ? 4 : 3),
+      ),
+    );
+  }
+}
+
+Future<void> _crearPeticionDiaEspecificoConAuditoriaUnificada(
+  Reserva reserva,
+  Map<String, dynamic> datosAntiguos,
+  Map<String, dynamic> datosNuevos,
+) async {
+  
+  final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
+  
+  // Añadir información adicional para la petición
+  datosNuevos.addAll({
+    'justificacion_cambios': _generarJustificacionCambiosDiaEspecifico(datosAntiguos, datosNuevos),
+    'urgencia': _evaluarUrgenciaCambios(reserva.fecha),
+    'tipo_peticion': 'edicion_dia_especifico',
+  });
+
+  final peticionId = await peticionProvider.crearPeticion(
+    reservaId: reserva.id,
+    valoresAntiguos: datosAntiguos,
+    valoresNuevos: datosNuevos,
+  );
+
+  // AUDITORÍA UNIFICADA - usando solo ReservaAuditUtils
+  await ReservaAuditUtils.auditarEdicionReserva(
+    reservaId: reserva.id,
+    datosAntiguos: datosAntiguos,
+    datosNuevos: datosNuevos,
+    descripcionPersonalizada: 'Petición de edición de día específico creada desde registro de reservas',
+    metadatosAdicionales: {
+      'peticion_id': peticionId,
+      'tipo_operacion': 'peticion_edicion_dia_especifico',
+      'requiere_aprobacion': true,
+      'usuario_tipo': 'admin_sin_control_total',
+      'interfaz_origen': 'registro_reservas_screen',
+      'reserva_recurrente_id': reserva.reservaRecurrenteId,
+      'es_dia_independiente': true,
+      'justificacion': datosNuevos['justificacion_cambios'],
+      'urgencia': datosNuevos['urgencia'],
+      'timestamp_peticion': DateTime.now().millisecondsSinceEpoch,
+      'contexto_financiero': {
+        'diferencia_precio': (datosNuevos['valor'] ?? 0) - (datosAntiguos['valor'] ?? 0),
+        'porcentaje_cambio': datosNuevos['porcentaje_cambio'] ?? 0,
+      },
+    },
+    tipoEdicion: 'peticion',
+  );
+
+  if (mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.send, color: Colors.white),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Petición de edición de día específico creada',
+                    style: GoogleFonts.montserrat(color: Colors.white, fontWeight: FontWeight.w600),
+                  ),
+                  Text(
+                    'ID: ${peticionId.substring(0, 8)}... | Estado: Esperando aprobación',
+                    style: GoogleFonts.montserrat(color: Colors.white70, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: Colors.orange,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        margin: const EdgeInsets.all(12),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+}
+
+Map<String, dynamic> _prepararDatosEspecificoParaAuditoria(Reserva reserva) {
+  return {
+    'nombre': reserva.nombre ?? '',
+    'telefono': reserva.telefono ?? '',
+    'correo': reserva.email ?? '',
+    'valor': reserva.montoTotal,
+    'montoPagado': reserva.montoPagado,
+    'precio_personalizado': reserva.precioPersonalizado,
+    'precio_original': reserva.precioOriginal,
+    'cancha_nombre': reserva.cancha.nombre,
+    'cancha_id': reserva.cancha.id,
+    'sede': reserva.sede,
+    'fecha': DateFormat('yyyy-MM-dd').format(reserva.fecha),
+    'horario': reserva.horario.horaFormateada,
+    'confirmada': reserva.confirmada,
+    'tipo': 'reserva_dia_especifico',
+    'reserva_recurrente_id': reserva.reservaRecurrenteId,
+    'precio_independiente_de_recurrencia': reserva.precioPersonalizado ?? false,
+    'timestamp_original': reserva.fecha.millisecondsSinceEpoch,
+  };
+}
+
+String _generarJustificacionCambiosDiaEspecifico(Map<String, dynamic> datosAntiguos, Map<String, dynamic> datosNuevos) {
+  final cambios = <String>[];
+  
+  if (datosAntiguos['nombre'] != datosNuevos['nombre']) {
+    cambios.add('actualización de cliente');
+  }
+  if (datosAntiguos['telefono'] != datosNuevos['telefono']) {
+    cambios.add('cambio de teléfono');
+  }
+  if (datosAntiguos['valor'] != datosNuevos['valor']) {
+    final porcentaje = datosNuevos['porcentaje_cambio'] ?? 0;
+    cambios.add('ajuste de precio específico (${porcentaje.toStringAsFixed(1)}%)');
+  }
+  
+  return cambios.isEmpty ? 'Actualización de día específico en reserva recurrente' : 'Día específico: ${cambios.join(', ')}';
+}
+
+
+
+
+
+Future<void> _editarReservaNormal(Reserva reserva) async {
+    if (!mounted) return;
+    
+    // Capturar datos antiguos antes de la edición
+    final datosAntiguos = _prepararDatosParaAuditoria(reserva);
+    
     final _formKey = GlobalKey<FormState>();
     final nombreController = TextEditingController(text: reserva.nombre ?? '');
     final telefonoController = TextEditingController(text: reserva.telefono ?? '');
     final emailController = TextEditingController(text: reserva.email ?? '');
+    final precioController = TextEditingController(text: reserva.montoTotal.toString());
+
+    // Obtener estado del control total
+    final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
+    final puedeHacerCambiosDirectos = await peticionProvider.puedeHacerCambiosDirectos();
 
     final result = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-        title: Text('Editar Reserva', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
+        title: Row(
+          children: [
+            Text('Editar Reserva', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
+            const SizedBox(width: 8),
+            // Indicador de modo mejorado
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: puedeHacerCambiosDirectos ? Colors.green.withOpacity(0.2) : Colors.orange.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: puedeHacerCambiosDirectos ? Colors.green.withOpacity(0.5) : Colors.orange.withOpacity(0.5),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    puedeHacerCambiosDirectos ? Icons.check_circle : Icons.pending,
+                    size: 14,
+                    color: puedeHacerCambiosDirectos ? Colors.green.shade700 : Colors.orange.shade700,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    puedeHacerCambiosDirectos ? 'DIRECTO' : 'PETICIÓN',
+                    style: GoogleFonts.montserrat(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: puedeHacerCambiosDirectos ? Colors.green.shade700 : Colors.orange.shade700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
         content: SingleChildScrollView(
           child: Form(
             key: _formKey,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextFormField(
-                  controller: nombreController,
-                  decoration: InputDecoration(
-                    labelText: 'Nombre',
-                    prefixIcon: Icon(Icons.person, color: _secondaryColor),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                    filled: true,
-                    fillColor: Colors.white,
+                // Banner informativo mejorado
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: puedeHacerCambiosDirectos 
+                        ? [Colors.blue.withOpacity(0.1), Colors.green.withOpacity(0.1)]
+                        : [Colors.orange.withOpacity(0.1), Colors.amber.withOpacity(0.1)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: puedeHacerCambiosDirectos ? Colors.blue.withOpacity(0.3) : Colors.orange.withOpacity(0.3),
+                    ),
                   ),
-                  style: GoogleFonts.montserrat(color: _primaryColor),
+                  child: Column(
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            puedeHacerCambiosDirectos ? Icons.edit : Icons.request_page,
+                            color: puedeHacerCambiosDirectos ? Colors.blue[700] : Colors.orange[700],
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              puedeHacerCambiosDirectos 
+                                ? 'Modo Directo Activo'
+                                : 'Modo Petición Activo',
+                              style: GoogleFonts.montserrat(
+                                color: puedeHacerCambiosDirectos ? Colors.blue[700] : Colors.orange[700],
+                                fontWeight: FontWeight.w600,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        puedeHacerCambiosDirectos 
+                            ? '✓ Los cambios se aplicarán inmediatamente\n✓ Se registrarán en auditoría automáticamente\n✓ Alertas críticas se activarán si es necesario'
+                            : '📋 Se creará una petición para revisión\n⏳ Requiere aprobación del SuperAdmin\n📊 Se registrará en auditoría como petición',
+                        style: GoogleFonts.montserrat(
+                          fontSize: 11,
+                          color: puedeHacerCambiosDirectos ? Colors.blue[600] : Colors.orange[600],
+                          height: 1.3,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Información de la reserva
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: _secondaryColor.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.sports_soccer, color: _secondaryColor, size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '${reserva.cancha.nombre} - ${DateFormat('dd/MM/yyyy').format(reserva.fecha)}',
+                              style: GoogleFonts.montserrat(fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Icon(Icons.access_time, color: Colors.grey[600], size: 16),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Horario: ${reserva.horario.horaFormateada}',
+                            style: GoogleFonts.montserrat(color: Colors.grey[600]),
+                          ),
+                        ],
+                      ),
+                      Row(
+                        children: [
+                          Icon(Icons.location_on, color: Colors.grey[600], size: 16),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Sede: ${reserva.sede}',
+                            style: GoogleFonts.montserrat(color: Colors.grey[600]),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                
+                // Campos del formulario mejorados
+                _buildCampoFormulario(
+                  controller: nombreController,
+                  label: 'Nombre del Cliente',
+                  icon: Icons.person,
                   validator: (value) => value == null || value.trim().isEmpty ? 'Ingrese el nombre' : null,
                 ),
                 const SizedBox(height: 12),
-                TextFormField(
+                
+                _buildCampoFormulario(
                   controller: telefonoController,
-                  decoration: InputDecoration(
-                    labelText: 'Teléfono',
-                    prefixIcon: Icon(Icons.phone, color: _secondaryColor),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                    filled: true,
-                    fillColor: Colors.white,
-                  ),
-                  style: GoogleFonts.montserrat(color: _primaryColor),
+                  label: 'Teléfono',
+                  icon: Icons.phone,
                   keyboardType: TextInputType.phone,
                   validator: (value) => value == null || value.trim().isEmpty ? 'Ingrese el teléfono' : null,
                 ),
                 const SizedBox(height: 12),
-                TextFormField(
+                
+                _buildCampoFormulario(
                   controller: emailController,
-                  decoration: InputDecoration(
-                    labelText: 'Correo',
-                    prefixIcon: Icon(Icons.email, color: _secondaryColor),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                    filled: true,
-                    fillColor: Colors.white,
-                  ),
-                  style: GoogleFonts.montserrat(color: _primaryColor),
+                  label: 'Correo Electrónico',
+                  icon: Icons.email,
                   keyboardType: TextInputType.emailAddress,
+                  required: false,
                   validator: (value) {
                     if (value == null || value.trim().isEmpty) return null;
                     final emailRegex = RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$');
                     return emailRegex.hasMatch(value) ? null : 'Ingrese un correo válido';
                   },
                 ),
+                const SizedBox(height: 12),
+                
+                // Campo de precio con advertencias
+                _buildCampoPrecio(
+                  controller: precioController,
+                  precioOriginal: reserva.precioOriginal ?? reserva.montoTotal,
+                  validator: (value) {
+                    if (value == null || value.trim().isEmpty) return 'Ingrese el precio';
+                    final precio = double.tryParse(value);
+                    if (precio == null || precio <= 0) return 'Ingrese un precio válido';
+                    return null;
+                  },
+                ),
               ],
             ),
           ),
@@ -475,281 +1394,1872 @@ class AdminRegistroReservasScreenState
               }
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: _secondaryColor,
+              backgroundColor: puedeHacerCambiosDirectos ? _secondaryColor : Colors.orange,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
             ),
-            child: Text('Guardar', style: GoogleFonts.montserrat(color: Colors.white)),
+            child: Text(
+              puedeHacerCambiosDirectos ? 'Aplicar Cambios' : 'Crear Petición',
+              style: GoogleFonts.montserrat(color: Colors.white, fontWeight: FontWeight.w600),
+            ),
           ),
         ],
       ),
     );
 
     if (result == true && mounted) {
-      try {
-        await FirebaseFirestore.instance
-            .collection('reservas')
-            .doc(reserva.id)
-            .update({
-          'nombre': nombreController.text.trim(),
-          'telefono': telefonoController.text.trim(),
-          'correo': emailController.text.trim(),
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                const Icon(Icons.check_circle, color: Colors.white),
-                const SizedBox(width: 10),
-                Text('Reserva actualizada correctamente', style: GoogleFonts.montserrat(color: Colors.white)),
-              ],
-            ),
-            backgroundColor: _reservedColor,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            margin: const EdgeInsets.all(12),
-            duration: const Duration(seconds: 2),
-          ),
-        );
-        await _loadReservasWithFilters();
-      } catch (e) {
-        if (mounted) {
-          _showErrorSnackBar('Error al editar reserva: $e');
-        }
-      }
+      await _procesarEdicionReserva(
+        reserva: reserva,
+        datosAntiguos: datosAntiguos,
+        nombreController: nombreController,
+        telefonoController: telefonoController,
+        emailController: emailController,
+        precioController: precioController,
+        puedeHacerCambiosDirectos: puedeHacerCambiosDirectos,
+      );
     }
 
+    // Limpiar controladores
     nombreController.dispose();
     telefonoController.dispose();
     emailController.dispose();
+    precioController.dispose();
   }
 
-  Future<void> _completarPago(Reserva reserva) async {
-    if (!mounted) return;
-    final _formKey = GlobalKey<FormState>();
-    final montoController = TextEditingController(text: reserva.montoTotal.toString());
+  Widget _buildCampoFormulario({
+    required TextEditingController controller,
+    required String label,
+    required IconData icon,
+    TextInputType? keyboardType,
+    String? Function(String?)? validator,
+    bool required = true,
+  }) {
+    return TextFormField(
+      controller: controller,
+      decoration: InputDecoration(
+        labelText: label,
+        prefixIcon: Icon(icon, color: _secondaryColor),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        filled: true,
+        fillColor: Colors.white,
+        labelStyle: GoogleFonts.montserrat(),
+        suffixIcon: required ? null : Icon(Icons.help_outline, color: Colors.grey[400], size: 16),
+      ),
+      style: GoogleFonts.montserrat(color: _primaryColor),
+      keyboardType: keyboardType,
+      validator: validator,
+    );
+  }
 
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-        title: Text('Completar Pago', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
-        content: SingleChildScrollView(
-          child: Form(
-            key: _formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'Reserva para ${reserva.cancha.nombre} el ${DateFormat('dd/MM/yyyy').format(reserva.fecha)} a las ${reserva.horario.horaFormateada}',
-                  style: GoogleFonts.montserrat(color: _primaryColor),
+  Widget _buildCampoPrecio({
+    required TextEditingController controller,
+    required double precioOriginal,
+    String? Function(String?)? validator,
+  }) {
+    return ValueListenableBuilder<TextEditingValue>(
+      valueListenable: controller,
+      builder: (context, value, child) {
+        final nuevoPrecio = double.tryParse(value.text) ?? 0;
+        final diferencia = nuevoPrecio - precioOriginal;
+        final porcentaje = precioOriginal > 0 ? (diferencia / precioOriginal * 100) : 0;
+        
+        Color colorPrecio = Colors.orange;
+        String textoPrecio = 'Precio Total';
+        String? advertencia;
+        
+        if (porcentaje.abs() >= 50) {
+          colorPrecio = Colors.red;
+          textoPrecio = '🚨 PRECIO CRÍTICO';
+          advertencia = 'Cambio extremo de precio: ${porcentaje.toStringAsFixed(1)}%';
+        } else if (porcentaje.abs() >= 30) {
+          colorPrecio = Colors.deepOrange;
+          textoPrecio = 'PRECIO ALTO RIESGO';
+          advertencia = 'Cambio significativo: ${porcentaje.toStringAsFixed(1)}%';
+        } else if (porcentaje.abs() >= 15) {
+          colorPrecio = Colors.amber;
+          textoPrecio = 'PRECIO MODIFICADO';
+          advertencia = 'Cambio moderado: ${porcentaje.toStringAsFixed(1)}%';
+        }
+        
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextFormField(
+              controller: controller,
+              decoration: InputDecoration(
+                labelText: textoPrecio,
+                prefixIcon: Icon(Icons.attach_money, color: colorPrecio),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: colorPrecio),
                 ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: montoController,
-                  decoration: InputDecoration(
-                    labelText: 'Monto Pagado',
-                    prefixIcon: Icon(Icons.attach_money, color: _secondaryColor),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                    filled: true,
-                    fillColor: Colors.white,
-                  ),
-                  style: GoogleFonts.montserrat(color: _primaryColor),
-                  keyboardType: TextInputType.number,
-                  validator: (value) {
-                    if (value == null || value.trim().isEmpty) {
-                      return 'Ingrese el monto';
-                    }
-                    final monto = double.tryParse(value);
-                    if (monto == null || monto <= 0) {
-                      return 'Ingrese un monto válido';
-                    }
-                    if (monto > reserva.montoTotal) {
-                      return 'El monto no puede exceder el total (${reserva.montoTotal})';
-                    }
-                    return null;
-                  },
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: colorPrecio, width: 2),
                 ),
-              ],
+                filled: true,
+                fillColor: colorPrecio.withOpacity(0.05),
+                helperText: 'Precio original: ${NumberFormat('#,###', 'es').format(precioOriginal.toInt())}',
+                helperStyle: GoogleFonts.montserrat(fontSize: 11),
+                labelStyle: GoogleFonts.montserrat(color: colorPrecio, fontWeight: FontWeight.w600),
+              ),
+              style: GoogleFonts.montserrat(
+                color: _primaryColor, 
+                fontWeight: FontWeight.w600,
+                fontSize: 16,
+              ),
+              keyboardType: TextInputType.number,
+              validator: validator,
             ),
-          ),
+            if (advertencia != null) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: colorPrecio.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: colorPrecio.withOpacity(0.3)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.warning, color: colorPrecio, size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        advertencia,
+                        style: GoogleFonts.montserrat(
+                          fontSize: 12,
+                          color: colorPrecio,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+
+Future<void> _procesarEdicionReserva({
+  required Reserva reserva,
+  required Map<String, dynamic> datosAntiguos,
+  required TextEditingController nombreController,
+  required TextEditingController telefonoController,
+  required TextEditingController emailController,
+  required TextEditingController precioController,
+  required bool puedeHacerCambiosDirectos,
+}) async {
+  try {
+    final nuevoPrecio = double.parse(precioController.text.trim());
+    final precioOriginal = reserva.precioOriginal ?? reserva.montoTotal;
+    final esPrecioPersonalizado = (nuevoPrecio - precioOriginal).abs() > 0.01;
+    final porcentajeCambio = precioOriginal > 0 ? ((nuevoPrecio - precioOriginal) / precioOriginal * 100).abs() : 0.0;
+    
+    // Preparar datos nuevos para auditoría
+    final datosNuevos = {
+      'nombre': nombreController.text.trim(),
+      'telefono': telefonoController.text.trim(),
+      'correo': emailController.text.trim(),
+      'valor': nuevoPrecio,
+      'montoPagado': reserva.montoPagado,
+      'precio_personalizado': esPrecioPersonalizado,
+      'precio_original': esPrecioPersonalizado ? precioOriginal : null,
+      'descuento_aplicado': esPrecioPersonalizado && nuevoPrecio < precioOriginal 
+          ? (precioOriginal - nuevoPrecio) : null,
+      'tipo': 'reserva_normal',
+      'porcentaje_cambio': porcentajeCambio,
+      'cancha_nombre': reserva.cancha.nombre,
+      'sede': reserva.sede,
+      'fecha': DateFormat('yyyy-MM-dd').format(reserva.fecha),
+      'horario': reserva.horario.horaFormateada,
+    };
+
+    if (puedeHacerCambiosDirectos) {
+      await _aplicarCambiosDirectosConAuditoriaUnificada(
+        reserva, datosAntiguos, datosNuevos, 
+        nombreController, telefonoController, emailController, nuevoPrecio, porcentajeCambio
+      );
+    } else {
+      await _crearPeticionConAuditoriaUnificada(reserva, datosAntiguos, datosNuevos);
+    }
+    
+    await _loadReservasWithFilters();
+    
+  } catch (e) {
+    if (mounted) {
+      _showErrorSnackBar('Error al procesar edición de reserva: $e');
+    }
+  }
+}
+
+Future<void> _aplicarCambiosDirectosConAuditoriaUnificada(
+  Reserva reserva,
+  Map<String, dynamic> datosAntiguos,
+  Map<String, dynamic> datosNuevos,
+  TextEditingController nombreController,
+  TextEditingController telefonoController,
+  TextEditingController emailController,
+  double nuevoPrecio,
+  double porcentajeCambio,
+) async {
+  
+  final precioOriginal = reserva.precioOriginal ?? reserva.montoTotal;
+  final esPrecioPersonalizado = (nuevoPrecio - precioOriginal).abs() > 0.01;
+  final descuento = esPrecioPersonalizado && nuevoPrecio < precioOriginal 
+      ? (precioOriginal - nuevoPrecio) : 0.0;
+  
+  // Preparar datos de actualización
+  Map<String, dynamic> updateData = {
+    'nombre': nombreController.text.trim(),
+    'telefono': telefonoController.text.trim(),
+    'correo': emailController.text.trim(),
+    'valor': nuevoPrecio,
+    'montoPagado': reserva.montoPagado,
+    'estado': reserva.montoPagado >= nuevoPrecio ? 'completo' : 'parcial',
+    'fechaActualizacion': Timestamp.now(),
+    'usuario_modificacion': FirebaseAuth.instance.currentUser?.uid,
+  };
+
+  if (esPrecioPersonalizado) {
+    updateData.addAll({
+      'precio_personalizado': true,
+      'precio_original': precioOriginal,
+      'descuento_aplicado': descuento > 0 ? descuento : null,
+      'porcentaje_cambio_precio': porcentajeCambio,
+    });
+  } else {
+    updateData.addAll({
+      'precio_personalizado': false,
+      'precio_original': null,
+      'descuento_aplicado': null,
+    });
+  }
+
+  // Actualizar en Firestore
+  await FirebaseFirestore.instance
+      .collection('reservas')
+      .doc(reserva.id)
+      .update(updateData);
+
+  // AUDITORÍA UNIFICADA - usando solo ReservaAuditUtils
+  await ReservaAuditUtils.auditarEdicionReserva(
+    reservaId: reserva.id,
+    datosAntiguos: datosAntiguos,
+    datosNuevos: datosNuevos,
+    metadatosAdicionales: {
+      'metodo_edicion': 'cambio_directo_registro',
+      'usuario_tipo': 'admin_con_control_total',
+      'interfaz_origen': 'registro_reservas_screen',
+      'timestamp_edicion': DateTime.now().millisecondsSinceEpoch,
+      'contexto_financiero': {
+        'diferencia_precio': nuevoPrecio - precioOriginal,
+        'es_aumento': nuevoPrecio > precioOriginal,
+        'es_descuento': nuevoPrecio < precioOriginal,
+        'monto_descuento': descuento,
+        'impacto_financiero': _calcularImpactoFinanciero(precioOriginal, nuevoPrecio),
+      },
+      'informacion_reserva': {
+        'dias_hasta_reserva': reserva.fecha.difference(DateTime.now()).inDays,
+        'es_reserva_proxima': reserva.fecha.difference(DateTime.now()).inDays <= 3,
+        'horario_peak': _esHorarioPeak(reserva.horario.horaFormateada),
+        'fin_de_semana': _esFechaFinDeSemana(reserva.fecha),
+      },
+    },
+  );
+
+  // Mostrar mensaje basado en el análisis de riesgo de tu interfaz (mantiene tu lógica)
+  if (mounted) {
+    String mensaje = 'Reserva actualizada correctamente';
+    Color colorMensaje = _reservedColor;
+    
+    if (porcentajeCambio >= 50) {
+      mensaje = 'CAMBIO CRÍTICO aplicado - Reserva actualizada';
+      colorMensaje = Colors.red;
+    } else if (porcentajeCambio >= 30) {
+      mensaje = 'Cambio significativo aplicado - Reserva actualizada';
+      colorMensaje = Colors.orange;
+    }
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              porcentajeCambio >= 30 ? Icons.warning : Icons.check_circle, 
+              color: Colors.white,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(mensaje, style: GoogleFonts.montserrat(color: Colors.white, fontWeight: FontWeight.w600)),
+                  if (porcentajeCambio > 15)
+                    Text('Cambio registrado en auditoría: ${porcentajeCambio.toStringAsFixed(1)}%', 
+                         style: GoogleFonts.montserrat(color: Colors.white70, fontSize: 12)),
+                ],
+              ),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              if (_formKey.currentState!.validate()) {
-                Navigator.pop(context, true);
-              }
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: _reservedColor,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        backgroundColor: colorMensaje,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        margin: const EdgeInsets.all(12),
+        duration: Duration(seconds: porcentajeCambio >= 30 ? 4 : 2),
+      ),
+    );
+  }
+}
+
+Future<void> _crearPeticionConAuditoriaUnificada(
+  Reserva reserva,
+  Map<String, dynamic> datosAntiguos,
+  Map<String, dynamic> datosNuevos,
+) async {
+  
+  final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
+  
+  // Añadir información adicional para la petición
+  datosNuevos.addAll({
+    'justificacion_cambios': _generarJustificacionCambios(datosAntiguos, datosNuevos),
+    'urgencia': _evaluarUrgenciaCambios(reserva.fecha),
+  });
+
+  final peticionId = await peticionProvider.crearPeticion(
+    reservaId: reserva.id,
+    valoresAntiguos: datosAntiguos,
+    valoresNuevos: datosNuevos,
+  );
+
+  // AUDITORÍA UNIFICADA - usando solo ReservaAuditUtils
+  await ReservaAuditUtils.auditarEdicionReserva(
+    reservaId: reserva.id,
+    datosAntiguos: datosAntiguos,
+    datosNuevos: datosNuevos,
+    descripcionPersonalizada: 'Petición de edición creada desde registro de reservas',
+    metadatosAdicionales: {
+      'peticion_id': peticionId,
+      'tipo_operacion': 'peticion_edicion_registro',
+      'requiere_aprobacion': true,
+      'usuario_tipo': 'admin_sin_control_total',
+      'interfaz_origen': 'registro_reservas_screen',
+      'justificacion': datosNuevos['justificacion_cambios'],
+      'urgencia': datosNuevos['urgencia'],
+      'timestamp_peticion': DateTime.now().millisecondsSinceEpoch,
+    },
+    tipoEdicion: 'peticion',
+  );
+
+  if (mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.send, color: Colors.white),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Petición creada exitosamente',
+                    style: GoogleFonts.montserrat(color: Colors.white, fontWeight: FontWeight.w600),
+                  ),
+                  Text(
+                    'ID: ${peticionId.substring(0, 8)}... | Estado: Esperando aprobación',
+                    style: GoogleFonts.montserrat(color: Colors.white70, fontSize: 12),
+                  ),
+                ],
+              ),
             ),
-            child: Text('Confirmar', style: GoogleFonts.montserrat(color: Colors.white)),
+          ],
+        ),
+        backgroundColor: Colors.orange,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        margin: const EdgeInsets.all(12),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+}
+
+  String _calcularImpactoFinanciero(double precioOriginal, double precioNuevo) {
+    final diferencia = precioNuevo - precioOriginal;
+    final porcentaje = precioOriginal > 0 ? (diferencia / precioOriginal * 100) : 0;
+    
+    if (diferencia.abs() >= 100000) return 'muy_alto';
+    if (diferencia.abs() >= 50000) return 'alto';
+    if (diferencia.abs() >= 20000) return 'medio';
+    return 'bajo';
+  }
+
+  String _generarJustificacionCambios(Map<String, dynamic> datosAntiguos, Map<String, dynamic> datosNuevos) {
+    final cambios = <String>[];
+    
+    if (datosAntiguos['nombre'] != datosNuevos['nombre']) {
+      cambios.add('actualización de cliente');
+    }
+    if (datosAntiguos['telefono'] != datosNuevos['telefono']) {
+      cambios.add('cambio de teléfono');
+    }
+    if (datosAntiguos['valor'] != datosNuevos['valor']) {
+      final porcentaje = datosNuevos['porcentaje_cambio'] ?? 0;
+      cambios.add('ajuste de precio (${porcentaje.toStringAsFixed(1)}%)');
+    }
+    
+    return cambios.isEmpty ? 'Actualización general' : cambios.join(', ');
+  }
+
+  String _evaluarUrgenciaCambios(DateTime fechaReserva) {
+    final dias = fechaReserva.difference(DateTime.now()).inDays;
+    if (dias <= 1) return 'critica';
+    if (dias <= 3) return 'alta';
+    if (dias <= 7) return 'media';
+    return 'baja';
+  }
+
+  bool _esHorarioPeak(String horario) {
+    final regex = RegExp(r'(\d{1,2}):(\d{2})');
+    final match = regex.firstMatch(horario);
+    if (match != null) {
+      final hora = int.parse(match.group(1)!);
+      return hora >= 18 && hora <= 22;
+    }
+    return false;
+  }
+
+  bool _esFechaFinDeSemana(DateTime fecha) {
+    return fecha.weekday == DateTime.friday || 
+           fecha.weekday == DateTime.saturday || 
+           fecha.weekday == DateTime.sunday;
+  }
+
+  Map<String, dynamic> _prepararDatosParaAuditoria(Reserva reserva) {
+    return {
+      'nombre': reserva.nombre ?? '',
+      'telefono': reserva.telefono ?? '',
+      'correo': reserva.email ?? '',
+      'valor': reserva.montoTotal,
+      'montoPagado': reserva.montoPagado,
+      'precio_personalizado': reserva.precioPersonalizado,
+      'precio_original': reserva.precioOriginal,
+      'cancha_nombre': reserva.cancha.nombre,
+      'cancha_id': reserva.cancha.id,
+      'sede': reserva.sede,
+      'fecha': DateFormat('yyyy-MM-dd').format(reserva.fecha),
+      'horario': reserva.horario.horaFormateada,
+      'confirmada': reserva.confirmada,
+      'tipo': 'reserva_normal',
+      'timestamp_original': reserva.fecha.millisecondsSinceEpoch,
+    };
+  }
+
+
+
+
+
+
+Future<void> _editarPrecioReservaRecurrente(Reserva reserva) async {
+  if (!mounted || reserva.reservaRecurrenteId == null) return;
+  
+  // Capturar datos antiguos antes de la edición
+  final datosAntiguos = await _prepararDatosRecurrenteParaAuditoria(reserva);
+  
+  final _formKey = GlobalKey<FormState>();
+  final precioController = TextEditingController(text: reserva.montoTotal.toString());
+
+  // Obtener estado del control total
+  final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
+  final puedeHacerCambiosDirectos = await peticionProvider.puedeHacerCambiosDirectos();
+
+  // Obtener la reserva recurrente completa de la base de datos
+  DocumentSnapshot? reservaRecurrenteDoc;
+  try {
+    reservaRecurrenteDoc = await FirebaseFirestore.instance
+        .collection('reservas_recurrentes')
+        .doc(reserva.reservaRecurrenteId!)
+        .get();
+    
+    if (!reservaRecurrenteDoc.exists) {
+      _showErrorSnackBar('No se encontró la reserva recurrente');
+      return;
+    }
+  } catch (e) {
+    _showErrorSnackBar('Error al obtener reserva recurrente: $e');
+    return;
+  }
+
+  final reservaRecurrenteData = reservaRecurrenteDoc.data() as Map<String, dynamic>;
+  final precioPersonalizadoActual = reservaRecurrenteData['precioPersonalizado'] as bool? ?? false;
+  final precioOriginalActual = reservaRecurrenteData['precioOriginal'] as double?;
+  final montoTotalActual = reservaRecurrenteData['montoTotal'] as double? ?? 0.0;
+
+  final result = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+      title: Row(
+        children: [
+          Text(
+            'Editar Precio - Reserva Recurrente', 
+            style: GoogleFonts.montserrat(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(width: 8),
+          // Indicador de modo
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: puedeHacerCambiosDirectos ? Colors.green.withOpacity(0.2) : Colors.orange.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              puedeHacerCambiosDirectos ? 'DIRECTO' : 'PETICIÓN',
+              style: GoogleFonts.montserrat(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: puedeHacerCambiosDirectos ? Colors.green.shade700 : Colors.orange.shade700,
+              ),
+            ),
           ),
         ],
       ),
-    );
-
-    if (result == true && mounted) {
-      try {
-        final nuevoMonto = double.parse(montoController.text.trim());
-        await FirebaseFirestore.instance
-            .collection('reservas')
-            .doc(reserva.id)
-            .update({
-          'montoPagado': nuevoMonto,
-          'estado': nuevoMonto >= reserva.montoTotal ? 'completo' : 'parcial',
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                const Icon(Icons.check_circle, color: Colors.white),
-                const SizedBox(width: 10),
-                Text('Pago actualizado correctamente', style: GoogleFonts.montserrat(color: Colors.white)),
-              ],
-            ),
-            backgroundColor: _reservedColor,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            margin: const EdgeInsets.all(12),
-            duration: const Duration(seconds: 2),
+      content: SingleChildScrollView(
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Banner informativo combinado
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.purple.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.repeat, color: Colors.purple),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Esto cambiará el precio de TODA la reserva recurrente',
+                            style: GoogleFonts.montserrat(
+                              color: Colors.purple,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: puedeHacerCambiosDirectos ? Colors.green.withOpacity(0.1) : Colors.orange.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                          color: puedeHacerCambiosDirectos ? Colors.green.withOpacity(0.3) : Colors.orange.withOpacity(0.3),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            puedeHacerCambiosDirectos ? Icons.edit : Icons.request_page,
+                            color: puedeHacerCambiosDirectos ? Colors.green.shade600 : Colors.orange.shade600,
+                            size: 14,
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              puedeHacerCambiosDirectos 
+                                  ? 'Los cambios se aplicarán a toda la recurrencia inmediatamente'
+                                  : 'Se creará una petición para cambios en toda la recurrencia',
+                              style: GoogleFonts.montserrat(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w500,
+                                color: puedeHacerCambiosDirectos ? Colors.green.shade700 : Colors.orange.shade700,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              
+              // Información de la reserva
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: _secondaryColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Cancha: ${reserva.cancha.nombre}', 
+                         style: GoogleFonts.montserrat(fontWeight: FontWeight.w600)),
+                    Text('Horario: ${reserva.horario.horaFormateada}', 
+                         style: GoogleFonts.montserrat()),
+                    Text('Cliente: ${reservaRecurrenteData['clienteNombre'] ?? 'N/A'}', 
+                         style: GoogleFonts.montserrat()),
+                    Text('Días: ${(reservaRecurrenteData['diasSemana'] as List<dynamic>?)?.join(', ') ?? 'N/A'}', 
+                         style: GoogleFonts.montserrat(fontSize: 12, color: Colors.grey[600])),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              
+              // Campo de precio con advertencias
+              _buildCampoPrecioRecurrente(
+                controller: precioController,
+                precioOriginal: precioPersonalizadoActual && precioOriginalActual != null 
+                    ? precioOriginalActual 
+                    : montoTotalActual,
+                montoTotalActual: montoTotalActual,
+                precioPersonalizadoActual: precioPersonalizadoActual,
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return 'Ingrese el nuevo precio';
+                  }
+                  final precio = double.tryParse(value);
+                  if (precio == null || precio <= 0) {
+                    return 'Ingrese un precio válido';
+                  }
+                  return null;
+                },
+              ),
+              
+              const SizedBox(height: 12),
+              
+              // Información adicional
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.blue.withOpacity(0.05),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'ℹ️ Esta acción actualizará:',
+                      style: GoogleFonts.montserrat(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.blue[700],
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      puedeHacerCambiosDirectos
+                          ? '• El documento de la reserva recurrente\n• Todas las reservas individuales generadas'
+                          : '• Se creará una petición para aprobación\n• Los cambios se aplicarán tras aprobación',
+                      style: GoogleFonts.montserrat(
+                        fontSize: 11,
+                        color: Colors.blue[600],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
-        );
-        await _loadReservasWithFilters();
-      } catch (e) {
-        if (mounted) {
-          _showErrorSnackBar('Error al actualizar pago: $e');
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
+        ),
+        ElevatedButton(
+          onPressed: () {
+            if (_formKey.currentState!.validate()) {
+              Navigator.pop(context, true);
+            }
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: puedeHacerCambiosDirectos ? Colors.orange : Colors.orange.shade700,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          child: Text(
+            puedeHacerCambiosDirectos ? 'Actualizar Precio' : 'Crear Petición',
+            style: GoogleFonts.montserrat(color: Colors.white),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  if (result == true && mounted) {
+    await _procesarEdicionReservaRecurrente(
+      reserva: reserva,
+      datosAntiguos: datosAntiguos,
+      precioController: precioController,
+      reservaRecurrenteData: reservaRecurrenteData,
+      puedeHacerCambiosDirectos: puedeHacerCambiosDirectos,
+    );
+  }
+
+  precioController.dispose();
+}
+
+Future<void> _procesarEdicionReservaRecurrente({
+  required Reserva reserva,
+  required Map<String, dynamic> datosAntiguos,
+  required TextEditingController precioController,
+  required Map<String, dynamic> reservaRecurrenteData,
+  required bool puedeHacerCambiosDirectos,
+}) async {
+  try {
+    final nuevoPrecio = double.parse(precioController.text.trim());
+    final precioPersonalizadoActual = reservaRecurrenteData['precioPersonalizado'] as bool? ?? false;
+    final precioOriginalActual = reservaRecurrenteData['precioOriginal'] as double?;
+    final montoTotalActual = reservaRecurrenteData['montoTotal'] as double? ?? 0.0;
+    
+    // Determinar el precio original correcto
+    double precioOriginal;
+    if (precioPersonalizadoActual && precioOriginalActual != null) {
+      precioOriginal = precioOriginalActual;
+    } else {
+      precioOriginal = montoTotalActual;
+    }
+    
+    final esPrecioPersonalizado = nuevoPrecio != precioOriginal;
+    final descuento = esPrecioPersonalizado ? (precioOriginal - nuevoPrecio) : 0.0;
+    final porcentajeCambio = precioOriginal > 0 ? ((nuevoPrecio - precioOriginal) / precioOriginal * 100).abs() : 0.0;
+    
+    // Calcular nuevo monto pagado proporcionalmente
+    final montoPagadoActual = reservaRecurrenteData['montoPagado'] as double? ?? 0.0;
+    double nuevoMontoPagado = montoPagadoActual;
+    if (montoPagadoActual > 0 && montoTotalActual != nuevoPrecio && montoTotalActual > 0) {
+      final proporcion = montoPagadoActual / montoTotalActual;
+      nuevoMontoPagado = nuevoPrecio * proporcion;
+      nuevoMontoPagado = nuevoMontoPagado > nuevoPrecio ? nuevoPrecio : nuevoMontoPagado;
+    }
+
+    // Preparar datos nuevos para auditoría
+    final datosNuevos = {
+      'reservaRecurrenteId': reserva.reservaRecurrenteId!,
+      'montoTotal': nuevoPrecio,
+      'montoPagado': nuevoMontoPagado,
+      'precioPersonalizado': esPrecioPersonalizado,
+      'precioOriginal': esPrecioPersonalizado ? precioOriginal : null,
+      'descuentoAplicado': esPrecioPersonalizado && descuento > 0 ? descuento : null,
+      'tipo': 'reserva_recurrente_precio',
+      'porcentaje_cambio': porcentajeCambio,
+      'cancha_nombre': reserva.cancha.nombre,
+      'sede': reserva.sede,
+      'fecha': DateFormat('yyyy-MM-dd').format(reserva.fecha),
+      'horario': reserva.horario.horaFormateada,
+    };
+
+    if (puedeHacerCambiosDirectos) {
+      await _aplicarCambiosDirectosRecurrenteConAuditoriaUnificada(
+        reserva, datosAntiguos, datosNuevos, nuevoPrecio, nuevoMontoPagado,
+        esPrecioPersonalizado, precioOriginal, descuento, porcentajeCambio
+      );
+    } else {
+      await _crearPeticionRecurrenteConAuditoriaUnificada(reserva, datosAntiguos, datosNuevos);
+    }
+    
+    await _loadReservasWithFilters();
+    
+  } catch (e) {
+    if (mounted) {
+      _showErrorSnackBar('Error al procesar cambio de precio de reserva recurrente: $e');
+    }
+  }
+}
+
+Future<void> _aplicarCambiosDirectosRecurrenteConAuditoriaUnificada(
+  Reserva reserva,
+  Map<String, dynamic> datosAntiguos,
+  Map<String, dynamic> datosNuevos,
+  double nuevoPrecio,
+  double nuevoMontoPagado,
+  bool esPrecioPersonalizado,
+  double precioOriginal,
+  double descuento,
+  double porcentajeCambio,
+) async {
+  
+  // Preparar datos para actualizar en la reserva recurrente
+  Map<String, dynamic> updateDataRecurrente = {
+    'montoTotal': nuevoPrecio,
+    'montoPagado': nuevoMontoPagado,
+    'fechaActualizacion': Timestamp.now(),
+    'usuario_modificacion': FirebaseAuth.instance.currentUser?.uid,
+  };
+
+  if (esPrecioPersonalizado) {
+    updateDataRecurrente.addAll({
+      'precioPersonalizado': true,
+      'precio_personalizado': true,
+      'precioOriginal': precioOriginal,
+      'precio_original': precioOriginal,
+      'descuentoAplicado': descuento > 0 ? descuento : null,
+      'descuento_aplicado': descuento > 0 ? descuento : null,
+    });
+  } else {
+    updateDataRecurrente.addAll({
+      'precioPersonalizado': false,
+      'precio_personalizado': false,
+      'precioOriginal': null,
+      'precio_original': null,
+      'descuentoAplicado': null,
+      'descuento_aplicado': null,
+    });
+  }
+
+  // Actualizar el documento de la reserva recurrente
+  await FirebaseFirestore.instance
+      .collection('reservas_recurrentes')
+      .doc(reserva.reservaRecurrenteId!)
+      .update(updateDataRecurrente);
+
+  // Buscar y actualizar todas las reservas individuales asociadas
+  final reservasIndividualesSnapshot = await FirebaseFirestore.instance
+      .collection('reservas')
+      .where('reservaRecurrenteId', isEqualTo: reserva.reservaRecurrenteId)
+      .get();
+
+  if (reservasIndividualesSnapshot.docs.isNotEmpty) {
+    final batch = FirebaseFirestore.instance.batch();
+    
+    for (var doc in reservasIndividualesSnapshot.docs) {
+      final reservaData = doc.data();
+      final montoPagadoIndividual = reservaData['montoPagado'] as double? ?? 0.0;
+      final montoTotalIndividual = reservaData['montoTotal'] as double? ?? 0.0;
+      
+      // Solo actualizar reservas que no tengan precio independiente
+      final tienePrecioIndependiente = reservaData['precio_independiente_de_recurrencia'] as bool? ?? false;
+      
+      if (!tienePrecioIndependiente) {
+        // Calcular nuevo monto pagado individual proporcionalmente
+        double nuevoMontoPagadoIndividual = montoPagadoIndividual;
+        if (montoPagadoIndividual > 0 && montoTotalIndividual != nuevoPrecio && montoTotalIndividual > 0) {
+          final proporcionIndividual = montoPagadoIndividual / montoTotalIndividual;
+          nuevoMontoPagadoIndividual = nuevoPrecio * proporcionIndividual;
+          nuevoMontoPagadoIndividual = nuevoMontoPagadoIndividual > nuevoPrecio ? nuevoPrecio : nuevoMontoPagadoIndividual;
         }
+        
+        Map<String, dynamic> updateDataIndividual = {
+          'montoTotal': nuevoPrecio,
+          'valor': nuevoPrecio,
+          'montoPagado': nuevoMontoPagadoIndividual,
+          'estado': nuevoMontoPagadoIndividual >= nuevoPrecio ? 'completo' : 'parcial',
+          'fechaActualizacion': Timestamp.now(),
+          'usuario_modificacion': FirebaseAuth.instance.currentUser?.uid,
+        };
+
+        if (esPrecioPersonalizado) {
+          updateDataIndividual.addAll({
+            'precioPersonalizado': true,
+            'precio_personalizado': true,
+            'precioOriginal': precioOriginal,
+            'precio_original': precioOriginal,
+            'descuentoAplicado': descuento > 0 ? descuento : null,
+            'descuento_aplicado': descuento > 0 ? descuento : null,
+          });
+        } else {
+          updateDataIndividual.addAll({
+            'precioPersonalizado': false,
+            'precio_personalizado': false,
+            'precioOriginal': null,
+            'precio_original': null,
+            'descuentoAplicado': null,
+            'descuento_aplicado': null,
+          });
+        }
+
+        batch.update(doc.reference, updateDataIndividual);
       }
     }
 
-    montoController.dispose();
+    await batch.commit();
   }
 
+  // AUDITORÍA UNIFICADA - usando solo ReservaAuditUtils
+  await ReservaAuditUtils.auditarEdicionReserva(
+    reservaId: reserva.id,
+    datosAntiguos: datosAntiguos,
+    datosNuevos: datosNuevos,
+    descripcionPersonalizada: 'Cambio de precio en reserva recurrente aplicado directamente desde registro',
+    metadatosAdicionales: {
+      'metodo_edicion': 'cambio_directo_recurrente',
+      'usuario_tipo': 'admin_con_control_total',
+      'interfaz_origen': 'registro_reservas_screen',
+      'timestamp_edicion': DateTime.now().millisecondsSinceEpoch,
+      'reserva_recurrente_id': reserva.reservaRecurrenteId,
+      'total_reservas_afectadas': reservasIndividualesSnapshot.docs.length,
+      'contexto_financiero': {
+        'diferencia_precio': nuevoPrecio - (datosAntiguos['montoTotal'] ?? 0),
+        'es_aumento': nuevoPrecio > (datosAntiguos['montoTotal'] ?? 0),
+        'es_descuento': nuevoPrecio < (datosAntiguos['montoTotal'] ?? 0),
+        'monto_descuento': descuento,
+        'impacto_financiero': _calcularImpactoFinanciero(precioOriginal, nuevoPrecio),
+        'porcentaje_cambio': porcentajeCambio,
+      },
+      'informacion_reserva': {
+        'es_recurrente': true,
+        'horario_peak': _esHorarioPeak(reserva.horario.horaFormateada),
+        'fin_de_semana': _esFechaFinDeSemana(reserva.fecha),
+      },
+    },
+  );
 
-  Future<void> _completarPagoReservaRecurrente(Reserva reserva) async {
-    if (!mounted) return;
-    final _formKey = GlobalKey<FormState>();
-    final montoController = TextEditingController(text: reserva.montoTotal.toString());
+  if (mounted) {
+    String mensaje = 'Precio de reserva recurrente actualizado correctamente';
+    Color colorMensaje = Colors.orange;
+    
+    if (porcentajeCambio >= 50) {
+      mensaje = 'CAMBIO CRÍTICO aplicado - Reserva recurrente actualizada';
+      colorMensaje = Colors.red;
+    } else if (porcentajeCambio >= 30) {
+      mensaje = 'Cambio significativo aplicado - Reserva recurrente actualizada';
+      colorMensaje = Colors.deepOrange;
+    }
 
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-        title: Text('Completar Pago - Reserva Recurrente', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
-        content: SingleChildScrollView(
-          child: Form(
-            key: _formKey,
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              porcentajeCambio >= 30 ? Icons.warning : Icons.check_circle, 
+              color: Colors.white,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(mensaje, style: GoogleFonts.montserrat(color: Colors.white, fontWeight: FontWeight.w600)),
+                  Text('${reservasIndividualesSnapshot.docs.length} reserva(s) individual(es) actualizadas', 
+                       style: GoogleFonts.montserrat(color: Colors.white70, fontSize: 12)),
+                  if (porcentajeCambio > 15)
+                    Text('Cambio registrado en auditoría: ${porcentajeCambio.toStringAsFixed(1)}%', 
+                         style: GoogleFonts.montserrat(color: Colors.white70, fontSize: 12)),
+                ],
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: colorMensaje,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        margin: const EdgeInsets.all(12),
+        duration: Duration(seconds: porcentajeCambio >= 30 ? 4 : 3),
+      ),
+    );
+  }
+}
+
+Future<void> _crearPeticionRecurrenteConAuditoriaUnificada(
+  Reserva reserva,
+  Map<String, dynamic> datosAntiguos,
+  Map<String, dynamic> datosNuevos,
+) async {
+  
+  final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
+  
+  // Añadir información adicional para la petición
+  datosNuevos.addAll({
+    'justificacion_cambios': 'Cambio de precio en reserva recurrente',
+    'urgencia': _evaluarUrgenciaCambios(reserva.fecha),
+    'tipo_peticion': 'cambio_precio_recurrente',
+  });
+
+  final peticionId = await peticionProvider.crearPeticion(
+    reservaId: reserva.id,
+    valoresAntiguos: datosAntiguos,
+    valoresNuevos: datosNuevos,
+  );
+
+  // AUDITORÍA UNIFICADA - usando solo ReservaAuditUtils
+  await ReservaAuditUtils.auditarEdicionReserva(
+    reservaId: reserva.id,
+    datosAntiguos: datosAntiguos,
+    datosNuevos: datosNuevos,
+    descripcionPersonalizada: 'Petición de cambio de precio en reserva recurrente creada desde registro',
+    metadatosAdicionales: {
+      'peticion_id': peticionId,
+      'tipo_operacion': 'peticion_edicion_recurrente',
+      'requiere_aprobacion': true,
+      'usuario_tipo': 'admin_sin_control_total',
+      'interfaz_origen': 'registro_reservas_screen',
+      'reserva_recurrente_id': reserva.reservaRecurrenteId,
+      'justificacion': datosNuevos['justificacion_cambios'],
+      'urgencia': datosNuevos['urgencia'],
+      'timestamp_peticion': DateTime.now().millisecondsSinceEpoch,
+      'contexto_financiero': {
+        'diferencia_precio': (datosNuevos['montoTotal'] ?? 0) - (datosAntiguos['montoTotal'] ?? 0),
+        'porcentaje_cambio': datosNuevos['porcentaje_cambio'] ?? 0,
+      },
+    },
+    tipoEdicion: 'peticion',
+  );
+
+  if (mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.send, color: Colors.white),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Petición de cambio de precio recurrente creada',
+                    style: GoogleFonts.montserrat(color: Colors.white, fontWeight: FontWeight.w600),
+                  ),
+                  Text(
+                    'ID: ${peticionId.substring(0, 8)}... | Estado: Esperando aprobación',
+                    style: GoogleFonts.montserrat(color: Colors.white70, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: Colors.orange,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        margin: const EdgeInsets.all(12),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+}
+
+Widget _buildCampoPrecioRecurrente({
+  required TextEditingController controller,
+  required double precioOriginal,
+  required double montoTotalActual,
+  required bool precioPersonalizadoActual,
+  String? Function(String?)? validator,
+}) {
+  return ValueListenableBuilder<TextEditingValue>(
+    valueListenable: controller,
+    builder: (context, value, child) {
+      final nuevoPrecio = double.tryParse(value.text) ?? 0;
+      final diferencia = nuevoPrecio - precioOriginal;
+      final porcentaje = precioOriginal > 0 ? (diferencia / precioOriginal * 100) : 0;
+      
+      Color colorPrecio = Colors.orange;
+      String textoPrecio = 'Nuevo Precio Total';
+      String? advertencia;
+      
+      if (porcentaje.abs() >= 50) {
+        colorPrecio = Colors.red;
+        textoPrecio = '🚨 PRECIO CRÍTICO (RECURRENTE)';
+        advertencia = 'Cambio extremo de precio: ${porcentaje.toStringAsFixed(1)}%';
+      } else if (porcentaje.abs() >= 30) {
+        colorPrecio = Colors.deepOrange;
+        textoPrecio = 'PRECIO ALTO RIESGO (RECURRENTE)';
+        advertencia = 'Cambio significativo: ${porcentaje.toStringAsFixed(1)}%';
+      } else if (porcentaje.abs() >= 15) {
+        colorPrecio = Colors.amber;
+        textoPrecio = 'PRECIO MODIFICADO (RECURRENTE)';
+        advertencia = 'Cambio moderado: ${porcentaje.toStringAsFixed(1)}%';
+      }
+      
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextFormField(
+            controller: controller,
+            decoration: InputDecoration(
+              labelText: textoPrecio,
+              prefixIcon: Icon(Icons.repeat, color: colorPrecio),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: colorPrecio),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: colorPrecio, width: 2),
+              ),
+              filled: true,
+              fillColor: colorPrecio.withOpacity(0.05),
+              helperText: (precioPersonalizadoActual)
+                  ? 'Precio original: ${NumberFormat('#,###', 'es').format(precioOriginal.toInt())}'
+                  : 'Precio actual: ${NumberFormat('#,###', 'es').format(montoTotalActual.toInt())}',
+              helperStyle: GoogleFonts.montserrat(fontSize: 11),
+              labelStyle: GoogleFonts.montserrat(color: colorPrecio, fontWeight: FontWeight.w600),
+            ),
+            style: GoogleFonts.montserrat(
+              color: _primaryColor, 
+              fontWeight: FontWeight.w600,
+              fontSize: 16,
+            ),
+            keyboardType: TextInputType.number,
+            validator: validator,
+          ),
+          if (advertencia != null) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: colorPrecio.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: colorPrecio.withOpacity(0.3)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.warning, color: colorPrecio, size: 16),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      advertencia,
+                      style: GoogleFonts.montserrat(
+                        fontSize: 12,
+                        color: colorPrecio,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      );
+    },
+  );
+}
+
+Future<Map<String, dynamic>> _prepararDatosRecurrenteParaAuditoria(Reserva reserva) async {
+  try {
+    final reservaRecurrenteDoc = await FirebaseFirestore.instance
+        .collection('reservas_recurrentes')
+        .doc(reserva.reservaRecurrenteId!)
+        .get();
+    
+    if (!reservaRecurrenteDoc.exists) {
+      throw Exception('Reserva recurrente no encontrada');
+    }
+    
+    final data = reservaRecurrenteDoc.data() as Map<String, dynamic>;
+    
+    return {
+      'reservaRecurrenteId': reserva.reservaRecurrenteId!,
+      'montoTotal': data['montoTotal'] ?? 0.0,
+      'montoPagado': data['montoPagado'] ?? 0.0,
+      'precioPersonalizado': data['precioPersonalizado'] ?? false,
+      'precioOriginal': data['precioOriginal'],
+      'clienteNombre': data['clienteNombre'] ?? '',
+      'clienteTelefono': data['clienteTelefono'] ?? '',
+      'clienteEmail': data['clienteEmail'] ?? '',
+      'diasSemana': data['diasSemana'] ?? [],
+      'cancha_nombre': reserva.cancha.nombre,
+      'cancha_id': reserva.cancha.id,
+      'sede': reserva.sede,
+      'horario': reserva.horario.horaFormateada,
+      'tipo': 'reserva_recurrente_precio',
+      'timestamp_original': data['fechaCreacion']?.millisecondsSinceEpoch ?? DateTime.now().millisecondsSinceEpoch,
+    };
+  } catch (e) {
+    throw Exception('Error al preparar datos para auditoría: $e');
+  }
+}
+
+
+
+
+
+
+  Future<void> _completarPago(Reserva reserva) async {
+  if (!mounted) return;
+  
+  final montoRestante = reserva.montoTotal - reserva.montoPagado;
+  
+  final result = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+      title: Text('Completar Pago', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Reserva: ${reserva.cancha.nombre}',
+            style: GoogleFonts.montserrat(color: _primaryColor, fontWeight: FontWeight.w600),
+          ),
+          Text(
+            'Fecha: ${DateFormat('dd/MM/yyyy').format(reserva.fecha)} - ${reserva.horario.horaFormateada}',
+            style: GoogleFonts.montserrat(color: _primaryColor),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: _secondaryColor.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
             child: Column(
-              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Total:', style: GoogleFonts.montserrat(fontWeight: FontWeight.w600)),
+                    Text('\$${NumberFormat('#,###', 'es').format(reserva.montoTotal.toInt())}', 
+                         style: GoogleFonts.montserrat(fontWeight: FontWeight.w600)),
+                  ],
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Pagado:', style: GoogleFonts.montserrat()),
+                    Text('\$${NumberFormat('#,###', 'es').format(reserva.montoPagado.toInt())}', 
+                         style: GoogleFonts.montserrat(color: _reservedColor)),
+                  ],
+                ),
+                const Divider(),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('A pagar:', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold, color: Colors.redAccent)),
+                    Text('\$${NumberFormat('#,###', 'es').format(montoRestante.toInt())}', 
+                         style: GoogleFonts.montserrat(fontWeight: FontWeight.bold, color: Colors.redAccent)),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            '¿Confirmar pago completo de la reserva?',
+            style: GoogleFonts.montserrat(color: _primaryColor),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.pop(context, true),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _reservedColor,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          child: Text('Confirmar Pago', style: GoogleFonts.montserrat(color: Colors.white)),
+        ),
+      ],
+    ),
+  );
+
+  if (result == true && mounted) {
+    try {
+      await FirebaseFirestore.instance
+          .collection('reservas')
+          .doc(reserva.id)
+          .update({
+        'montoPagado': reserva.montoTotal, // Pagar el total completo
+        'estado': 'completo',
+      });
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle, color: Colors.white),
+              const SizedBox(width: 10),
+              Text('Pago completado correctamente', style: GoogleFonts.montserrat(color: Colors.white)),
+            ],
+          ),
+          backgroundColor: _reservedColor,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          margin: const EdgeInsets.all(12),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      await _loadReservasWithFilters();
+    } catch (e) {
+      if (mounted) {
+        _showErrorSnackBar('Error al completar pago: $e');
+      }
+    }
+  }
+}
+
+
+
+Future<void> _completarPagoReservaRecurrente(Reserva reserva) async {
+  if (!mounted || reserva.reservaRecurrenteId == null) return;
+  
+  // Obtener datos actuales de la reserva recurrente
+  DocumentSnapshot? reservaRecurrenteDoc;
+  try {
+    reservaRecurrenteDoc = await FirebaseFirestore.instance
+        .collection('reservas_recurrentes')
+        .doc(reserva.reservaRecurrenteId!)
+        .get();
+    
+    if (!reservaRecurrenteDoc.exists) {
+      _showErrorSnackBar('No se encontró la reserva recurrente');
+      return;
+    }
+  } catch (e) {
+    _showErrorSnackBar('Error al obtener reserva recurrente: $e');
+    return;
+  }
+
+  final reservaRecurrenteData = reservaRecurrenteDoc.data() as Map<String, dynamic>;
+  
+  // 🔥 CAMBIO CRÍTICO: Usar el monto de la reserva individual, NO la recurrente completa
+  final montoTotalIndividual = reserva.montoTotal; // Precio de ESTE día específico
+  final montoPagadoIndividual = reserva.montoPagado; // Lo que ya está pagado de ESTE día
+  final montoRestante = montoTotalIndividual - montoPagadoIndividual;
+  
+  final result = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+      title: Text('Completar Pago - Día Específico', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.blue.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.calendar_today, color: Colors.blue, size: 16),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Esta acción solo completará el pago para el día ${DateFormat('dd/MM/yyyy').format(reserva.fecha)}',
+                    style: GoogleFonts.montserrat(
+                      fontSize: 12,
+                      color: Colors.blue,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Reserva: ${reserva.cancha.nombre}',
+            style: GoogleFonts.montserrat(color: _primaryColor, fontWeight: FontWeight.w600),
+          ),
+          Text(
+            'Cliente: ${reservaRecurrenteData['clienteNombre'] ?? 'N/A'}',
+            style: GoogleFonts.montserrat(color: _primaryColor),
+          ),
+          Text(
+            'Fecha: ${DateFormat('EEEE, dd/MM/yyyy', 'es').format(reserva.fecha)}',
+            style: GoogleFonts.montserrat(color: _primaryColor),
+          ),
+          Text(
+            'Horario: ${reserva.horario.horaFormateada}',
+            style: GoogleFonts.montserrat(color: _primaryColor),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: _secondaryColor.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Total día:', style: GoogleFonts.montserrat(fontWeight: FontWeight.w600)),
+                    Text('\$${NumberFormat('#,###', 'es').format(montoTotalIndividual.toInt())}', 
+                         style: GoogleFonts.montserrat(fontWeight: FontWeight.w600)),
+                  ],
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Pagado:', style: GoogleFonts.montserrat()),
+                    Text('\$${NumberFormat('#,###', 'es').format(montoPagadoIndividual.toInt())}', 
+                         style: GoogleFonts.montserrat(color: _reservedColor)),
+                  ],
+                ),
+                const Divider(),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('A pagar:', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold, color: Colors.redAccent)),
+                    Text('\$${NumberFormat('#,###', 'es').format(montoRestante.toInt())}', 
+                         style: GoogleFonts.montserrat(fontWeight: FontWeight.bold, color: Colors.redAccent)),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            '¿Confirmar pago completo para este día específico?',
+            style: GoogleFonts.montserrat(color: _primaryColor),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.pop(context, true),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _reservedColor,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          child: Text('Confirmar Pago', style: GoogleFonts.montserrat(color: Colors.white)),
+        ),
+      ],
+    ),
+  );
+
+  if (result == true && mounted) {
+    try {
+      // 🔥 NUEVA LÓGICA: Crear/actualizar solo la reserva individual de este día
+      final fechaStr = DateFormat('yyyy-MM-dd').format(reserva.fecha);
+      
+      // Buscar si ya existe una reserva individual para este día específico
+      final reservaIndividualQuery = await FirebaseFirestore.instance
+          .collection('reservas')
+          .where('reservaRecurrenteId', isEqualTo: reserva.reservaRecurrenteId) // Nota: puede ser diferente campo
+          .where('fecha', isEqualTo: fechaStr)
+          .where('cancha_id', isEqualTo: reserva.cancha.id)
+          .where('horario', isEqualTo: reserva.horario.horaFormateada)
+          .limit(1)
+          .get();
+
+      if (reservaIndividualQuery.docs.isNotEmpty) {
+        // 📝 ACTUALIZAR reserva individual existente
+        final docExistente = reservaIndividualQuery.docs.first;
+        
+        await docExistente.reference.update({
+          'montoPagado': montoTotalIndividual, // Completar pago
+          'estado': 'completo',
+          'precio_independiente_de_recurrencia': true, // Marcar como precio independiente
+          'fecha_actualizacion_pago': Timestamp.now(),
+        });
+        
+        debugPrint('✅ Reserva individual actualizada: ${docExistente.id}');
+      } else {
+        // 📝 CREAR nueva reserva individual para este día
+        final nuevaReservaIndividual = {
+          'nombre': reservaRecurrenteData['clienteNombre'],
+          'telefono': reservaRecurrenteData['clienteTelefono'],
+          'correo': reservaRecurrenteData['clienteEmail'],
+          'fecha': fechaStr,
+          'cancha_id': reserva.cancha.id,
+          'horario': reserva.horario.horaFormateada,
+          'estado': 'completo',
+          'valor': montoTotalIndividual, // Valor del día específico
+          'montoPagado': montoTotalIndividual, // Pago completo
+          'sede': reserva.sede,
+          'confirmada': true,
+          'reservaRecurrenteId': reserva.reservaRecurrenteId, // Referencia a la recurrente
+          'esReservaRecurrente': true,
+          'precio_independiente_de_recurrencia': true, // 🔥 CLAVE: Marca que este precio es independiente
+          'created_at': Timestamp.now(),
+        };
+        
+        // Agregar campos de precio personalizado si existen
+        if (reserva.precioPersonalizado) {
+          nuevaReservaIndividual['precioPersonalizado'] = true;
+          if (reserva.precioOriginal != null) {
+            nuevaReservaIndividual['precio_original'] = reserva.precioOriginal!;
+          }
+          if (reserva.descuentoAplicado != null) {
+            nuevaReservaIndividual['descuento_aplicado'] = reserva.descuentoAplicado!;
+          }
+        }
+        
+        final docRef = await FirebaseFirestore.instance
+            .collection('reservas')
+            .add(nuevaReservaIndividual);
+        
+        debugPrint('✅ Nueva reserva individual creada: ${docRef.id}');
+      }
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle, color: Colors.white),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Pago completado para el día ${DateFormat('dd/MM/yyyy').format(reserva.fecha)}',
+                  style: GoogleFonts.montserrat(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: _reservedColor,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          margin: const EdgeInsets.all(12),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+      
+      await _loadReservasWithFilters();
+    } catch (e) {
+      if (mounted) {
+        _showErrorSnackBar('Error al completar pago del día específico: $e');
+      }
+    }
+  }
+}
+
+/// 🔧 SCRIPT DE EMERGENCIA PARA RESETEAR CONTABILIDAD DE RESERVAS RECURRENTES
+/// Este método corrige el error donde se pagaron todas las reservas recurrentes completas
+Future<void> resetearContabilidadReservasRecurrentes() async {
+  try {
+    debugPrint('🔧 === INICIANDO RESETEO DE CONTABILIDAD ===');
+    
+    // 1️⃣ OBTENER TODAS LAS RESERVAS RECURRENTES
+    final reservasRecurrentesSnapshot = await FirebaseFirestore.instance
+        .collection('reservas_recurrentes')
+        .get();
+    
+    debugPrint('📊 Total reservas recurrentes encontradas: ${reservasRecurrentesSnapshot.docs.length}');
+    
+    // 2️⃣ PROCESAR CADA RESERVA RECURRENTE
+    final batch = FirebaseFirestore.instance.batch();
+    int reservasActualizadas = 0;
+    
+    for (var doc in reservasRecurrentesSnapshot.docs) {
+      final data = doc.data();
+      final reservaId = doc.id;
+      final montoPagado = (data['montoPagado'] as num?)?.toDouble() ?? 0.0;
+      final montoTotal = (data['montoTotal'] as num?)?.toDouble() ?? 0.0;
+      
+      // ✅ Solo resetear si está marcada como pagada completamente
+      if (montoPagado >= montoTotal && montoTotal > 0) {
+        debugPrint('🔄 Reseteando reserva recurrente: $reservaId');
+        debugPrint('   📈 Monto total: $montoTotal');
+        debugPrint('   💰 Monto pagado actual: $montoPagado');
+        
+        // RESETEAR A ESTADO PARCIAL
+        batch.update(doc.reference, {
+          'montoPagado': 0.0, // 🔥 RESETEAR PAGO A CERO
+          'estado': EstadoRecurrencia.activa.name, // Asegurar que esté activa
+          'fechaActualizacion': Timestamp.now(),
+          'reseteo_contabilidad': true, // Marcar que fue reseteada
+          'fecha_reseteo': Timestamp.now(),
+          'motivo_reseteo': 'Corrección error pago masivo',
+        });
+        
+        reservasActualizadas++;
+      } else {
+        debugPrint('⏭️  Saltando reserva $reservaId (ya está en estado correcto)');
+      }
+    }
+    
+    // 3️⃣ EJECUTAR BATCH DE RESERVAS RECURRENTES
+    if (reservasActualizadas > 0) {
+      await batch.commit();
+      debugPrint('✅ Reservas recurrentes actualizadas: $reservasActualizadas');
+    } else {
+      debugPrint('ℹ️  No hay reservas recurrentes que necesiten reseteo');
+    }
+    
+    // 4️⃣ RESETEAR RESERVAS INDIVIDUALES QUE NO TIENEN PRECIO INDEPENDIENTE
+    debugPrint('🔧 === PROCESANDO RESERVAS INDIVIDUALES ===');
+    
+    final reservasIndividualesSnapshot = await FirebaseFirestore.instance
+        .collection('reservas')
+        .where('esReservaRecurrente', isEqualTo: true)
+        .get();
+    
+    debugPrint('📊 Total reservas individuales de recurrentes: ${reservasIndividualesSnapshot.docs.length}');
+    
+    final batchIndividuales = FirebaseFirestore.instance.batch();
+    int reservasIndividualesActualizadas = 0;
+    int reservasIndependientesEncontradas = 0;
+    
+    for (var doc in reservasIndividualesSnapshot.docs) {
+      final data = doc.data();
+      final reservaId = doc.id;
+      final precioIndependiente = data['precio_independiente_de_recurrencia'] as bool? ?? false;
+      final montoPagado = (data['montoPagado'] as num?)?.toDouble() ?? 0.0;
+      final montoTotal = (data['valor'] as num?)?.toDouble() ?? 0.0;
+      
+      if (precioIndependiente) {
+        // 📌 CONSERVAR: Esta reserva tiene pago legítimo individual
+        reservasIndependientesEncontradas++;
+        debugPrint('💎 Conservando reserva independiente: $reservaId (Pagado: $montoPagado)');
+      } else if (montoPagado > 0) {
+        // 🔄 RESETEAR: Esta reserva fue afectada por el error masivo
+        debugPrint('🔄 Reseteando reserva individual: $reservaId');
+        debugPrint('   💰 Monto pagado actual: $montoPagado');
+        
+        batchIndividuales.update(doc.reference, {
+          'montoPagado': 0.0, // 🔥 RESETEAR PAGO A CERO
+          'estado': 'parcial',
+          'reseteo_contabilidad': true,
+          'fecha_reseteo': Timestamp.now(),
+          'motivo_reseteo': 'Corrección error pago masivo',
+        });
+        
+        reservasIndividualesActualizadas++;
+      }
+    }
+    
+    // 5️⃣ EJECUTAR BATCH DE RESERVAS INDIVIDUALES
+    if (reservasIndividualesActualizadas > 0) {
+      await batchIndividuales.commit();
+      debugPrint('✅ Reservas individuales reseteadas: $reservasIndividualesActualizadas');
+    }
+    
+    // 6️⃣ RESUMEN FINAL
+    debugPrint('🎯 === RESUMEN DEL RESETEO ===');
+    debugPrint('✅ Reservas recurrentes reseteadas: $reservasActualizadas');
+    debugPrint('✅ Reservas individuales reseteadas: $reservasIndividualesActualizadas');
+    debugPrint('💎 Reservas con pago independiente conservadas: $reservasIndependientesEncontradas');
+    debugPrint('🔧 === RESETEO COMPLETADO ===');
+    
+    // 7️⃣ MOSTRAR RESULTADO AL USUARIO
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.check_circle, color: Colors.white),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Contabilidad corregida exitosamente',
+                      style: GoogleFonts.montserrat(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '• Reservas recurrentes reseteadas: $reservasActualizadas',
+                style: GoogleFonts.montserrat(color: Colors.white, fontSize: 12),
+              ),
+              Text(
+                '• Reservas individuales reseteadas: $reservasIndividualesActualizadas',
+                style: GoogleFonts.montserrat(color: Colors.white, fontSize: 12),
+              ),
+              Text(
+                '• Pagos legítimos conservados: $reservasIndependientesEncontradas',
+                style: GoogleFonts.montserrat(color: Colors.white, fontSize: 12),
+              ),
+            ],
+          ),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          margin: const EdgeInsets.all(12),
+          duration: const Duration(seconds: 5),
+        ),
+      );
+    }
+    
+  } catch (e) {
+    debugPrint('❌ Error durante el reseteo de contabilidad: $e');
+    
+    if (mounted) {
+      _showErrorSnackBar('Error al resetear contabilidad: $e');
+    }
+    
+    rethrow;
+  }
+}
+
+/// 🚨 MÉTODO DE CONFIRMACIÓN ANTES DE EJECUTAR EL RESETEO
+Future<void> confirmarYEjecutarReseteoContabilidad() async {
+  final confirmacion = await showDialog<bool>(
+    context: context,
+    barrierDismissible: false, // No se puede cancelar tocando fuera
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+      title: Row(
+        children: [
+          Icon(Icons.warning, color: Colors.orange, size: 28),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Resetear Contabilidad',
+              style: GoogleFonts.montserrat(fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.orange.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Reserva recurrente para ${reserva.cancha.nombre} el ${DateFormat('dd/MM/yyyy').format(reserva.fecha)} a las ${reserva.horario.horaFormateada}',
-                  style: GoogleFonts.montserrat(color: _primaryColor),
+                  '⚠️ ACCIÓN CRÍTICA',
+                  style: GoogleFonts.montserrat(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.orange,
+                  ),
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Esto actualizará el pago de TODA la reserva recurrente',
-                  style: GoogleFonts.montserrat(color: Colors.orange, fontWeight: FontWeight.w600),
+                  'Este proceso va a:',
+                  style: GoogleFonts.montserrat(fontWeight: FontWeight.w600),
                 ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: montoController,
-                  decoration: InputDecoration(
-                    labelText: 'Monto Pagado Total',
-                    prefixIcon: Icon(Icons.attach_money, color: _secondaryColor),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                    filled: true,
-                    fillColor: Colors.white,
-                  ),
-                  style: GoogleFonts.montserrat(color: _primaryColor),
-                  keyboardType: TextInputType.number,
-                  validator: (value) {
-                    if (value == null || value.trim().isEmpty) {
-                      return 'Ingrese el monto';
-                    }
-                    final monto = double.tryParse(value);
-                    if (monto == null || monto < 0) {
-                      return 'Ingrese un monto válido';
-                    }
-                    if (monto > reserva.montoTotal) {
-                      return 'El monto no puede exceder el total (${reserva.montoTotal})';
-                    }
-                    return null;
-                  },
+                const SizedBox(height: 4),
+                Text(
+                  '• Resetear TODAS las reservas recurrentes a pago parcial (0)',
+                  style: GoogleFonts.montserrat(fontSize: 12),
+                ),
+                Text(
+                  '• Conservar solo pagos con marca independiente',
+                  style: GoogleFonts.montserrat(fontSize: 12),
+                ),
+                Text(
+                  '• Corregir el error de pago masivo',
+                  style: GoogleFonts.montserrat(fontSize: 12),
                 ),
               ],
             ),
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              if (_formKey.currentState!.validate()) {
-                Navigator.pop(context, true);
-              }
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: _reservedColor,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          const SizedBox(height: 16),
+          Text(
+            '¿Estás seguro de que quieres continuar?',
+            style: GoogleFonts.montserrat(
+              fontWeight: FontWeight.w600,
+              color: _primaryColor,
             ),
-            child: Text('Confirmar', style: GoogleFonts.montserrat(color: Colors.white)),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Esta acción no se puede deshacer.',
+            style: GoogleFonts.montserrat(
+              color: Colors.red,
+              fontSize: 12,
+              fontStyle: FontStyle.italic,
+            ),
           ),
         ],
       ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: Text(
+            'Cancelar',
+            style: GoogleFonts.montserrat(color: Colors.grey),
+          ),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.pop(context, true),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.orange,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          child: Text(
+            'Confirmar Reseteo',
+            style: GoogleFonts.montserrat(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  if (confirmacion == true && mounted) {
+    // Mostrar loading
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => Center(
+        child: Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(
+                'Corrigiendo contabilidad...',
+                style: GoogleFonts.montserrat(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Por favor espera, esto puede tomar unos momentos',
+                style: GoogleFonts.montserrat(fontSize: 12, color: Colors.grey),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
 
-    if (result == true && mounted && reserva.reservaRecurrenteId != null) {
-      try {
-        final nuevoMonto = double.parse(montoController.text.trim());
-        final reservaRecurrenteProvider = Provider.of<ReservaRecurrenteProvider>(context, listen: false);
-        
-        // Actualizar la reserva recurrente en Firestore
-        await FirebaseFirestore.instance
-            .collection('reservas_recurrentes')
-            .doc(reserva.reservaRecurrenteId!)
-            .update({
-          'montoPagado': nuevoMonto,
-          'fechaActualizacion': Timestamp.now(),
-        });
-        
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                const Icon(Icons.check_circle, color: Colors.white),
-                const SizedBox(width: 10),
-                Text('Pago de reserva recurrente actualizado correctamente', style: GoogleFonts.montserrat(color: Colors.white)),
-              ],
-            ),
-            backgroundColor: _reservedColor,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            margin: const EdgeInsets.all(12),
-            duration: const Duration(seconds: 2),
-          ),
-        );
-        await _loadReservasWithFilters();
-      } catch (e) {
-        if (mounted) {
-          _showErrorSnackBar('Error al actualizar pago de reserva recurrente: $e');
-        }
-      }
+    try {
+      await resetearContabilidadReservasRecurrentes();
+      
+      // Cerrar loading
+      if (mounted) Navigator.pop(context);
+      
+      // Recargar datos
+      await _loadReservasWithFilters();
+      
+    } catch (e) {
+      // Cerrar loading en caso de error
+      if (mounted) Navigator.pop(context);
+      debugPrint('Error durante el reseteo: $e');
     }
-
-    montoController.dispose();
   }
-
-
+}
 
 
 
@@ -758,6 +3268,9 @@ class AdminRegistroReservasScreenState
     
     final reserva = _reservas.firstWhere((r) => r.id == reservaId, 
                                        orElse: () => throw Exception('Reserva no encontrada'));
+
+    // Capturar datos antiguos antes de cualquier eliminación
+    final datosAntiguos = reserva.toFirestore(); // Asumiendo que reserva.toFirestore() existe y devuelve Map de datos antiguos
     
     if (reserva.esReservaRecurrente) {
       final result = await showDialog<String>(
@@ -789,9 +3302,7 @@ class AdminRegistroReservasScreenState
       if (result == 'excluir_solo_hoy' && reserva.reservaRecurrenteId != null) {
         _mostrarDialogoExcluirDiaRecurrente(reserva);
       } else if (result == 'cancelar_futuras' && reserva.reservaRecurrenteId != null) {
-        final reservaRecurrenteProvider = Provider.of<ReservaRecurrenteProvider>(
-
-context, listen: false);
+        final reservaRecurrenteProvider = Provider.of<ReservaRecurrenteProvider>(context, listen: false);
         final reservaRecurrente = reservaRecurrenteProvider.reservasRecurrentes
             .firstWhere((r) => r.id == reserva.reservaRecurrenteId!);
         _cancelarReservasRecurrentesFuturas(reservaRecurrente);
@@ -799,36 +3310,106 @@ context, listen: false);
       return;
     }
     
+    // 🔍 DIÁLOGO CON CAMPO OPCIONAL PARA MOTIVO
+    String? motivo;
     final confirm = await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-            title: Text('Eliminar Reserva', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
-            content: Text('¿Estás seguro de eliminar esta reserva?', style: GoogleFonts.montserrat()),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
+      context: context,
+      builder: (context) {
+        final TextEditingController motivoController = TextEditingController();
+        
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+          title: Text(
+            'Eliminar Reserva', 
+            style: GoogleFonts.montserrat(
+              fontWeight: FontWeight.bold,
+              fontSize: 18,
+            ),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '¿Estás seguro que deseas eliminar esta reserva?', 
+                style: GoogleFonts.montserrat(fontSize: 16),
               ),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context, true),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.redAccent,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              SizedBox(height: 16),
+              Text(
+                'Esta acción no se puede deshacer y será registrada en el sistema de auditoría.',
+                style: GoogleFonts.montserrat(
+                  fontSize: 14,
+                  color: Colors.orange.shade700,
+                  fontWeight: FontWeight.w500,
                 ),
-                child: Text('Eliminar', style: GoogleFonts.montserrat(color: Colors.white)),
+              ),
+              SizedBox(height: 16),
+              TextField(
+                controller: motivoController,
+                decoration: InputDecoration(
+                  labelText: 'Motivo (opcional)',
+                  hintText: 'Ej: Cancelación del cliente, error en reserva...',
+                  border: OutlineInputBorder(),
+                ),
+                maxLines: 2,
+                onChanged: (value) => motivo = value,
               ),
             ],
           ),
-        ) ??
-        false;
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                motivo = motivoController.text.trim();
+                Navigator.pop(context, true);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.redAccent,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: Text('Eliminar', style: GoogleFonts.montserrat(color: Colors.white)),
+            ),
+          ],
+        );
+      },
+    ) ?? false;
 
     if (confirm && mounted) {
       try {
+        // 🔍 OBTENER DATOS ACTUALES ANTES DE ELIMINAR PARA AUDITORÍA
+        final datosReservaParaAuditoria = {
+          'nombre': reserva.nombre,
+          'telefono': reserva.telefono,
+          'correo': reserva.email,
+          'fecha': DateFormat('yyyy-MM-dd').format(reserva.fecha),
+          'horario': reserva.horario.horaFormateada,
+          'montoTotal': reserva.montoTotal,
+          'montoPagado': reserva.montoPagado,
+          'cancha_nombre': reserva.cancha.nombre,
+          'cancha_id': reserva.cancha.id,
+          'sede': reserva.sede,
+          'estado': reserva.tipoAbono.toString(),
+          'confirmada': reserva.confirmada,
+          'precio_personalizado': reserva.precioPersonalizado ?? false,
+          'precio_original': reserva.precioOriginal,
+          'descuento_aplicado': reserva.descuentoAplicado,
+        };
+
+        // Eliminar de Firestore
         await FirebaseFirestore.instance
             .collection('reservas')
             .doc(reservaId)
             .delete();
+        
+        // 🔍 AUDITORÍA AUTOMÁTICA - Registrar eliminación
+        await ReservaAuditUtils.auditarEliminacionReserva(
+          reservaId: reservaId,
+          datosReserva: datosReservaParaAuditoria,
+          motivo: motivo?.isNotEmpty == true ? motivo : 'Eliminación desde listado de reservas',
+        );
         
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -850,12 +3431,14 @@ context, listen: false);
           await _loadReservasWithFilters();
         }
       } catch (e) {
+        debugPrint('Error al eliminar la reserva: $e');
         if (mounted) {
           _showErrorSnackBar('Error al eliminar reserva: $e');
         }
       }
     }
   }
+
 
   @override
   Widget build(BuildContext context) {
@@ -1981,7 +4564,7 @@ Widget _buildActionButtons(Reserva reserva, double availableWidth) {
     );
   }
   
-  // MODIFICAR ESTA SECCIÓN - Botón de eliminar (solo si control total está activado)
+  // Botón de eliminar (visible solo si el control total está activado)
   if (peticionProvider.controlTotalActivado) {
     buttons.add(
       _buildMicroActionButton(
@@ -1993,6 +4576,16 @@ Widget _buildActionButtons(Reserva reserva, double availableWidth) {
     );
   }
   
+  // Nuevo botón de impresión para facturas de cada hora jugada
+  buttons.add(
+    _buildMicroActionButton(
+      icon: Icons.print,
+      color: Colors.blue,
+      onPressed: () => _imprimirFactura(reserva),
+      tooltip: 'Imprimir factura',
+    ),
+  );
+  
   return Row(
     mainAxisSize: MainAxisSize.min,
     mainAxisAlignment: MainAxisAlignment.center,
@@ -2001,37 +4594,35 @@ Widget _buildActionButtons(Reserva reserva, double availableWidth) {
 }
 
 
-
-
-// Botones de acción ultra compactos
-Widget _buildMicroActionButton({
-  required IconData icon,
-  required Color color,
-  required VoidCallback onPressed,
-  required String tooltip,
-}) {
-  return Tooltip(
-    message: tooltip,
-    child: Container(
-      margin: const EdgeInsets.symmetric(horizontal: 1),
-      width: 22,
-      height: 22,
-      child: Material(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(4),
-        child: InkWell(
-          onTap: onPressed,
+  // Botones de acción ultra compactos
+  Widget _buildMicroActionButton({
+    required IconData icon,
+    required Color color,
+    required VoidCallback onPressed,
+    required String tooltip,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 1),
+        width: 22,
+        height: 22,
+        child: Material(
+          color: color.withOpacity(0.1),
           borderRadius: BorderRadius.circular(4),
-          child: Icon(
-            icon,
-            size: 12,
-            color: color,
+          child: InkWell(
+            onTap: onPressed,
+            borderRadius: BorderRadius.circular(4),
+            child: Icon(
+              icon,
+              size: 12,
+              color: color,
+            ),
           ),
         ),
       ),
-    ),
-  );
-}
+    );
+  }
 
 
 
@@ -2040,6 +4631,7 @@ Widget _buildMicroActionButton({
   final currencyFormat = NumberFormat.currency(symbol: "\$", decimalDigits: 0);
   final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
   final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
+  final peticionProvider = Provider.of<PeticionProvider>(context, listen: true); // LÍNEA AGREGADA
   final totals = _calculateTotals();
   
   return Column(
@@ -2112,7 +4704,8 @@ Widget _buildMicroActionButton({
                                         : _completarPago(reserva),
                                   ),
                                 ),
-                              if (Provider.of<PeticionProvider>(context, listen: true).controlTotalActivado)
+                              // Botón de eliminar (visible solo si el control total está activado)
+                              if (peticionProvider.controlTotalActivado)
                                 Tooltip(
                                   message: reserva.esReservaRecurrente ? 'Opciones de eliminación' : 'Eliminar reserva',
                                   child: IconButton(
@@ -2120,6 +4713,14 @@ Widget _buildMicroActionButton({
                                     onPressed: () => _deleteReserva(reserva.id),
                                   ),
                                 ),
+                              // Nuevo botón de impresión para facturas de cada hora jugada
+                              Tooltip(
+                                message: 'Imprimir factura',
+                                child: IconButton(
+                                  icon: Icon(Icons.print, size: 18, color: Colors.blue),
+                                  onPressed: () => _imprimirFactura(reserva),
+                                ),
+                              ),
                             ],
                           ),
                         ],
@@ -2248,6 +4849,401 @@ Widget _buildMicroActionButton({
         _buildTotalesColapsables(totals),
     ],
   );
+}
+
+
+
+Future _imprimirFactura(Reserva reserva) async {
+  try {
+    // AUMENTAMOS EL ANCHO: de 32 a 48 caracteres para mejor aprovechamiento
+    int anchoFactura = 48;
+    
+    // Función para centrar texto con el nuevo ancho
+    String centrarTexto(String texto, [int? ancho]) {
+      ancho ??= anchoFactura;
+      if (texto.length >= ancho) return texto;
+      int espaciosIzq = ((ancho - texto.length) / 2).floor();
+      return ' ' * espaciosIzq + texto;
+    }
+    
+    // Función para justificar texto con el nuevo ancho
+    String justificarTexto(String izq, String der, [int? ancho]) {
+      ancho ??= anchoFactura;
+      int espacios = ancho - izq.length - der.length;
+      if (espacios < 1) espacios = 1;
+      return izq + ' ' * espacios + der;
+    }
+    
+    // Crear líneas de separación más anchas
+    String lineaGuiones = '-' * anchoFactura;
+    String lineaPuntos = '.' * anchoFactura;
+    String lineaIguales = '=' * anchoFactura;
+    
+    // 🔥 CALCULAR TODOS LOS VALORES ANTES DEL HTML
+    final valorOriginal = reserva.precioPersonalizado && reserva.precioOriginal != null 
+      ? reserva.precioOriginal! 
+      : reserva.montoTotal;
+    
+    final descuento = reserva.descuentoAplicado ?? 0.0;
+    final totalFinal = reserva.montoTotal;
+    final abonado = reserva.montoPagado;
+    final pendiente = totalFinal - abonado;
+    
+    // 🔥 CREAR TODAS LAS SECCIONES COMO VARIABLES SEPARADAS
+    final tituloFactura = centrarTexto('*** FACTURA DE RESERVA ***');
+    final nombreEmpresa = centrarTexto('CANCHAS LA JUGADA');
+    
+    final infoClienteTitulo = centrarTexto('INFORMACION DEL CLIENTE');
+    final clienteNombre = justificarTexto('Cliente:', '${reserva.nombre ?? 'N/A'}');
+    final clienteTelefono = justificarTexto('Telefono:', '${reserva.telefono ?? 'N/A'}');
+    
+    final detallesTitulo = centrarTexto('DETALLES DE LA RESERVA');
+    final detalleCancha = justificarTexto('Cancha Deportiva:', '${reserva.cancha.nombre}');
+    final detalleFecha = justificarTexto('Fecha de Reserva:', '${DateFormat('dd/MM/yyyy').format(reserva.fecha)}');
+    final detalleHorario = justificarTexto('Horario:', '${reserva.horario.horaFormateada}');
+    final detalleDuracion = justificarTexto('Duracion:', '1 Hora');
+    final detalleEmision = justificarTexto('Fecha de Emision:', '${DateFormat('dd/MM/yyyy HH:mm').format(DateTime.now())}');
+    
+    final financieroTitulo = centrarTexto('RESUMEN FINANCIERO');
+    final financieroValor = justificarTexto('Valor por Hora:', '\$${NumberFormat('#,###', 'es').format(valorOriginal.toInt())}');
+    final financieroSubtotal = justificarTexto('Subtotal:', '\$${NumberFormat('#,###', 'es').format(valorOriginal.toInt())}');
+    final financieroDescuento = justificarTexto('Descuentos:', descuento > 0 ? '-\$${NumberFormat('#,###', 'es').format(descuento.toInt())}' : '\$0');
+    final financieroTotal = justificarTexto('TOTAL A PAGAR:', '\$${NumberFormat('#,###', 'es').format(totalFinal.toInt())}');
+    final financieroAbonado = justificarTexto('MONTO ABONADO:', '\$${NumberFormat('#,###', 'es').format(abonado.toInt())}');
+    final financieroPendiente = justificarTexto('SALDO PENDIENTE:', '\$${NumberFormat('#,###', 'es').format(pendiente.toInt())}');
+    
+    final agradecimiento1 = centrarTexto('¡¡¡ GRACIAS POR ELEGIRNOS !!!');
+    final agradecimiento2 = centrarTexto('ESPERAMOS VERTE PRONTO');
+    
+    final infoTitulo = centrarTexto('INFORMACION IMPORTANTE');
+    final info1 = centrarTexto(' Conserve este comprobante como prueba de pago');
+    final info2 = centrarTexto(' Para cualquier reclamo presente este documento');
+    final info3 = centrarTexto(' Llegue 10 minutos antes de su horario reservado');
+    final info4 = centrarTexto(' Cancelaciones con 2 horas de anticipacion');
+    
+    final fechaHora = centrarTexto(DateFormat('dd/MM/yyyy - HH:mm:ss', 'es_ES').format(DateTime.now()));
+    
+    // 🔥 HTML COMPLETAMENTE LIMPIO - SIN INTERPOLACIONES COMPLEJAS
+    final StringBuffer htmlBuffer = StringBuffer();
+    
+    htmlBuffer.write('''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        @page { 
+            size: A4 portrait; 
+            margin: 10mm; 
+        }
+        body { 
+            font-family: 'Courier New', monospace; 
+            font-size: 12px; 
+            margin: 0; 
+            padding: 10px;
+            white-space: pre;
+            color: black;
+            background: white;
+            max-width: 100%;
+            line-height: 1.2;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 15px;
+        }
+        .logo {
+            max-width: 180px;
+            max-height: 80px;
+            margin: 10px auto;
+            display: block;
+        }
+        .section {
+            margin: 12px 0;
+        }
+        .no-print { 
+            display: none !important; 
+        }
+        @media print {
+            body { 
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+                font-size: 11px;
+            }
+            .no-print { 
+                display: none !important; 
+            }
+            @page {
+                margin: 8mm;
+            }
+        }
+    </style>
+</head>
+<body>''');
+
+    // 🔥 AGREGAR CONTENIDO LÍNEA POR LÍNEA - SIN ESPACIOS INICIALES
+    htmlBuffer.write(' ');
+    htmlBuffer.write('\n');
+    htmlBuffer.write(tituloFactura);
+    htmlBuffer.write('\n\n');
+    htmlBuffer.write(nombreEmpresa);
+    htmlBuffer.write('\n\n\n');
+    
+    htmlBuffer.write('<div class="section">\n');
+    htmlBuffer.write(lineaIguales);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(infoClienteTitulo);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(lineaGuiones);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(clienteNombre);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(clienteTelefono);
+    htmlBuffer.write('\n');
+    htmlBuffer.write('</div>\n\n');
+    
+    htmlBuffer.write('<div class="section">\n');
+    htmlBuffer.write(lineaIguales);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(detallesTitulo);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(lineaGuiones);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(detalleCancha);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(detalleFecha);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(detalleHorario);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(detalleDuracion);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(detalleEmision);
+    htmlBuffer.write('\n');
+    htmlBuffer.write('</div>\n\n');
+    
+    htmlBuffer.write('<div class="section">\n');
+    htmlBuffer.write(lineaIguales);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(financieroTitulo);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(lineaGuiones);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(financieroValor);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(financieroSubtotal);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(financieroDescuento);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(lineaPuntos);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(financieroTotal);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(financieroAbonado);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(lineaPuntos);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(financieroPendiente);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(lineaGuiones);
+    htmlBuffer.write('\n');
+    htmlBuffer.write('</div>\n\n');
+    
+    htmlBuffer.write(centrarTexto(''));
+    htmlBuffer.write('\n');
+    htmlBuffer.write(agradecimiento1);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(agradecimiento2);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(centrarTexto(''));
+    htmlBuffer.write('\n\n');
+    
+    htmlBuffer.write('<div class="section">\n');
+    htmlBuffer.write(lineaPuntos);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(infoTitulo);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(lineaPuntos);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(info1);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(info2);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(info3);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(info4);
+    htmlBuffer.write('\n');
+    htmlBuffer.write(lineaPuntos);
+    htmlBuffer.write('\n');
+    htmlBuffer.write('</div>\n\n');
+    
+    htmlBuffer.write(centrarTexto(''));
+    htmlBuffer.write('\n');
+    htmlBuffer.write(centrarTexto(''));
+    htmlBuffer.write('\n');
+    htmlBuffer.write(fechaHora);
+    htmlBuffer.write('\n\n');
+    
+    // Agregar espacios en blanco
+    for (int i = 0; i < 10; i++) {
+      htmlBuffer.write(centrarTexto(''));
+      htmlBuffer.write('\n');
+    }
+    
+    htmlBuffer.write('''
+<script class="no-print">
+function imprimir() {
+    var elementos = document.querySelectorAll('script, style[data-hide], link[data-hide]');
+    elementos.forEach(function(el) {
+        el.style.display = 'none';
+    });
+    
+    document.body.style.fontSize = '11px';
+    document.body.style.maxWidth = '100%';
+    document.body.style.padding = '5px';
+    
+    setTimeout(function() {
+        window.print();
+    }, 800);
+}
+
+if (document.readyState === 'complete') {
+    setTimeout(imprimir, 1000);
+} else {
+    window.addEventListener('load', function() {
+        setTimeout(imprimir, 1000);
+    });
+}
+
+window.addEventListener('afterprint', function() {
+    setTimeout(function() {
+        if (window.opener) {
+            window.close();
+        }
+    }, 1500);
+});
+
+console.log = function() {};
+console.error = function() {};
+console.warn = function() {};
+</script>
+
+</body>
+</html>''');
+
+    // 🔥 CONVERTIR BUFFER A STRING Y LIMPIAR CARACTERES PROBLEMÁTICOS
+    String facturaHTML = htmlBuffer.toString();
+    
+    // 🔥 LIMPIAR CUALQUIER BOM O CARÁCTER INVISIBLE AL INICIO
+    facturaHTML = facturaHTML.replaceAll('\uFEFF', ''); // BOM UTF-8
+    facturaHTML = facturaHTML.replaceAll('\u200B', ''); // Zero width space
+    facturaHTML = facturaHTML.replaceAll('\u00A0', ' '); // Non-breaking space
+    
+    // Verificar que inicia correctamente
+    if (!facturaHTML.startsWith('<!DOCTYPE html>')) {
+      print('⚠️ Advertencia: HTML no inicia correctamente');
+      print('Primeros caracteres: ${facturaHTML.codeUnits.take(10).toList()}');
+      
+      // Buscar dónde inicia realmente el DOCTYPE
+      int docTypeIndex = facturaHTML.indexOf('<!DOCTYPE html>');
+      if (docTypeIndex > 0) {
+        facturaHTML = facturaHTML.substring(docTypeIndex);
+        print('✅ HTML corregido desde posición $docTypeIndex');
+      }
+    }
+    
+    // Verificar que no hay caracteres raros al inicio
+    print('🔍 Primeros 50 caracteres del HTML limpio:');
+    print(facturaHTML.substring(0, 50));
+    
+    // Crear blob con encoding específico
+    final blob = html.Blob([facturaHTML], 'text/html; charset=utf-8');
+    final url = html.Url.createObjectUrlFromBlob(blob);
+    
+    // Ventana más grande para la factura más ancha
+    final windowFeatures = [
+      'width=600',
+      'height=800',
+      'left=100',
+      'top=50',
+      'scrollbars=yes',
+      'resizable=yes',
+      'menubar=no',
+      'toolbar=no',
+      'location=no',
+      'status=no',
+      'directories=no',
+    ].join(',');
+    
+    final ventanaImpresion = html.window.open(
+      url,
+      '_blank',
+      windowFeatures
+    );
+    
+    if (ventanaImpresion != null) {
+      Timer(Duration(seconds: 8), () {
+        try {
+          html.Url.revokeObjectUrl(url);
+        } catch (e) {
+          // Ignorar errores de limpieza
+        }
+      });
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.print, color: Colors.white),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Factura Lista para Imprimir',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: Colors.green[700],
+            duration: Duration(seconds: 4),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      
+    } else {
+      throw Exception('No se pudo abrir la ventana de impresión');
+    }
+    
+  } catch (e) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.error, color: Colors.white),
+                  SizedBox(width: 8),
+                  Text('Error de Impresión', style: TextStyle(fontWeight: FontWeight.bold)),
+                ],
+              ),
+              SizedBox(height: 4),
+              Text('Verificar conexión y configuración de impresora', style: TextStyle(fontSize: 12)),
+            ],
+          ),
+          backgroundColor: Colors.red[700],
+          duration: Duration(seconds: 4),
+        ),
+      );
+    }
+  }
 }
 
 // 5. NUEVO WIDGET para totales colapsables en móvil
@@ -2573,121 +5569,154 @@ Widget _buildTotalSummaryItem(String label, String amount, Color color, IconData
   }
 
   void _mostrarDialogoExcluirDiaRecurrente(Reserva reserva) async {
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-        title: Text('Excluir día específico', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
-        content: Text(
-          'Esto excluirá la reserva recurrente solo para el día ${DateFormat('dd/MM/yyyy').format(reserva.fecha)}.',
-          style: GoogleFonts.montserrat(),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.orange,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            ),
-            child: Text('Excluir día', style: GoogleFonts.montserrat(color: Colors.white)),
-          ),
-        ],
+  final result = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+      title: Text('Excluir día específico', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
+      content: Text(
+        'Esto excluirá la reserva recurrente solo para el día ${DateFormat('dd/MM/yyyy').format(reserva.fecha)}.',
+        style: GoogleFonts.montserrat(),
       ),
-    );
-
-    if (result == true && mounted && reserva.reservaRecurrenteId != null) {
-      try {
-        final reservaRecurrenteProvider = Provider.of<ReservaRecurrenteProvider>(context, listen: false);
-        await reservaRecurrenteProvider.excluirDiaReservaRecurrente(
-          reserva.reservaRecurrenteId!, 
-          reserva.fecha
-        );
-        
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                const Icon(Icons.check_circle, color: Colors.white),
-                const SizedBox(width: 10),
-                Text('Día excluido de la reserva recurrente', style: GoogleFonts.montserrat(color: Colors.white)),
-              ],
-            ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.pop(context, true),
+          style: ElevatedButton.styleFrom(
             backgroundColor: Colors.orange,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            margin: const EdgeInsets.all(12),
-            duration: const Duration(seconds: 2),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           ),
-        );
-        
-        await _loadReservasWithFilters();
-      } catch (e) {
-        if (mounted) {
-          _showErrorSnackBar('Error al excluir día: $e');
-        }
+          child: Text('Excluir día', style: GoogleFonts.montserrat(color: Colors.white)),
+        ),
+      ],
+    ),
+  );
+
+  if (result == true && mounted && reserva.reservaRecurrenteId != null) {
+    try {
+      // Capturar datos antiguos
+      final datosAntiguos = reserva.toFirestore();
+
+      final reservaRecurrenteProvider = Provider.of<ReservaRecurrenteProvider>(context, listen: false);
+      await reservaRecurrenteProvider.excluirDiaReservaRecurrente(
+        reserva.reservaRecurrenteId!, 
+        reserva.fecha
+      );
+      
+      // Registrar en auditoría
+      await AuditProvider.registrarAccion(
+        accion: 'excluir_dia_recurrente',
+        entidad: 'reserva_recurrente',
+        entidadId: reserva.reservaRecurrenteId!,
+        datosAntiguos: datosAntiguos,
+        datosNuevos: {}, // No hay nuevos datos, ya que es exclusión
+        descripcion: 'Exclusión de día específico en reserva recurrente',
+        metadatos: {
+          'fecha_excluida': DateFormat('yyyy-MM-dd').format(reserva.fecha),
+        },
+      );
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle, color: Colors.white),
+              const SizedBox(width: 10),
+              Text('Día excluido de la reserva recurrente', style: GoogleFonts.montserrat(color: Colors.white)),
+            ],
+          ),
+          backgroundColor: Colors.orange,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          margin: const EdgeInsets.all(12),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      
+      await _loadReservasWithFilters();
+    } catch (e) {
+      if (mounted) {
+        _showErrorSnackBar('Error al excluir día: $e');
       }
     }
   }
+}
+
+
+
+
 
   void _cancelarReservasRecurrentesFuturas(ReservaRecurrente reservaRecurrente) async {
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-        title: Text('Cancelar reservas futuras', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
-        content: Text(
-          'Esto cancelará todas las reservas futuras de esta reserva recurrente, pero mantendrá las del pasado.',
-          style: GoogleFonts.montserrat(),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.redAccent,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            ),
-            child: Text('Confirmar', style: GoogleFonts.montserrat(color: Colors.white)),
-          ),
-        ],
+  final result = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+      title: Text('Cancelar reservas futuras', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
+      content: Text(
+        'Esto cancelará todas las reservas futuras de esta reserva recurrente, pero mantendrá las del pasado.',
+        style: GoogleFonts.montserrat(),
       ),
-    );
-
-    if (result == true && mounted) {
-      try {
-        final reservaRecurrenteProvider = Provider.of<ReservaRecurrenteProvider>(context, listen: false);
-        await reservaRecurrenteProvider.cancelarReservasFuturas(reservaRecurrente.id);
-        
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                const Icon(Icons.check_circle, color: Colors.white),
-                const SizedBox(width: 10),
-                Text('Reservas futuras canceladas', style: GoogleFonts.montserrat(color: Colors.white)),
-              ],
-            ),
-            backgroundColor: _reservedColor,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            margin: const EdgeInsets.all(12),
-            duration: const Duration(seconds: 2),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.pop(context, true),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.redAccent,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           ),
-        );
-        
-        await _loadReservasWithFilters();
-      } catch (e) {
-        if (mounted) {
-          _showErrorSnackBar('Error al cancelar reservas futuras: $e');
-        }
+          child: Text('Confirmar', style: GoogleFonts.montserrat(color: Colors.white)),
+        ),
+      ],
+    ),
+  );
+
+  if (result == true && mounted) {
+    try {
+      // Capturar datos antiguos (asumiendo ReservaRecurrente tiene toFirestore())
+      final datosAntiguos = reservaRecurrente.toFirestore();
+
+      final reservaRecurrenteProvider = Provider.of<ReservaRecurrenteProvider>(context, listen: false);
+      await reservaRecurrenteProvider.cancelarReservasFuturas(reservaRecurrente.id);
+      
+      // Registrar en auditoría
+      await AuditProvider.registrarAccion(
+        accion: 'cancelar_reserva_recurrente',
+        entidad: 'reserva_recurrente',
+        entidadId: reservaRecurrente.id,
+        datosAntiguos: datosAntiguos,
+        datosNuevos: {}, // No hay nuevos datos, ya que es cancelación
+        descripcion: 'Cancelación de reservas futuras en reserva recurrente',
+      );
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle, color: Colors.white),
+              const SizedBox(width: 10),
+              Text('Reservas futuras canceladas', style: GoogleFonts.montserrat(color: Colors.white)),
+            ],
+          ),
+          backgroundColor: _reservedColor,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          margin: const EdgeInsets.all(12),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      
+      await _loadReservasWithFilters();
+    } catch (e) {
+      if (mounted) {
+        _showErrorSnackBar('Error al cancelar reservas futuras: $e');
       }
     }
   }
+}
 }

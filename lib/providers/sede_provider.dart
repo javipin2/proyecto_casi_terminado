@@ -1,7 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart'; // Para debugPrint
+import 'package:flutter/foundation.dart';
+import 'package:reserva_canchas/providers/audit_provider.dart'; // Para debugPrint
 
 class SedeProvider extends ChangeNotifier {
   List<Map<String, dynamic>> _sedes = [];
@@ -74,56 +75,76 @@ class SedeProvider extends ChangeNotifier {
   }
 
   Future<void> crearSede(String nombreSede, {String? imageUrl, String? descripcion, String? ubicacion}) async {
-    if (nombreSede.isEmpty) {
-      _errorMessage = 'El nombre de la sede no puede estar vacío';
-      debugPrint('Error: Nombre de sede vacío');
-      notifyListeners();
-      return;
-    }
-
-    if (_sedes.any((sede) => sede['nombre'] == nombreSede)) {
-      _errorMessage = 'Ya existe una sede con ese nombre';
-      debugPrint('Error: Sede ya existe');
-      notifyListeners();
-      return;
-    }
-
-    try {
-      _errorMessage = '';
-      debugPrint('Creando sede: $nombreSede');
-
-      final defaultImageUrl = imageUrl ?? 'https://images.unsplash.com/photo-1544966503-7cc5ac882d5f?ixlib=rb-4.0.3&auto=format&fit=crop&w=300&h=200';
-
-      final sedeRef = FirebaseFirestore.instance.collection('sede').doc();
-      await sedeRef.set({
-        'nombre': nombreSede,
-        'imagen': defaultImageUrl,
-        'descripcion': descripcion ?? 'Presione para continuar',
-        'ubicacion': ubicacion ?? nombreSede.toLowerCase(),
-        'activa': true,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-
-      _sedes.add({
-        'id': sedeRef.id,
-        'nombre': nombreSede,
-        'imagen': defaultImageUrl,
-        'descripcion': descripcion ?? 'Presione para continuar',
-        'ubicacion': ubicacion ?? nombreSede.toLowerCase(),
-        'activa': true,
-        'createdAt': null,
-      });
-
-      _sedes.sort((a, b) => (a['nombre'] as String).compareTo(b['nombre'] as String));
-
-      debugPrint('Sede creada exitosamente: $nombreSede');
-      notifyListeners();
-    } catch (e) {
-      _errorMessage = 'Error al crear la sede: $e';
-      debugPrint('Error en crearSede: $e');
-      notifyListeners();
-    }
+  if (nombreSede.isEmpty) {
+    _errorMessage = 'El nombre de la sede no puede estar vacío';
+    debugPrint('Error: Nombre de sede vacío');
+    notifyListeners();
+    return;
   }
+
+  if (_sedes.any((sede) => sede['nombre'] == nombreSede)) {
+    _errorMessage = 'Ya existe una sede con ese nombre';
+    debugPrint('Error: Sede ya existe');
+    notifyListeners();
+    return;
+  }
+
+  try {
+    _errorMessage = '';
+    debugPrint('Creando sede: $nombreSede');
+
+    final defaultImageUrl = imageUrl ?? 'https://images.unsplash.com/photo-1544966503-7cc5ac882d5f?ixlib=rb-4.0.3&auto=format&fit=crop&w=300&h=200';
+
+    final sedeRef = FirebaseFirestore.instance.collection('sede').doc();
+    await sedeRef.set({
+      'nombre': nombreSede,
+      'imagen': defaultImageUrl,
+      'descripcion': descripcion ?? 'Presione para continuar',
+      'ubicacion': ubicacion ?? nombreSede.toLowerCase(),
+      'activa': true,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+
+    // 🔍 AUDITORÍA: Registrar creación de sede
+    await AuditProvider.registrarAccion(
+      accion: 'crear_sede',
+      entidad: 'sede',
+      entidadId: sedeRef.id,
+      datosNuevos: {
+        'nombre': nombreSede,
+        'imagen': defaultImageUrl,
+        'descripcion': descripcion ?? 'Presione para continuar',
+        'ubicacion': ubicacion ?? nombreSede.toLowerCase(),
+        'activa': true,
+      },
+      metadatos: {
+        'nombre_sede': nombreSede,
+        'imagen_url': defaultImageUrl,
+      },
+      descripcion: 'Nueva sede creada: $nombreSede',
+    );
+
+    _sedes.add({
+      'id': sedeRef.id,
+      'nombre': nombreSede,
+      'imagen': defaultImageUrl,
+      'descripcion': descripcion ?? 'Presione para continuar',
+      'ubicacion': ubicacion ?? nombreSede.toLowerCase(),
+      'activa': true,
+      'createdAt': null,
+    });
+
+    _sedes.sort((a, b) => (a['nombre'] as String).compareTo(b['nombre'] as String));
+
+    debugPrint('Sede creada exitosamente: $nombreSede');
+    notifyListeners();
+  } catch (e) {
+    _errorMessage = 'Error al crear la sede: $e';
+    debugPrint('Error en crearSede: $e');
+    notifyListeners();
+  }
+}
+
 
   Future<void> renombrarSede(String sedeId, String nuevoNombre) async {
     if (nuevoNombre.isEmpty) {
@@ -209,65 +230,81 @@ class SedeProvider extends ChangeNotifier {
   }
 
   Future<void> desactivarSede(String sedeId) async {
-    try {
-      _errorMessage = '';
-      debugPrint('Desactivando sede con ID: $sedeId');
+  try {
+    _errorMessage = '';
+    debugPrint('Desactivando sede con ID: $sedeId');
 
-      final now = DateTime.now();
-      final hoy = DateTime(now.year, now.month, now.day);
+    final now = DateTime.now();
+    final hoy = DateTime(now.year, now.month, now.day);
 
-      final sedeIndex = _sedes.indexWhere((sede) => sede['id'] == sedeId);
-      if (sedeIndex == -1) {
-        _errorMessage = 'Sede no encontrada';
-        notifyListeners();
-        return;
-      }
-      final nombreSede = _sedes[sedeIndex]['nombre'] as String;
-
-      final reservasActivasQuery = await FirebaseFirestore.instance
-          .collection('reservas')
-          .where('sede', isEqualTo: sedeId)
-          .get();
-
-      final reservasActivas = reservasActivasQuery.docs.where((doc) {
-        final data = doc.data();
-        final fechaStr = data['fecha'] as String?;
-        if (fechaStr == null) return false;
-
-        try {
-          final fechaReserva = DateTime.parse(fechaStr);
-          final fechaReservaSinHora = DateTime(fechaReserva.year, fechaReserva.month, fechaReserva.day);
-          return fechaReservaSinHora.isAtSameMomentAs(hoy) || fechaReservaSinHora.isAfter(hoy);
-        } catch (e) {
-          return false;
-        }
-      }).toList();
-
-      if (reservasActivas.isNotEmpty) {
-        _errorMessage = 'No se puede desactivar la sede porque tiene ${reservasActivas.length} reserva(s) activa(s)';
-        notifyListeners();
-        return;
-      }
-
-      await FirebaseFirestore.instance
-          .collection('sede')
-          .doc(sedeId)
-          .update({'activa': false});
-
-      _sedes.removeAt(sedeIndex);
-
-      if (_selectedSede == nombreSede) {
-        _selectedSede = '';
-      }
-
-      debugPrint('Sede desactivada exitosamente: $nombreSede');
+    final sedeIndex = _sedes.indexWhere((sede) => sede['id'] == sedeId);
+    if (sedeIndex == -1) {
+      _errorMessage = 'Sede no encontrada';
       notifyListeners();
-    } catch (e) {
-      _errorMessage = 'Error al desactivar la sede: $e';
-      debugPrint('Error en desactivarSede: $e');
-      notifyListeners();
+      return;
     }
+    final nombreSede = _sedes[sedeIndex]['nombre'] as String;
+    final datosSedeAnterior = Map<String, dynamic>.from(_sedes[sedeIndex]);
+
+    final reservasActivasQuery = await FirebaseFirestore.instance
+        .collection('reservas')
+        .where('sede', isEqualTo: sedeId)
+        .get();
+
+    final reservasActivas = reservasActivasQuery.docs.where((doc) {
+      final data = doc.data();
+      final fechaStr = data['fecha'] as String?;
+      if (fechaStr == null) return false;
+
+      try {
+        final fechaReserva = DateTime.parse(fechaStr);
+        final fechaReservaSinHora = DateTime(fechaReserva.year, fechaReserva.month, fechaReserva.day);
+        return fechaReservaSinHora.isAtSameMomentAs(hoy) || fechaReservaSinHora.isAfter(hoy);
+      } catch (e) {
+        return false;
+      }
+    }).toList();
+
+    if (reservasActivas.isNotEmpty) {
+      _errorMessage = 'No se puede desactivar la sede porque tiene ${reservasActivas.length} reserva(s) activa(s)';
+      notifyListeners();
+      return;
+    }
+
+    await FirebaseFirestore.instance
+        .collection('sede')
+        .doc(sedeId)
+        .update({'activa': false});
+
+    // 🔍 AUDITORÍA: Registrar desactivación de sede
+    await AuditProvider.registrarAccion(
+      accion: 'desactivar_sede',
+      entidad: 'sede',
+      entidadId: sedeId,
+      datosAntiguos: datosSedeAnterior,
+      datosNuevos: {'activa': false},
+      metadatos: {
+        'nombre_sede': nombreSede,
+        'reservas_verificadas': reservasActivas.length,
+      },
+      descripcion: 'Sede desactivada: $nombreSede',
+    );
+
+    _sedes.removeAt(sedeIndex);
+
+    if (_selectedSede == nombreSede) {
+      _selectedSede = '';
+    }
+
+    debugPrint('Sede desactivada exitosamente: $nombreSede');
+    notifyListeners();
+  } catch (e) {
+    _errorMessage = 'Error al desactivar la sede: $e';
+    debugPrint('Error en desactivarSede: $e');
+    notifyListeners();
   }
+}
+
 
   Future<void> eliminarSedeCompletamente(String sedeId) async {
     try {

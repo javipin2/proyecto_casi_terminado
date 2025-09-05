@@ -2,6 +2,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:reserva_canchas/providers/audit_provider.dart';
 import '../models/reserva.dart';
 
 class ReservaProvider with ChangeNotifier {
@@ -156,64 +157,112 @@ class ReservaProvider with ChangeNotifier {
 
   /// **Confirmar reserva y enviarla a Firestore**
   Future<void> confirmarReserva() async {
-    if (_reservaActual != null) {
-      _reservaActual!.confirmada = true;
-      notifyListeners();
+  if (_reservaActual != null) {
+    _reservaActual!.confirmada = true;
+    notifyListeners();
 
-      try {
-        await FirebaseFirestore.instance
-            .collection('reservas')
-            .add(_reservaActual!.toFirestore());
-        _reservaActual = null; // Limpiar la reserva actual después de guardarla
-        notifyListeners();
-      } catch (e) {
-        throw Exception('🔥 Error al guardar la reserva en Firestore: $e');
-      }
-    } else if (_reservasGrupales != null) {
-      // ✅ CONFIRMAR TODAS LAS RESERVAS GRUPALES
-      await confirmarReservasGrupales();
+    try {
+      final docRef = await FirebaseFirestore.instance
+          .collection('reservas')
+          .add(_reservaActual!.toFirestore());
+      
+      // 🔍 AUDITORÍA: Registrar creación de reserva
+      await AuditProvider.registrarAccion(
+        accion: _reservaActual!.precioPersonalizado ? 'crear_reserva_precio_personalizado' : 'crear_reserva',
+        entidad: 'reserva',
+        entidadId: docRef.id,
+        datosNuevos: _reservaActual!.toFirestore(),
+        metadatos: {
+          'cancha_nombre': _reservaActual!.cancha.nombre,
+          'sede': _reservaActual!.sede,
+          'fecha': _reservaActual!.fecha.toIso8601String(),
+          'horario': _reservaActual!.horario.horaFormateada,
+          'cliente': _reservaActual!.nombre,
+          'monto_total': _reservaActual!.montoTotal,
+          'descuento_aplicado': _reservaActual!.descuentoAplicado ?? 0,
+        },
+        descripcion: _reservaActual!.precioPersonalizado 
+          ? 'Reserva creada con precio personalizado'
+          : 'Nueva reserva creada',
+      );
+      
+      _reservaActual = null;
+      notifyListeners();
+    } catch (e) {
+      throw Exception('🔥 Error al guardar la reserva en Firestore: $e');
     }
+  } else if (_reservasGrupales != null) {
+    await confirmarReservasGrupales();
   }
+}
+
 
   /// ✅ **Confirmar múltiples reservas grupales**
   Future<List<String>> confirmarReservasGrupales() async {
-    if (_reservasGrupales == null || _reservasGrupales!.isEmpty) {
-      throw Exception('No hay reservas grupales para confirmar');
-    }
-
-    try {
-      final List<String> idsCreados = [];
-      final batch = FirebaseFirestore.instance.batch();
-
-      // Generar ID de grupo si no existe
-      final grupoId = _reservasGrupales![0].grupoReservaId ?? 
-                     DateTime.now().millisecondsSinceEpoch.toString();
-
-      for (var reserva in _reservasGrupales!) {
-        final docRef = FirebaseFirestore.instance.collection('reservas').doc();
-        
-        // Asegurar que todas tengan el mismo ID de grupo
-        final reservaConGrupo = reserva.copyWith(
-          grupoReservaId: grupoId,
-          totalHorasGrupo: _reservasGrupales!.length,
-          confirmada: true,
-        );
-        
-        batch.set(docRef, reservaConGrupo.toFirestore());
-        idsCreados.add(docRef.id);
-      }
-
-      await batch.commit();
-      
-      // Limpiar después de guardar
-      _reservasGrupales = null;
-      notifyListeners();
-      
-      return idsCreados;
-    } catch (e) {
-      throw Exception('🔥 Error al guardar las reservas grupales en Firestore: $e');
-    }
+  if (_reservasGrupales == null || _reservasGrupales!.isEmpty) {
+    throw Exception('No hay reservas grupales para confirmar');
   }
+
+  try {
+    final List<String> idsCreados = [];
+    final batch = FirebaseFirestore.instance.batch();
+    final grupoId = _reservasGrupales![0].grupoReservaId ?? 
+                   DateTime.now().millisecondsSinceEpoch.toString();
+
+    for (var reserva in _reservasGrupales!) {
+      final docRef = FirebaseFirestore.instance.collection('reservas').doc();
+      
+      final reservaConGrupo = reserva.copyWith(
+        grupoReservaId: grupoId,
+        totalHorasGrupo: _reservasGrupales!.length,
+        confirmada: true,
+      );
+      
+      batch.set(docRef, reservaConGrupo.toFirestore());
+      idsCreados.add(docRef.id);
+    }
+
+    await batch.commit();
+    
+    // 🔍 AUDITORÍA: Registrar creación de reservas grupales
+    final tieneDescuentos = _reservasGrupales!.any((r) => r.precioPersonalizado);
+    final montoTotalGrupo = _reservasGrupales!.fold(0.0, (sum, r) => sum + r.montoTotal);
+    final descuentoTotalGrupo = _reservasGrupales!.fold(0.0, (sum, r) => sum + (r.descuentoAplicado ?? 0));
+    
+    await AuditProvider.registrarAccion(
+      accion: tieneDescuentos ? 'crear_reservas_grupales_precio_personalizado' : 'crear_reservas_grupales',
+      entidad: 'reserva_grupal',
+      entidadId: grupoId,
+      datosNuevos: {
+        'cantidad_reservas': _reservasGrupales!.length,
+        'monto_total_grupo': montoTotalGrupo,
+        'descuento_total_grupo': descuentoTotalGrupo,
+        'reservas_ids': idsCreados,
+        'tiene_descuentos': tieneDescuentos,
+      },
+      metadatos: {
+        'cancha_nombre': _reservasGrupales![0].cancha.nombre,
+        'sede': _reservasGrupales![0].sede,
+        'fecha': _reservasGrupales![0].fecha.toIso8601String(),
+        'cliente': _reservasGrupales![0].nombre,
+        'horarios': _reservasGrupales!.map((r) => r.horario.horaFormateada).toList(),
+      },
+      descripcion: tieneDescuentos 
+        ? 'Reservas grupales creadas con descuentos (${_reservasGrupales!.length} horas)'
+        : 'Reservas grupales creadas (${_reservasGrupales!.length} horas)',
+    );
+    
+    _reservasGrupales = null;
+    notifyListeners();
+    
+    return idsCreados;
+  } catch (e) {
+    throw Exception('🔥 Error al guardar las reservas grupales en Firestore: $e');
+  }
+}
+
+
+
 
   /// **Cancelar reserva antes de confirmarla**
   void cancelarReserva() {

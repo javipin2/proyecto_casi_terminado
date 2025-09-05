@@ -1,5 +1,7 @@
 // lib/screens/admin/reservas/editar_reserva_screen.dart
 
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -15,6 +17,8 @@ import 'package:reserva_canchas/models/reserva.dart';
 import 'package:reserva_canchas/models/horario.dart';
 import 'package:reserva_canchas/providers/peticion_provider.dart';
 import 'package:reserva_canchas/screens/admin/reservas/admin_reservas_horarios_screen.dart';
+import 'package:reserva_canchas/utils/reserva_audit_utils.dart';
+
 
 class EditarReservaScreen extends StatefulWidget {
   final Reserva reserva;
@@ -42,6 +46,9 @@ class EditarReservaScreenState extends State<EditarReservaScreen> with TickerPro
   late TextEditingController _emailController;
   late TextEditingController _montoPagadoController;
   late TextEditingController _precioTotalController;
+  late DateTime _inicioSesionEdicion;
+  String? _motivoPrecioPersonalizado;
+  Map<String, dynamic> _valoresOriginales = {}; 
   TipoAbono? _selectedTipo;
   final _formKey = GlobalKey<FormState>();
   late Reserva _currentReserva;
@@ -52,7 +59,6 @@ class EditarReservaScreenState extends State<EditarReservaScreen> with TickerPro
   List<Map<String, dynamic>> _horariosDisponibles = [];
   List<Map<String, dynamic>> _canchasDisponibles = [];
   DateTime? _nuevaFecha;
-  Map<String, dynamic> _valoresOriginales = {};
   late AnimationController _fadeController;
   bool _isLoading = true;
   bool _dataLoaded = false;
@@ -67,6 +73,8 @@ class EditarReservaScreenState extends State<EditarReservaScreen> with TickerPro
   @override
 void initState() {
   super.initState();
+  _inicioSesionEdicion = DateTime.now(); // AGREGAR ESTA LÍNEA
+    _guardarValoresOriginales();
   _currentReserva = widget.reserva;
   _nuevaFecha = widget.reserva.fecha;
   _nuevaSede = widget.reserva.sede;
@@ -78,23 +86,52 @@ void initState() {
   _montoPagadoController = TextEditingController(text: widget.reserva.montoPagado.toStringAsFixed(0));
   _precioTotalController = TextEditingController();
   _selectedTipo = widget.reserva.tipoAbono;
+  
   _fadeController = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 800),
+    duration: const Duration(milliseconds: 600),
   );
   
-  // Inicializar escucha del provider
+  // Inicialización con debounce para evitar múltiples rebuilds
+  _initializeDataWithDebounce();
+  
+  // Configurar listeners con debounce
+  _setupControllersWithDebounce();
+}
+
+void _initializeDataWithDebounce() {
   WidgetsBinding.instance.addPostFrameCallback((_) {
-    if (widget.esAdmin || widget.esSuperAdmin) {
-      final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-      peticionProvider.iniciarEscuchaControlTotal();
-      // 🆕 AÑADIR: Cargar configuración inicial
-      peticionProvider.cargarConfiguracionControl();
+    if (mounted) {
+      if (widget.esAdmin || widget.esSuperAdmin) {
+        final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
+        peticionProvider.iniciarEscuchaControlTotal();
+        peticionProvider.cargarConfiguracionControl();
+      }
+      _initializeData();
     }
   });
-  
-  _initializeData();
 }
+
+
+  void _setupControllersWithDebounce() {
+  Timer? debounceTimer;
+  
+  void onFieldChangedWithDebounce() {
+    debounceTimer?.cancel();
+    debounceTimer = Timer(const Duration(milliseconds: 300), () {
+      if (mounted && _dataLoaded) {
+        setState(() {});
+      }
+    });
+  }
+  
+  _nombreController.addListener(onFieldChangedWithDebounce);
+  _telefonoController.addListener(onFieldChangedWithDebounce);
+  _emailController.addListener(onFieldChangedWithDebounce);
+  _montoPagadoController.addListener(onFieldChangedWithDebounce);
+}
+
+
 
   Future<void> _initializeData() async {
     try {
@@ -298,6 +335,100 @@ void initState() {
     
     return false;
   }
+
+
+  List<String> _obtenerCamposModificados() {
+    final valoresActuales = _obtenerValoresActuales();
+    final camposModificados = <String>[];
+    
+    _valoresOriginales.forEach((key, oldValue) {
+      final newValue = valoresActuales[key];
+      if (oldValue != newValue) {
+        if (key == 'valor' || key == 'montoPagado') {
+          final oldDouble = (oldValue as num?)?.toDouble() ?? 0.0;
+          final newDouble = (newValue as num?)?.toDouble() ?? 0.0;
+          if ((oldDouble - newDouble).abs() > 0.01) {
+            camposModificados.add(key);
+          }
+        } else {
+          camposModificados.add(key);
+        }
+      }
+    });
+    
+    return camposModificados;
+  }
+
+  Future<bool> _verificarControlTotalActivo() async {
+    try {
+      final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
+      return peticionProvider.controlTotalActivado;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  Future<Map<String, dynamic>> _obtenerInfoDispositivo() async {
+    return {
+      'platform': 'Flutter',
+      'app_version': '2.0',
+      'sistema_auditoria': 'mejorado',
+    };
+  }
+
+  Future<String> _obtenerUbicacionAproximada() async {
+    // Implementación básica - puedes mejorar con geolocator si es necesario
+    return 'Ubicación no disponible en esta versión';
+  }
+
+  Future<double> _obtenerPrecioOriginalCancha() async {
+    try {
+      if (_nuevaCanchaId != null) {
+        final doc = await FirebaseFirestore.instance
+            .collection('canchas')
+            .doc(_nuevaCanchaId!)
+            .get();
+        
+        if (doc.exists && doc.data() != null) {
+          return (doc.data()!['precio'] as num?)?.toDouble() ?? 0.0;
+        }
+      }
+      return widget.reserva.cancha.precio;
+    } catch (e) {
+      return widget.reserva.cancha.precio;
+    }
+  }
+
+  Future<String> _obtenerIPSesion() async {
+    return 'IP no disponible en Flutter Web/Mobile';
+  }
+
+  Future<String> _obtenerUserAgentDetallado() async {
+    return 'Flutter App v2.0 - Sistema Auditoría Mejorado';
+  }
+
+  Future<List<String>> _obtenerAccionesPreviasUsuario() async {
+    try {
+      final userId = FirebaseAuth.instance.currentUser?.uid;
+      if (userId == null) return [];
+
+      final ayer = Timestamp.fromDate(DateTime.now().subtract(Duration(days: 1)));
+      
+      final query = await FirebaseFirestore.instance
+          .collection('auditoria')
+          .where('usuario_id', isEqualTo: userId)
+          .where('timestamp', isGreaterThan: ayer)
+          .orderBy('timestamp', descending: true)
+          .limit(5)
+          .get();
+
+      return query.docs.map((doc) => doc.data()['accion'].toString()).toList();
+    } catch (e) {
+      debugPrint('Error obteniendo acciones previas: $e');
+      return [];
+    }
+  }
+
 
   Future<void> _cargarCanchasDisponibles(String sede) async {
     if (!mounted) return;
@@ -510,213 +641,500 @@ void initState() {
 
   // 🔥 MÉTODO PRINCIPAL CORREGIDO - Lógica de guardado simplificada
   Future<void> _saveChanges() async {
-    if (!_formKey.currentState!.validate()) {
-      if (!mounted) return;
-      _mostrarError('Por favor, corrige los errores en el formulario.');
-      return;
-    }
-    
-    if (FirebaseAuth.instance.currentUser == null) {
-      if (!mounted) return;
-      _mostrarError('Debes iniciar sesión como administrador para editar reservas.');
-      return;
-    }
-    
-    setState(() {
-      _isSaving = true;
-    });
-
-    try {
-      // Validaciones básicas
-      double montoTotal = _precioEditableActivado
-          ? _calcularMontoPersonalizado()
-          : (_montoTotalCalculado ?? await _calcularMontoTotal(_currentReserva));
-      double montoPagado = double.tryParse(_montoPagadoController.text) ?? _currentReserva.montoPagado;
-      
-      // Validaciones de montos
-      if (montoPagado < 20000) {
-        if (!mounted) return;
-        _mostrarError('El abono debe ser al menos 20000.');
-        setState(() { _isSaving = false; });
-        return;
-      }
-      if (montoPagado > montoTotal) {
-        if (!mounted) return;
-        _mostrarError('El abono no puede superar el monto total.');
-        setState(() { _isSaving = false; });
-        return;
-      }
-      if (_selectedTipo == TipoAbono.completo && montoPagado != montoTotal) {
-        if (!mounted) return;
-        _mostrarError('El abono debe ser igual al monto total para un pago completo.');
-        setState(() { _isSaving = false; });
-        return;
-      }
-      if (_selectedTipo == TipoAbono.parcial && montoPagado == montoTotal) {
-        if (!mounted) return;
-        _mostrarError('El abono debe ser menor al monto total para un pago parcial.');
-        setState(() { _isSaving = false; });
-        return;
-      }
-      
-      if (!_hayCambios()) {
-        if (!mounted) return;
-        _mostrarError('No se detectaron cambios para guardar.');
-        setState(() { _isSaving = false; });
-        return;
-      }
-
-      final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-      
-      // 🆕 LÓGICA SIMPLIFICADA: Verificar permisos
-      bool puedeHacerCambiosDirectos = false;
-      
-      if (widget.esSuperAdmin) {
-        puedeHacerCambiosDirectos = true;
-        debugPrint('✅ SuperAdmin: Cambios directos permitidos');
-      } else if (widget.esAdmin) {
-        // Para admins, verificar el estado del control total
-        await peticionProvider.cargarConfiguracionControl();
-        puedeHacerCambiosDirectos = peticionProvider.controlTotalActivado;
-        debugPrint('🔧 Admin: Control total = ${peticionProvider.controlTotalActivado}');
-      }
-      
-      if (puedeHacerCambiosDirectos) {
-        debugPrint('🚀 Aplicando cambios directamente...');
-        await _aplicarCambiosDirectamente();
-      } else {
-        debugPrint('📝 Creando petición...');
-        await _crearPeticionCambios();
-      }
-      
-    } catch (e) {
-      debugPrint('Error al procesar cambios: $e');
-      if (!mounted) return;
-      _mostrarError('Error al procesar los cambios: $e');
-      setState(() { _isSaving = false; });
-    }
+  if (!_formKey.currentState!.validate()) {
+    if (!mounted) return;
+    _mostrarError('Por favor, corrige los errores en el formulario.');
+    return;
   }
+  
+  if (FirebaseAuth.instance.currentUser == null) {
+    if (!mounted) return;
+    _mostrarError('Debes iniciar sesión como administrador para editar reservas.');
+    return;
+  }
+  
+  setState(() {
+    _isSaving = true;
+  });
+
+  try {
+    // Validaciones básicas
+    double montoTotal = _precioEditableActivado
+        ? _calcularMontoPersonalizado()
+        : (_montoTotalCalculado ?? await _calcularMontoTotal(_currentReserva));
+    double montoPagado = double.tryParse(_montoPagadoController.text) ?? _currentReserva.montoPagado;
+    
+    // Validaciones de montos ACTUALIZADAS
+    if (montoPagado > 0 && montoPagado > montoTotal) {
+      if (!mounted) return;
+      _mostrarError('El abono no puede superar el monto total.');
+      setState(() { _isSaving = false; });
+      return;
+    }
+    if (_selectedTipo == TipoAbono.completo && montoPagado > 0 && montoPagado != montoTotal) {
+      if (!mounted) return;
+      _mostrarError('El abono debe ser igual al monto total para un pago completo.');
+      setState(() { _isSaving = false; });
+      return;
+    }
+    if (_selectedTipo == TipoAbono.parcial && montoPagado > 0 && montoPagado == montoTotal) {
+      if (!mounted) return;
+      _mostrarError('El abono debe ser menor al monto total para un pago parcial.');
+      setState(() { _isSaving = false; });
+      return;
+    }
+    
+    if (!_hayCambios()) {
+      if (!mounted) return;
+      _mostrarError('No se detectaron cambios para guardar.');
+      setState(() { _isSaving = false; });
+      return;
+    }
+
+    final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
+    
+    // Lógica de permisos (sin cambios)
+    bool puedeHacerCambiosDirectos = false;
+    
+    if (widget.esSuperAdmin) {
+      puedeHacerCambiosDirectos = true;
+      debugPrint('✅ SuperAdmin: Cambios directos permitidos');
+    } else if (widget.esAdmin) {
+      await peticionProvider.cargarConfiguracionControl();
+      puedeHacerCambiosDirectos = peticionProvider.controlTotalActivado;
+      debugPrint('🔧 Admin: Control total = ${peticionProvider.controlTotalActivado}');
+    }
+    
+    if (puedeHacerCambiosDirectos) {
+      debugPrint('🚀 Aplicando cambios directamente...');
+      await _aplicarCambiosDirectamente();
+    } else {
+      debugPrint('📝 Creando petición...');
+      await _crearPeticionCambios();
+    }
+    
+  } catch (e) {
+    debugPrint('Error al procesar cambios: $e');
+    if (!mounted) return;
+    _mostrarError('Error al procesar los cambios: $e');
+    setState(() { _isSaving = false; });
+  }
+}
+
 
   // 🔥 MÉTODO CORREGIDO - Aplicar cambios directos
-  Future<void> _aplicarCambiosDirectamente() async {
+  // 🔥 MÉTODO CORREGIDO - Aplicar cambios directos
+Future<void> _aplicarCambiosDirectamente() async {
+  try {
+    final valoresActuales = _obtenerValoresActuales();
+    
+    // Detectar cambio significativo de precio para solicitar motivo
+    final precioOriginal = (_valoresOriginales['valor'] as num?)?.toDouble() ?? 0.0;
+    final precioNuevo = (valoresActuales['valor'] as num?)?.toDouble() ?? 0.0;
+    final porcentajeCambio = precioOriginal > 0 ? 
+        ((precioNuevo - precioOriginal) / precioOriginal * 100).abs() : 0.0;
+    
+    // Solicitar motivo para cambios significativos de precio
+    if (_precioEditableActivado && porcentajeCambio >= 15) {
+      await _solicitarMotivoPrecioPersonalizado();
+      
+      if (_motivoPrecioPersonalizado == null || _motivoPrecioPersonalizado!.isEmpty) {
+        setState(() { _isSaving = false; });
+        _mostrarError('Se requiere especificar un motivo para el cambio de precio');
+        return;
+      }
+    }
+
+    // Validar disponibilidad para cambios importantes
+    final cambiosImportantes = 
+        valoresActuales['fecha'] != _valoresOriginales['fecha'] ||
+        valoresActuales['cancha_id'] != _valoresOriginales['cancha_id'] ||
+        valoresActuales['horario'] != _valoresOriginales['horario'] ||
+        valoresActuales['sede'] != _valoresOriginales['sede'];
+
+    if (cambiosImportantes) {
+      final disponible = await _verificarDisponibilidadCompleta(
+        DateTime.parse(valoresActuales['fecha']),
+        valoresActuales['cancha_id'],
+        valoresActuales['horario'],
+      );
+
+      if (!disponible) {
+        final continuar = await _mostrarDialogoConflictoHorario();
+        if (!continuar) {
+          setState(() { _isSaving = false; });
+          return;
+        }
+      }
+    }
+
+    // Preparar datos para actualización
+    final updateData = await _prepararDatosActualizacion(
+      valoresActuales, 
+      precioOriginal, 
+      porcentajeCambio
+    );
+
+    debugPrint('📡 Actualizando reserva ${widget.reserva.id}');
+    debugPrint('🔍 Cambios detectados: ${_obtenerCamposModificados().join(', ')}');
+    debugPrint('📊 Porcentaje cambio precio: ${porcentajeCambio.toStringAsFixed(1)}%');
+    
+    // Ejecutar actualización en Firestore
+    await FirebaseFirestore.instance
+        .collection('reservas')
+        .doc(widget.reserva.id)
+        .update(updateData);
+
+    // AUDITORÍA UNIFICADA - Usar ReservaAuditUtils en lugar del sistema antiguo
+    await _crearAuditoriaUnificada(valoresActuales, porcentajeCambio);
+
+    if (!mounted) return;
+    
+    setState(() { _isSaving = false; });
+
+    // Mensaje contextual según el nivel de cambios
+    String mensaje = _generarMensajeExito(porcentajeCambio);
+    _mostrarExito(mensaje);
+    Navigator.of(context).pop(true);
+
+  } catch (e) {
+    debugPrint('❌ Error aplicando cambios: $e');
+    await _manejarErrorActualizacion(e);
+  }
+}
+
+// 🔥 NUEVO MÉTODO - Auditoría unificada
+Future<void> _crearAuditoriaUnificada(
+  Map<String, dynamic> valoresActuales,
+  double porcentajeCambio
+) async {
+  try {
+    final precioOriginal = (_valoresOriginales['valor'] as num?)?.toDouble() ?? 0.0;
+    final precioNuevo = (valoresActuales['valor'] as num?)?.toDouble() ?? 0.0;
+    final esPrecioPersonalizado = _precioEditableActivado;
+    final descuento = esPrecioPersonalizado && precioNuevo < precioOriginal ? 
+        (precioOriginal - precioNuevo) : 0.0;
+
+    // Preparar datos para auditoría unificada
+    final datosNuevosAuditoria = {
+      'nombre': valoresActuales['nombre'],
+      'telefono': valoresActuales['telefono'],
+      'correo': valoresActuales['correo'],
+      'valor': precioNuevo,
+      'montoPagado': valoresActuales['montoPagado'],
+      'precio_personalizado': esPrecioPersonalizado,
+      'precio_original': esPrecioPersonalizado ? precioOriginal : null,
+      'descuento_aplicado': descuento > 0 ? descuento : null,
+      'cancha_nombre': widget.reserva.cancha.nombre,
+      'sede': valoresActuales['sede'],
+      'fecha': valoresActuales['fecha'],
+      'horario': valoresActuales['horario'],
+      'confirmada': valoresActuales['confirmada'],
+    };
+
+    // Usar el sistema unificado de auditoría
+    await ReservaAuditUtils.auditarEdicionReserva(
+      reservaId: widget.reserva.id,
+      datosAntiguos: _valoresOriginales,
+      datosNuevos: datosNuevosAuditoria,
+      descripcionPersonalizada: 'Edición de reserva desde pantalla de edición',
+      metadatosAdicionales: {
+        'metodo_edicion': 'edicion_pantalla_completa',
+        'usuario_tipo': widget.esSuperAdmin ? 'super_admin' : (widget.esAdmin ? 'admin' : 'usuario'),
+        'interfaz_origen': 'editar_reserva_screen',
+        'timestamp_edicion': DateTime.now().millisecondsSinceEpoch,
+        'control_total_activo': await _verificarControlTotalActivo(),
+        'motivo_precio_personalizado': _motivoPrecioPersonalizado,
+        'contexto_financiero': {
+          'diferencia_precio': precioNuevo - precioOriginal,
+          'es_aumento': precioNuevo > precioOriginal,
+          'es_descuento': precioNuevo < precioOriginal,
+          'monto_descuento': descuento,
+          'impacto_financiero': _calcularImpactoFinanciero(precioOriginal, precioNuevo),
+          'porcentaje_cambio': porcentajeCambio,
+        },
+        'informacion_reserva': {
+          'dias_hasta_reserva': widget.reserva.fecha.difference(DateTime.now()).inDays,
+          'es_reserva_proxima': widget.reserva.fecha.difference(DateTime.now()).inDays <= 3,
+          'horario_peak': _esHorarioPeak(widget.reserva.horario.horaFormateada),
+          'fin_de_semana': _esFechaFinDeSemana(widget.reserva.fecha),
+        },
+      },
+    );
+
+    debugPrint('✅ Auditoría unificada creada exitosamente');
+
+  } catch (e) {
+    debugPrint('⚠️ Error en auditoría unificada: $e');
+    // No fallar la operación por error de auditoría
+  }
+}
+
+// 🔥 AGREGAR estos métodos auxiliares
+String _calcularImpactoFinanciero(double precioOriginal, double precioNuevo) {
+  final diferencia = precioNuevo - precioOriginal;
+  final porcentaje = precioOriginal > 0 ? (diferencia / precioOriginal * 100) : 0;
+  
+  if (diferencia.abs() >= 100000) return 'muy_alto';
+  if (diferencia.abs() >= 50000) return 'alto';
+  if (diferencia.abs() >= 20000) return 'medio';
+  return 'bajo';
+}
+
+bool _esHorarioPeak(String horario) {
+  final regex = RegExp(r'(\d{1,2}):(\d{2})');
+  final match = regex.firstMatch(horario);
+  if (match != null) {
+    final hora = int.parse(match.group(1)!);
+    return hora >= 18 && hora <= 22;
+  }
+  return false;
+}
+
+bool _esFechaFinDeSemana(DateTime fecha) {
+  return fecha.weekday == DateTime.friday || 
+         fecha.weekday == DateTime.saturday || 
+         fecha.weekday == DateTime.sunday;
+}
+
+
+  // 5. AGREGAR estos métodos nuevos:
+
+  Future<void> _solicitarMotivoPrecioPersonalizado() async {
+    final TextEditingController motivoController = TextEditingController();
+    
+    final motivo = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Precio Personalizado'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Se detectó un cambio significativo en el precio. Por favor, especifica el motivo:'),
+            SizedBox(height: 16),
+            TextField(
+              controller: motivoController,
+              decoration: InputDecoration(
+                labelText: 'Motivo del cambio',
+                hintText: 'Ej: Descuento por cliente frecuente, promoción especial, etc.',
+              ),
+              maxLines: 2,
+              autofocus: true,
+            ),
+            SizedBox(height: 8),
+            Container(
+              padding: EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.orange.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                'Este motivo será registrado en la auditoría del sistema',
+                style: TextStyle(fontSize: 12, color: Colors.orange[700]),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, null),
+            child: Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final motivoTexto = motivoController.text.trim();
+              if (motivoTexto.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Por favor, especifica un motivo'),
+                    backgroundColor: Colors.orange,
+                  ),
+                );
+                return;
+              }
+              Navigator.pop(context, motivoTexto);
+            },
+            child: Text('Confirmar'),
+          ),
+        ],
+      ),
+    );
+    
+    _motivoPrecioPersonalizado = motivo;
+  }
+
+  Future<Map<String, dynamic>> _prepararDatosActualizacion(
+    Map<String, dynamic> valoresActuales, 
+    double precioOriginal, 
+    double porcentajeCambio
+  ) async {
+    final updateData = <String, dynamic>{
+      'nombre': valoresActuales['nombre'],
+      'telefono': valoresActuales['telefono'],
+      'correo': valoresActuales['correo'],
+      'valor': valoresActuales['valor'],
+      'montoPagado': valoresActuales['montoPagado'],
+      'estado': valoresActuales['estado'],
+      'confirmada': valoresActuales['confirmada'],
+      'precio_personalizado': _precioEditableActivado,
+      'fechaActualizacion': Timestamp.now(),
+      'usuario_modificacion': FirebaseAuth.instance.currentUser?.uid,
+      'version_auditoria': '2.0',
+    };
+
+    // Datos de precio personalizado
+    if (_precioEditableActivado) {
+      updateData.addAll({
+        'precio_original': precioOriginal,
+        'motivo_precio_personalizado': _motivoPrecioPersonalizado,
+        'porcentaje_cambio_precio': porcentajeCambio,
+        'fecha_cambio_precio': Timestamp.now(),
+      });
+    }
+
+    // Cambios de ubicación/tiempo
+    final cambiosImportantes = 
+        valoresActuales['fecha'] != _valoresOriginales['fecha'] ||
+        valoresActuales['cancha_id'] != _valoresOriginales['cancha_id'] ||
+        valoresActuales['horario'] != _valoresOriginales['horario'] ||
+        valoresActuales['sede'] != _valoresOriginales['sede'];
+
+    if (cambiosImportantes) {
+      updateData.addAll({
+        'fecha': valoresActuales['fecha'],
+        'sede': valoresActuales['sede'],
+        'cancha_id': valoresActuales['cancha_id'],
+        'horario': valoresActuales['horario'],
+      });
+
+      // Actualizar info de cancha si cambió
+      if (valoresActuales['cancha_id'] != _valoresOriginales['cancha_id']) {
+        final nuevaCancha = await _obtenerDatosCancha(valoresActuales['cancha_id']);
+        if (nuevaCancha != null) {
+          updateData['cancha_nombre'] = nuevaCancha['nombre'];
+          updateData['cancha_precio'] = nuevaCancha['precio'];
+        }
+      }
+
+      // Actualizar horarios
+      updateData['horarios'] = [valoresActuales['horario']];
+    }
+
+    return updateData;
+  }
+
+  Future<void> _crearLogAuditoriaCompleto(
+    Map<String, dynamic> valoresActuales,
+    double porcentajeCambio
+  ) async {
     try {
-      final valoresActuales = _obtenerValoresActuales();
+      // Preparar contexto completo
+      final contextoPrecio = <String, dynamic>{};
       
-      // Validar disponibilidad si hay cambios de fecha, cancha o horario
-      final cambiosImportantes = 
-          valoresActuales['fecha'] != _valoresOriginales['fecha'] ||
-          valoresActuales['cancha_id'] != _valoresOriginales['cancha_id'] ||
-          valoresActuales['horario'] != _valoresOriginales['horario'] ||
-          valoresActuales['sede'] != _valoresOriginales['sede'];
-
-      if (cambiosImportantes) {
-        final disponible = await _verificarDisponibilidadCompleta(
-          DateTime.parse(valoresActuales['fecha']),
-          valoresActuales['cancha_id'],
-          valoresActuales['horario'],
-        );
-
-        if (!disponible) {
-          final continuar = await _mostrarDialogoConflictoHorario();
-          if (!continuar) {
-            setState(() { _isSaving = false; });
-            return;
-          }
-        }
-      }
-
-      // Preparar datos para actualización - MEJORADO
-      final updateData = <String, dynamic>{
-        'nombre': valoresActuales['nombre'],
-        'telefono': valoresActuales['telefono'],
-        'correo': valoresActuales['correo'],
-        'valor': valoresActuales['valor'],
-        'montoPagado': valoresActuales['montoPagado'],
-        'estado': valoresActuales['estado'],
-        'confirmada': valoresActuales['confirmada'],
-        'precio_personalizado': _precioEditableActivado,
-        'fechaActualizacion': Timestamp.now(),
-        'usuario_modificacion': FirebaseAuth.instance.currentUser?.uid,
-      };
-
-      // Añadir cambios de fecha, sede, cancha y horario si los hay
-      if (cambiosImportantes) {
-        updateData.addAll({
-          'fecha': valoresActuales['fecha'],
-          'sede': valoresActuales['sede'],
-          'cancha_id': valoresActuales['cancha_id'],
-          'horario': valoresActuales['horario'],
+      if (_precioEditableActivado) {
+        contextoPrecio.addAll({
+          'precio_editado_manualmente': true,
+          'precio_original_cancha': await _obtenerPrecioOriginalCancha(),
+          'es_descuento_aplicado': valoresActuales['valor'] < _valoresOriginales['valor'],
+          'porcentaje_cambio_calculado': porcentajeCambio,
+          'motivo_precio_personalizado': _motivoPrecioPersonalizado ?? 'No especificado',
+          'rango_cambio': _clasificarRangoCambio(porcentajeCambio),
         });
-
-        // Si cambió la cancha, actualizar también la información de la cancha
-        if (valoresActuales['cancha_id'] != _valoresOriginales['cancha_id']) {
-          final nuevaCancha = await _obtenerDatosCancha(valoresActuales['cancha_id']);
-          if (nuevaCancha != null) {
-            updateData['cancha_nombre'] = nuevaCancha['nombre'];
-            updateData['cancha_precio'] = nuevaCancha['precio'];
-          }
-        }
       }
 
-      // Obtener horarios existentes para mantener compatibilidad
-      final doc = await FirebaseFirestore.instance
-          .collection('reservas')
-          .doc(widget.reserva.id)
-          .get();
+      // Usar el sistema de auditoría mejorado
+      await ReservaAuditUtils.auditarEdicionReserva(
+        reservaId: widget.reserva.id,
+        datosAntiguos: _valoresOriginales,
+        datosNuevos: valoresActuales,
+        metadatosAdicionales: {
+          'contexto_precio': contextoPrecio,
+          'tipo_usuario_editor': widget.esSuperAdmin ? 'super_admin' : (widget.esAdmin ? 'admin' : 'usuario'),
+          'control_total_activo': await _verificarControlTotalActivo(),
+          'dispositivo_info': await _obtenerInfoDispositivo(),
+          'ubicacion_edicion': await _obtenerUbicacionAproximada(),
+          'duracion_sesion_edicion': DateTime.now().difference(_inicioSesionEdicion).inMinutes,
+          'campos_modificados': _obtenerCamposModificados(),
+          'ip_session': await _obtenerIPSesion(),
+          'user_agent_detail': await _obtenerUserAgentDetallado(),
+          'timestamp_inicio_edicion': _inicioSesionEdicion.millisecondsSinceEpoch,
+          'acciones_previas_usuario': await _obtenerAccionesPreviasUsuario(),
+        },
+        esReservaRecurrente: widget.reserva.esReservaRecurrente,
+        tipoEdicion: 'normal',
+      );
 
-      if (doc.exists && doc.data() != null) {
-        final horarios = (doc.data()!['horarios'] as List<dynamic>?)?.cast<String>() ?? 
-                       [valoresActuales['horario']];
-        
-        // Actualizar horarios si cambió el horario principal
-        if (valoresActuales['horario'] != _valoresOriginales['horario']) {
-          updateData['horarios'] = [valoresActuales['horario']];
-        } else {
-          updateData['horarios'] = horarios;
-        }
-      } else {
-        updateData['horarios'] = [valoresActuales['horario']];
-      }
-
-      // 🚀 Ejecutar actualización en Firestore
-      debugPrint('📡 Actualizando reserva ${widget.reserva.id} con datos: ${updateData.keys}');
-      
-      await FirebaseFirestore.instance
-          .collection('reservas')
-          .doc(widget.reserva.id)
-          .update(updateData);
-
-      // Crear log de auditoría
-      await _crearLogAuditoria('EDICION_DIRECTA', valoresActuales);
-
-      if (!mounted) return;
-      
-      setState(() {
-        _isSaving = false;
-      });
-
-      _mostrarExito('✅ Reserva actualizada exitosamente${widget.esSuperAdmin ? " (SuperAdmin)" : " (Control Total)"}.');
-      Navigator.of(context).pop(true);
-
+      debugPrint('✅ Log de auditoría completo creado');
     } catch (e) {
-      debugPrint('❌ Error al aplicar cambios directamente: $e');
-      if (!mounted) return;
-      
-      setState(() {
-        _isSaving = false;
-      });
-      
-      // Mensaje de error más específico
-      String mensajeError = 'Error al actualizar la reserva';
-      if (e.toString().contains('permission-denied')) {
-        mensajeError = 'Sin permisos suficientes. Verifica que el control total esté activado.';
-      } else if (e.toString().contains('not-found')) {
-        mensajeError = 'La reserva no fue encontrada.';
-      }
-      
-      _mostrarError('$mensajeError: $e');
+      debugPrint('⚠️ Error creando log de auditoría: $e');
+      // No fallar la operación por error de auditoría
     }
   }
+
+  String _clasificarRangoCambio(double porcentaje) {
+    if (porcentaje >= 70) return 'extremo';
+    if (porcentaje >= 50) return 'critico';
+    if (porcentaje >= 30) return 'alto';
+    if (porcentaje >= 15) return 'medio';
+    return 'bajo';
+  }
+
+  String _generarMensajeExito(double porcentajeCambio) {
+    String mensaje = 'Reserva actualizada exitosamente';
+    
+    if (_precioEditableActivado && porcentajeCambio >= 50) {
+      mensaje = 'Reserva actualizada con cambio crítico de precio';
+    } else if (_precioEditableActivado && porcentajeCambio >= 30) {
+      mensaje = 'Reserva actualizada con cambio significativo de precio';
+    } else if (widget.esSuperAdmin) {
+      mensaje += ' (SuperAdmin)';
+    } else {
+      mensaje += ' (Control Total)';
+    }
+    
+    if (_motivoPrecioPersonalizado != null) {
+      mensaje += '\nMotivo registrado: ${_motivoPrecioPersonalizado!.length > 30 ? 
+        _motivoPrecioPersonalizado!.substring(0, 30) + '...' : _motivoPrecioPersonalizado!}';
+    }
+    
+    return mensaje;
+  }
+
+  Future<void> _manejarErrorActualizacion(dynamic error) async {
+    if (!mounted) return;
+    
+    setState(() { _isSaving = false; });
+    
+    String mensajeError = 'Error al actualizar la reserva';
+    if (error.toString().contains('permission-denied')) {
+      mensajeError = 'Sin permisos suficientes. Verifica que el control total esté activado.';
+    } else if (error.toString().contains('not-found')) {
+      mensajeError = 'La reserva no fue encontrada.';
+    } else if (error.toString().contains('network')) {
+      mensajeError = 'Error de conexión. Verifica tu internet.';
+    }
+    
+    // Registrar error en auditoría
+    try {
+      await ReservaAuditUtils.auditarEdicionReserva(
+        reservaId: widget.reserva.id,
+        datosAntiguos: _valoresOriginales,
+        datosNuevos: _obtenerValoresActuales(),
+        descripcionPersonalizada: 'ERROR en edición: $mensajeError',
+        metadatosAdicionales: {
+          'error_tipo': 'actualizacion_fallida',
+          'error_detalle': error.toString(),
+          'timestamp_error': DateTime.now().millisecondsSinceEpoch,
+        },
+        tipoEdicion: 'error',
+      );
+    } catch (e) {
+      debugPrint('Error registrando error en auditoría: $e');
+    }
+    
+    _mostrarError('$mensajeError: ${error.toString()}');
+  }
+
 
   Future<bool> _verificarDisponibilidadCompleta(
     DateTime fecha,
@@ -855,32 +1273,8 @@ void initState() {
     ) ?? false;
   }
 
-  /// **Crear log de auditoría**
-  Future<void> _crearLogAuditoria(
-    String tipoAccion, 
-    Map<String, dynamic> valoresNuevos
-  ) async {
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) return;
 
-      await FirebaseFirestore.instance
-          .collection('audit_logs')
-          .add({
-        'tipo_accion': tipoAccion,
-        'usuario_id': user.uid,
-        'usuario_email': user.email,
-        'reserva_id': widget.reserva.id,
-        'valores_anteriores': _valoresOriginales,
-        'valores_nuevos': valoresNuevos,
-        'fecha': Timestamp.now(),
-        'control_total_activo': Provider.of<PeticionProvider>(context, listen: false).controlTotalActivado,
-        'es_superadmin': widget.esSuperAdmin,
-      });
-    } catch (e) {
-      debugPrint('Error creando log de auditoría: $e');
-    }
-  }
+
 
   Future<void> _crearPeticionCambios() async {
     try {
@@ -1728,185 +2122,276 @@ void initState() {
             const SizedBox(height: 20),
             
             TextFormField(
-              controller: _nombreController,
-              decoration: InputDecoration(
-                labelText: 'Nombre',
-                prefixIcon: const Icon(Icons.person),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: Theme.of(context).primaryColor),
-                ),
-              ),
-              validator: (value) {
-                if (value == null || value.trim().isEmpty) {
-                  return 'Ingresa el nombre';
-                }
-                return null;
-              },
-            ),
+  controller: _nombreController,
+  decoration: InputDecoration(
+    labelText: 'Nombre Completo',
+    prefixIcon: const Icon(Icons.person),
+    hintText: 'Ingresa el nombre del cliente',
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: BorderSide(color: Theme.of(context).primaryColor, width: 2),
+    ),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: BorderSide(color: Colors.grey.shade300),
+    ),
+    filled: true,
+    fillColor: Colors.grey.shade50,
+  ),
+  validator: (value) {
+    if (value == null || value.trim().isEmpty) {
+      return 'Ingresa el nombre';
+    }
+    return null;
+  },
+),
+
             const SizedBox(height: 16),
             
             TextFormField(
-              controller: _telefonoController,
-              decoration: InputDecoration(
-                labelText: 'Teléfono',
-                prefixIcon: const Icon(Icons.phone),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: Theme.of(context).primaryColor),
-                ),
-              ),
-              keyboardType: TextInputType.phone,
-              validator: (value) {
-                if (value == null || value.trim().isEmpty) {
-                  return 'Ingresa el teléfono';
-                }
-                return null;
-              },
-            ),
+  controller: _telefonoController,
+  decoration: InputDecoration(
+    labelText: 'Teléfono',
+    prefixIcon: const Icon(Icons.phone),
+    hintText: '3001234567',
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: BorderSide(color: Theme.of(context).primaryColor, width: 2),
+    ),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: BorderSide(color: Colors.grey.shade300),
+    ),
+    filled: true,
+    fillColor: Colors.grey.shade50,
+  ),
+  keyboardType: TextInputType.phone,
+  validator: (value) {
+    if (value == null || value.trim().isEmpty) {
+      return 'Ingresa el teléfono';
+    }
+    return null;
+  },
+),
+
             const SizedBox(height: 16),
             
             TextFormField(
-              controller: _emailController,
-              decoration: InputDecoration(
-                labelText: 'Correo',
-                prefixIcon: const Icon(Icons.email),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: Theme.of(context).primaryColor),
-                ),
-              ),
-              keyboardType: TextInputType.emailAddress,
-              validator: (value) {
-                if (value == null || value.trim().isEmpty) {
-                  return 'Ingresa el correo';
-                }
-                if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}').hasMatch(value)) {
-                  return 'Ingresa un correo válido';
-                }
-                return null;
-              },
-            ),
+  controller: _emailController,
+  decoration: InputDecoration(
+    labelText: 'Correo (Opcional)',
+    prefixIcon: const Icon(Icons.email),
+    hintText: 'ejemplo@correo.com',
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: BorderSide(color: Theme.of(context).primaryColor, width: 2),
+    ),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: BorderSide(color: Colors.grey.shade300),
+    ),
+    filled: true,
+    fillColor: Colors.grey.shade50,
+  ),
+  keyboardType: TextInputType.emailAddress,
+  validator: (value) {
+    // CORREO AHORA ES OPCIONAL
+    if (value != null && value.trim().isNotEmpty) {
+      if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}').hasMatch(value)) {
+        return 'Ingresa un correo válido';
+      }
+    }
+    return null; // Permitir vacío
+  },
+),
+
             const SizedBox(height: 16),
             
             TextFormField(
-              controller: _montoPagadoController,
-              decoration: InputDecoration(
-                labelText: 'Abono',
-                prefixText: 'COP ',
-                prefixIcon: const Icon(Icons.attach_money),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: Theme.of(context).primaryColor),
-                ),
-              ),
-              keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-              validator: (value) {
-                if (value == null || value.trim().isEmpty) {
-                  return 'Ingresa el abono';
-                }
-                double? abono = double.tryParse(value);
-                if (abono == null) {
-                  return 'Ingresa un número válido';
-                }
-                if (abono < 20000) {
-                  return 'El abono debe ser al menos 20000';
-                }
-                return null;
-              },
-            ),
+  controller: _montoPagadoController,
+  decoration: InputDecoration(
+    labelText: 'Abono',
+    prefixText: 'COP ',
+    prefixIcon: const Icon(Icons.attach_money),
+    hintText: '0',
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: BorderSide(color: Theme.of(context).primaryColor, width: 2),
+    ),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: BorderSide(color: Colors.grey.shade300),
+    ),
+    filled: true,
+    fillColor: Colors.grey.shade50,
+  ),
+  keyboardType: TextInputType.number,
+  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+  validator: (value) {
+    if (value == null || value.trim().isEmpty) {
+      return 'Ingresa el abono (puede ser 0)';
+    }
+    double? abono = double.tryParse(value);
+    if (abono == null) {
+      return 'Ingresa un número válido';
+    }
+    if (abono < 0) {
+      return 'El abono no puede ser negativo';
+    }
+    // ELIMINADO: Restricción de mínimo 20000
+    return null;
+  },
+),
+
             const SizedBox(height: 16),
             
             DropdownButtonFormField<TipoAbono>(
-              value: _selectedTipo,
-              decoration: InputDecoration(
-                labelText: 'Estado de pago',
-                prefixIcon: const Icon(Icons.payment),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: Theme.of(context).primaryColor),
-                ),
-              ),
-              items: const [
-                DropdownMenuItem(
-                  value: TipoAbono.parcial,
-                  child: Text('Pendiente'),
-                ),
-                DropdownMenuItem(
-                  value: TipoAbono.completo,
-                  child: Text('Completo'),
-                ),
-              ],
-              onChanged: (value) {
-                setState(() {
-                  _selectedTipo = value;
-                });
-              },
+  value: _selectedTipo,
+  decoration: InputDecoration(
+    labelText: 'Estado de pago',
+    prefixIcon: const Icon(Icons.payment),
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: BorderSide(color: Theme.of(context).primaryColor, width: 2),
+    ),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: BorderSide(color: Colors.grey.shade300),
+    ),
+    filled: true,
+    fillColor: Colors.grey.shade50,
+  ),
+  items: [
+    DropdownMenuItem(
+      value: TipoAbono.parcial,
+      child: Row(
+        children: [
+          Container(
+            width: 12,
+            height: 12,
+            decoration: BoxDecoration(
+              color: Colors.orange.shade400,
+              shape: BoxShape.circle,
             ),
+          ),
+          const SizedBox(width: 8),
+          const Text('Pendiente'),
+        ],
+      ),
+    ),
+    DropdownMenuItem(
+      value: TipoAbono.completo,
+      child: Row(
+        children: [
+          Container(
+            width: 12,
+            height: 12,
+            decoration: BoxDecoration(
+              color: Colors.green.shade400,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 8),
+          const Text('Completo'),
+        ],
+      ),
+    ),
+  ],
+  onChanged: (value) {
+    setState(() {
+      _selectedTipo = value;
+    });
+  },
+),
+
             const SizedBox(height: 24),
             
-            SizedBox(
-              width: double.infinity,
-              height: 50,
-              child: ElevatedButton(
-                onPressed: _isSaving ? null : _saveChanges,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _isSaving 
-                      ? Colors.grey.shade400 
-                      : Theme.of(context).primaryColor,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  elevation: _isSaving ? 0 : 4,
+            Container(
+  width: double.infinity,
+  height: 56,
+  decoration: BoxDecoration(
+    borderRadius: BorderRadius.circular(16),
+    gradient: _isSaving 
+        ? LinearGradient(colors: [Colors.grey.shade300, Colors.grey.shade400])
+        : LinearGradient(
+            colors: [
+              Theme.of(context).primaryColor,
+              Theme.of(context).primaryColor.withOpacity(0.8),
+            ],
+          ),
+    boxShadow: _isSaving ? [] : [
+      BoxShadow(
+        color: Theme.of(context).primaryColor.withOpacity(0.3),
+        blurRadius: 8,
+        offset: const Offset(0, 4),
+      ),
+    ],
+  ),
+  child: ElevatedButton(
+    onPressed: _isSaving ? null : _saveChanges,
+    style: ElevatedButton.styleFrom(
+      backgroundColor: Colors.transparent,
+      shadowColor: Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+    ),
+    child: _isSaving 
+        ? Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                 ),
-                child: _isSaving 
-                    ? Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Text(
-                            'Guardando...',
-                            style: GoogleFonts.montserrat(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      )
-                    : Text(
-                        'Guardar Cambios',
-                        style: GoogleFonts.montserrat(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
               ),
-            ),
+              const SizedBox(width: 16),
+              Text(
+                'Guardando cambios...',
+                style: GoogleFonts.montserrat(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white,
+                ),
+              ),
+            ],
+          )
+        : Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.save, color: Colors.white),
+              const SizedBox(width: 12),
+              Text(
+                'Guardar Cambios',
+                style: GoogleFonts.montserrat(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white,
+                ),
+              ),
+            ],
+          ),
+  ),
+),
+
           ],
         ),
       ),

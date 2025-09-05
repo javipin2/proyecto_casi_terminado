@@ -89,12 +89,50 @@ class Peticion {
 
   // Generar descripción automática de los cambios
   static String generarDescripcionCambios(
-    Map<String, dynamic> valoresAntiguos, 
-    Map<String, dynamic> valoresNuevos
-  ) {
-    List<String> cambios = [];
+  Map<String, dynamic> valoresAntiguos, 
+  Map<String, dynamic> valoresNuevos
+) {
+  List<String> cambios = [];
 
-    // Comparar cada campo
+  // Verificar si es una reserva recurrente
+  final esReservaRecurrente = valoresNuevos['tipo'] == 'reserva_recurrente_precio';
+  
+  if (esReservaRecurrente) {
+    cambios.add('🔄 RESERVA RECURRENTE');
+    
+    // Cambios específicos para reservas recurrentes
+    final oldTotal = valoresAntiguos['montoTotal'] as double? ?? 0;
+    final newTotal = valoresNuevos['montoTotal'] as double? ?? 0;
+    
+    if (oldTotal != newTotal) {
+      final formatter = NumberFormat('#,##0', 'es_CO');
+      cambios.add('Precio total: COP ${formatter.format(oldTotal)} → COP ${formatter.format(newTotal)}');
+    }
+
+    final oldPagado = valoresAntiguos['montoPagado'] as double? ?? 0;
+    final newPagado = valoresNuevos['montoPagado'] as double? ?? 0;
+    
+    if (oldPagado != newPagado) {
+      final formatter = NumberFormat('#,##0', 'es_CO');
+      cambios.add('Abono: COP ${formatter.format(oldPagado)} → COP ${formatter.format(newPagado)}');
+    }
+
+    final oldPersonalizado = valoresAntiguos['precioPersonalizado'] as bool? ?? false;
+    final newPersonalizado = valoresNuevos['precioPersonalizado'] as bool? ?? false;
+    
+    if (oldPersonalizado != newPersonalizado) {
+      cambios.add('Precio personalizado: ${oldPersonalizado ? "Sí" : "No"} → ${newPersonalizado ? "Sí" : "No"}');
+    }
+
+    // Agregar información sobre el ID de la reserva recurrente
+    final reservaRecurrenteId = valoresNuevos['reservaRecurrenteId'] as String?;
+    if (reservaRecurrenteId != null) {
+      cambios.add('ID Recurrencia: ${reservaRecurrenteId.substring(0, 8)}...');
+    }
+
+    return cambios.isEmpty ? 'Sin cambios detectados en reserva recurrente' : cambios.join(', ');
+  } else {
+    // Lógica original para reservas normales
     valoresNuevos.forEach((key, newValue) {
       final oldValue = valoresAntiguos[key];
       if (oldValue != newValue) {
@@ -143,6 +181,13 @@ class Peticion {
             final newEstado = newValue == 'completo' ? 'Completo' : 'Pendiente';
             cambios.add('Estado: $oldEstado → $newEstado');
             break;
+          case 'precio_personalizado':
+            final oldPersonalizado = oldValue as bool? ?? false;
+            final newPersonalizado = newValue as bool? ?? false;
+            if (oldPersonalizado != newPersonalizado) {
+              cambios.add('Precio personalizado: ${oldPersonalizado ? "Sí" : "No"} → ${newPersonalizado ? "Sí" : "No"}');
+            }
+            break;
           case 'cancha_id':
             // Este requeriría cargar el nombre de la cancha, por simplicidad usamos el ID
             cambios.add('Cancha modificada');
@@ -153,6 +198,23 @@ class Peticion {
 
     return cambios.isEmpty ? 'Sin cambios detectados' : cambios.join(', ');
   }
+}
+
+
+  /// Getter para saber si es una petición de reserva recurrente
+  bool get esReservaRecurrente => valoresNuevos['tipo'] == 'reserva_recurrente_precio';
+
+  /// Getter para obtener la prioridad de la petición
+  String get prioridad => valoresNuevos['prioridad'] as String? ?? 'normal';
+
+  /// Getter para saber si requiere validación especial
+  bool get requiereValidacionEspecial => valoresNuevos['requiere_validacion_especial'] as bool? ?? false;
+
+  /// Getter para obtener el tipo de petición
+  String get tipoPeticion => valoresNuevos['tipo'] as String? ?? 'reserva_normal';
+
+  /// Getter para el ID de reserva recurrente (si aplica)
+  String? get reservaRecurrenteId => valoresNuevos['reservaRecurrenteId'] as String?;
 
   // Getter para saber si está pendiente
   bool get estaPendiente => estado == EstadoPeticion.pendiente;
@@ -162,6 +224,8 @@ class Peticion {
 
   // Getter para saber si fue rechazada
   bool get fueRechazada => estado == EstadoPeticion.rechazada;
+
+  
 
   // Método para aprobar la petición
   Peticion aprobar(String superAdminId) {

@@ -143,12 +143,15 @@ class Reserva {
     // LEER DATOS NUEVOS CON VALORES POR DEFECTO PARA COMPATIBILIDAD
     final grupoReservaId = data['grupo_reserva_id'] as String?;
     final totalHorasGrupo = data['total_horas_grupo'] as int?;
-    final precioPersonalizado = data['precio_personalizado'] as bool? ?? false;
+    final precioPersonalizado = data['precioPersonalizado'] as bool? ?? false;
     final precioOriginal = (data['precio_original'] as num?)?.toDouble();
     final descuentoAplicado = (data['descuento_aplicado'] as num?)?.toDouble();
-    // ✅ LEER NUEVAS PROPIEDADES PARA RECURRENCIA
-    final reservaRecurrenteId = data['reserva_recurrente_id'] as String?;
-    final esReservaRecurrente = data['es_reserva_recurrente'] as bool? ?? false;
+    final reservaRecurrenteId = data['reservaRecurrenteId'] as String?;
+    final esReservaRecurrente = data['esReservaRecurrente'] as bool? ?? false;
+
+    // Y también necesitas leer el campo que agregamos:
+    final precioIndependiente = data['precio_independiente_de_recurrencia'] as bool? ?? false;
+
     
     // LEER LISTA DE HORARIOS SI EXISTE (para compatibilidad futura)
     List<String>? horarios;
