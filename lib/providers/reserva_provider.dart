@@ -166,25 +166,7 @@ class ReservaProvider with ChangeNotifier {
           .collection('reservas')
           .add(_reservaActual!.toFirestore());
       
-      // 🔍 AUDITORÍA: Registrar creación de reserva
-      await AuditProvider.registrarAccion(
-        accion: _reservaActual!.precioPersonalizado ? 'crear_reserva_precio_personalizado' : 'crear_reserva',
-        entidad: 'reserva',
-        entidadId: docRef.id,
-        datosNuevos: _reservaActual!.toFirestore(),
-        metadatos: {
-          'cancha_nombre': _reservaActual!.cancha.nombre,
-          'sede': _reservaActual!.sede,
-          'fecha': _reservaActual!.fecha.toIso8601String(),
-          'horario': _reservaActual!.horario.horaFormateada,
-          'cliente': _reservaActual!.nombre,
-          'monto_total': _reservaActual!.montoTotal,
-          'descuento_aplicado': _reservaActual!.descuentoAplicado ?? 0,
-        },
-        descripcion: _reservaActual!.precioPersonalizado 
-          ? 'Reserva creada con precio personalizado'
-          : 'Nueva reserva creada',
-      );
+      // Auditoría de creación se realiza desde las pantallas mediante ReservaAuditUtils para evitar duplicados
       
       _reservaActual = null;
       notifyListeners();
