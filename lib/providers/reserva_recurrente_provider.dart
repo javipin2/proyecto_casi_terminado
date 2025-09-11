@@ -111,6 +111,30 @@ class ReservaRecurrenteProvider with ChangeNotifier {
       
       _reservasRecurrentes[index] = reservaActualizada;
       notifyListeners();
+
+      // 🔍 Auditoría: excluir día específico
+      try {
+        await AuditProvider.registrarAccion(
+          accion: 'excluir_dia_reserva_recurrente',
+          entidad: 'reserva_recurrente',
+          entidadId: reservaId,
+          datosAntiguos: {
+            'diasExcluidos': _reservasRecurrentes[index].diasExcluidos,
+          },
+          datosNuevos: {
+            'diasExcluidos': reservaActualizada.diasExcluidos,
+          },
+          metadatos: {
+            'fecha_excluida': DateFormat('yyyy-MM-dd').format(fecha),
+            'cliente': reservaActualizada.clienteNombre,
+            'horario': reservaActualizada.horario,
+            'sede': reservaActualizada.sede,
+          },
+          descripcion: 'Día excluido de la reserva recurrente',
+        );
+      } catch (e) {
+        debugPrint('⚠️ Auditoría excluir día falló: $e');
+      }
     } catch (e) {
       _errorMessage = 'Error al excluir día: $e';
       debugPrint(_errorMessage);
@@ -133,6 +157,24 @@ class ReservaRecurrenteProvider with ChangeNotifier {
       
       _reservasRecurrentes[index] = reservaActualizada;
       notifyListeners();
+
+      // 🔍 Auditoría: incluir día previamente excluido
+      try {
+        await AuditProvider.registrarAccion(
+          accion: 'incluir_dia_reserva_recurrente',
+          entidad: 'reserva_recurrente',
+          entidadId: reservaId,
+          metadatos: {
+            'fecha_incluida': DateFormat('yyyy-MM-dd').format(fecha),
+            'cliente': reservaActualizada.clienteNombre,
+            'horario': reservaActualizada.horario,
+            'sede': reservaActualizada.sede,
+          },
+          descripcion: 'Día incluido nuevamente en la reserva recurrente',
+        );
+      } catch (e) {
+        debugPrint('⚠️ Auditoría incluir día falló: $e');
+      }
     } catch (e) {
       _errorMessage = 'Error al incluir día: $e';
       debugPrint(_errorMessage);
