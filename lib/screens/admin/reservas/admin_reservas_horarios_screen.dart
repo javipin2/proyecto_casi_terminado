@@ -45,8 +45,8 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
   DateTime _selectedDate = DateTime.now();
   bool _isLoading = true;
   bool _viewGrid = true;
-  bool _showingRecurrentReservas = false;
-  List<ReservaRecurrente> _reservasRecurrentesActivas = [];
+  final bool _showingRecurrentReservas = false;
+  final List<ReservaRecurrente> _reservasRecurrentesActivas = [];
 
   late AnimationController _fadeController;
   late AnimationController _slideController;
@@ -76,7 +76,7 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
   List<Peticion> _peticionesPendientes = [];
   Map<String, Peticion> _peticionesPorHorario = {};
   StreamSubscription<QuerySnapshot>? _peticionesSubscription;
-  Set<String> _peticionesNotificadas = {}; // ✅ NUEVO: Rastrear notificaciones mostradas
+  final Set<String> _peticionesNotificadas = {}; // ✅ NUEVO: Rastrear notificaciones mostradas
 
   // ✅ REEMPLAZAR el método initState (líneas ~80-95)
   @override
@@ -1209,38 +1209,43 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
   }
 
   Future<void> _excluirDiaReservaRecurrente(Reserva reserva) async {
-    if (reserva.reservaRecurrenteId == null) return;
+  if (reserva.reservaRecurrenteId == null) return;
+  
+  try {
+    final reservaRecurrenteProvider = Provider.of<ReservaRecurrenteProvider>(context, listen: false);
     
-    try {
-      final reservaRecurrenteProvider = Provider.of<ReservaRecurrenteProvider>(context, listen: false);
-      await reservaRecurrenteProvider.excluirDiaReservaRecurrente(
-        reserva.reservaRecurrenteId!,
-        _selectedDate,
+    // 🔥 LA AUDITORÍA AHORA SE MANEJA DENTRO DEL PROVIDER CON SÍMBOLO DE ADVERTENCIA
+    await reservaRecurrenteProvider.excluirDiaReservaRecurrente(
+      reserva.reservaRecurrenteId!,
+      _selectedDate,
+    );
+    
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '⚠️ Día excluido de la reserva recurrente. El horario ${reserva.horario.horaFormateada} está ahora disponible para ${DateFormat('EEEE d MMMM', 'es').format(_selectedDate)}.',
+            style: GoogleFonts.montserrat(),
+          ),
+          backgroundColor: Colors.orange,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          margin: const EdgeInsets.all(12),
+          duration: const Duration(seconds: 4),
+        ),
       );
       
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Día excluido de la reserva recurrente. El horario ${reserva.horario.horaFormateada} está ahora disponible para ${DateFormat('EEEE d MMMM', 'es').format(_selectedDate)}.',
-              style: GoogleFonts.montserrat(),
-            ),
-            backgroundColor: Colors.orange,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            margin: const EdgeInsets.all(12),
-            duration: const Duration(seconds: 4),
-          ),
-        );
-        
-        _loadReservas();
-      }
-    } catch (e) {
-      if (mounted) {
-        _showErrorSnackBar('NO SE PUDO EXCLIR EL DIA, PIDE ACCESO DE CONTROL TOTAL AL SUPERUSUARIO');
-      }
+      _loadReservas();
+    }
+  } catch (e) {
+    if (mounted) {
+      _showErrorSnackBar('NO SE PUDO EXCLUIR EL DÍA, PIDE ACCESO DE CONTROL TOTAL AL SUPERUSUARIO');
     }
   }
+}
+
+
+
 
   void _mostrarDetallesReservaRecurrente(Reserva reserva) {
     showDialog(
@@ -1610,8 +1615,22 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
       
       await provider.cancelarReservasFuturas(reserva.id);
 
-      // 🔥 AGREGAR AUDITORÍA AQUÍ - Después de cancelar exitosamente
+      // 🔥 AUDITORÍA CORREGIDA CON RESERVA_AUDIT_UTILS - CON SÍMBOLO DE ADVERTENCIA
       try {
+        // Obtener nombre de la cancha
+        String? canchaNombre;
+        try {
+          final canchaDoc = await FirebaseFirestore.instance
+              .collection('canchas')
+              .doc(reserva.canchaId)
+              .get();
+          if (canchaDoc.exists) {
+            canchaNombre = canchaDoc.data()?['nombre'];
+          }
+        } catch (e) {
+          debugPrint('Error obteniendo nombre de cancha: $e');
+        }
+
         // Preparar datos para la auditoría
         final datosReservaCancelada = {
           'id': reserva.id,
@@ -1621,7 +1640,7 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
           'fecha_inicio': DateFormat('yyyy-MM-dd').format(reserva.fechaInicio),
           'fecha_fin': reserva.fechaFin != null ? DateFormat('yyyy-MM-dd').format(reserva.fechaFin!) : null,
           'horario': reserva.horario,
-          'cancha_nombre': reserva.canchaId, // Si tienes el nombre de la cancha, úsalo
+          'cancha_nombre': canchaNombre ?? reserva.canchaId,
           'cancha_id': reserva.canchaId,
           'sede': reserva.sede,
           'montoTotal': reserva.montoTotal,
@@ -1629,49 +1648,27 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
           'estado': reserva.estado.toString(),
           'dias_semana': reserva.diasSemana,
           'tipo_recurrencia': reserva.tipoRecurrencia.toString(),
-          'precio_personalizado': reserva.precioPersonalizado ?? false,
+          'precio_personalizado': reserva.precioPersonalizado,
           'precio_original': reserva.precioOriginal,
           'descuento_aplicado': reserva.descuentoAplicado,
         };
 
-        // Calcular impacto de la cancelación
-        final diasFuturosAfectados = _calcularDiasFuturosAfectados(reserva, ahora);
-        final impactoFinanciero = _calcularImpactoFinancieroCancelacion(reserva, diasFuturosAfectados);
-        
-        String motivoCancelacion = 'Cancelación de reservas futuras por solicitud del usuario';
+        // 🔥 CLAVE: Motivo con símbolo de advertencia al inicio
+        String motivoCancelacion = '⚠️ Cancelación de reservas futuras por solicitud del usuario';
         if (mostrarAdvertenciaHoy) {
           motivoCancelacion += ' - Incluye reserva del día actual';
         }
 
+        // 🔥 USAR RESERVA_AUDIT_UTILS CORRECTAMENTE
         await ReservaAuditUtils.auditarEliminacionReserva(
           reservaId: reserva.id,
           datosReserva: datosReservaCancelada,
-          motivo: motivoCancelacion,
+          motivo: motivoCancelacion, // ⚠️ Ahora incluye el símbolo
+          esEliminacionMasiva: true, // Se cancelan múltiples reservas
         );
 
-        // También registrar acción específica para reservas recurrentes
-        await AuditProvider.registrarAccion(
-          accion: 'cancelar_reservas_futuras_recurrente',
-          entidad: 'reserva_recurrente',
-          entidadId: reserva.id,
-          datosAntiguos: datosReservaCancelada,
-          metadatos: {
-            'cliente': reserva.clienteNombre,
-            'horario': reserva.horario,
-            'sede': reserva.sede,
-            'dias_semana': reserva.diasSemana,
-            'fecha_cancelacion': DateFormat('yyyy-MM-dd HH:mm').format(ahora),
-            'incluye_reserva_hoy': mostrarAdvertenciaHoy,
-            'dias_futuros_afectados': diasFuturosAfectados,
-            'impacto_financiero_estimado': impactoFinanciero,
-            'motivo_cancelacion': motivoCancelacion,
-            'precio_personalizado': reserva.precioPersonalizado ?? false,
-            'descuento_aplicado': reserva.descuentoAplicado ?? 0,
-          },
-          descripcion: _generarDescripcionCancelacionRecurrente(
-            reserva, 
-          ),
-        );
+        debugPrint('✅ Auditoría de cancelación procesada correctamente');
+
       } catch (e) {
         debugPrint('⚠️ Error en auditoría de cancelación de reserva recurrente: $e');
         // No interrumpir el flujo si la auditoría falla
@@ -1681,7 +1678,7 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
       if (mounted) Navigator.pop(context);
       
       if (mounted) {
-        String mensajeExito = 'Reservas futuras canceladas correctamente.';
+        String mensajeExito = '⚠️ Reservas futuras canceladas correctamente.';
         if (mostrarAdvertenciaHoy) {
           mensajeExito += ' La reserva de hoy también fue cancelada porque aún no era la hora.';
         } else if (esHoyDiaValido && !yaEstaExcluidoHoy) {
@@ -1717,71 +1714,6 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
   }
 }
 
-// 🔥 AGREGAR ESTAS FUNCIONES AUXILIARES AL FINAL DE TU CLASE
-
-/// Calcular cuántos días futuros serán afectados por la cancelación
-int _calcularDiasFuturosAfectados(ReservaRecurrente reserva, DateTime ahora) {
-  try {
-    final fechaFin = reserva.fechaFin ?? DateTime.now().add(const Duration(days: 365)); // Si no hay fecha fin, asumir 1 año
-    final diasHastaFin = fechaFin.difference(ahora).inDays;
-    
-    if (diasHastaFin <= 0) return 0;
-    
-    // Calcular aproximadamente cuántas veces ocurre la reserva por semana
-    final diasSemanaActivos = reserva.diasSemana.length;
-    final semanasHastaFin = (diasHastaFin / 7).ceil();
-    
-    return diasSemanaActivos * semanasHastaFin;
-  } catch (e) {
-    return 0;
-  }
-}
-
-/// Calcular impacto financiero estimado de la cancelación
-Map<String, dynamic> _calcularImpactoFinancieroCancelacion(ReservaRecurrente reserva, int diasAfectados) {
-  final montoUnitario = reserva.montoTotal;
-  final impactoTotal = montoUnitario * diasAfectados;
-  
-  bool esImpactoAlto = false;
-  final alertas = <String>[];
-  
-  if (impactoTotal >= 500000) {
-    alertas.add('Impacto financiero muy alto');
-    esImpactoAlto = true;
-  } else if (impactoTotal >= 200000) {
-    alertas.add('Impacto financiero significativo');
-    esImpactoAlto = true;
-  } else if (diasAfectados >= 10) {
-    alertas.add('Múltiples reservas futuras canceladas');
-  }
-  
-  return {
-    'dias_afectados': diasAfectados,
-    'monto_unitario': montoUnitario,
-    'impacto_total_estimado': impactoTotal,
-    'es_impacto_alto': esImpactoAlto,
-    'alertas': alertas,
-  };
-}
-
-/// Generar descripción para la auditoría de cancelación
-String _generarDescripcionCancelacionRecurrente(
-  ReservaRecurrente reserva, 
-) {
-  final formatter = NumberFormat('#,##0', 'es_CO');
-  final cliente = reserva.clienteNombre;
-  
-  String descripcion = '';
-  
-  
-  descripcion += 'Reservas futuras de $cliente canceladas';
-  
-  
-  descripcion += ' - ${reserva.diasSemana.length} día(s)/semana';
-  
-  
-  return descripcion;
-}
 
   AppBar buildAppBar() {
   return AppBar(
@@ -1860,9 +1792,9 @@ String _generarDescripcionCancelacionRecurrente(
                 ? FloatingActionButton(
                     onPressed: _addReserva,
                     backgroundColor: _secondaryColor,
-                    child: const Icon(Icons.check, color: Colors.white),
                     tooltip: 'Confirmar selección',
                     mini: isMobile,
+                    child: const Icon(Icons.check, color: Colors.white),
                   )
                 : null,
           body: Container(

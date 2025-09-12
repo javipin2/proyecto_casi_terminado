@@ -56,7 +56,7 @@ class EditarReservaScreenState extends State<EditarReservaScreen> with TickerPro
   String? _nuevaSede;
   String? _nuevaCanchaId;
   String? _nuevoHorario;
-  List<Map<String, dynamic>> _horariosDisponibles = [];
+  final List<Map<String, dynamic>> _horariosDisponibles = [];
   List<Map<String, dynamic>> _canchasDisponibles = [];
   DateTime? _nuevaFecha;
   late AnimationController _fadeController;
@@ -368,66 +368,6 @@ void _initializeDataWithDebounce() {
     }
   }
 
-  Future<Map<String, dynamic>> _obtenerInfoDispositivo() async {
-    return {
-      'platform': 'Flutter',
-      'app_version': '2.0',
-      'sistema_auditoria': 'mejorado',
-    };
-  }
-
-  Future<String> _obtenerUbicacionAproximada() async {
-    // Implementación básica - puedes mejorar con geolocator si es necesario
-    return 'Ubicación no disponible en esta versión';
-  }
-
-  Future<double> _obtenerPrecioOriginalCancha() async {
-    try {
-      if (_nuevaCanchaId != null) {
-        final doc = await FirebaseFirestore.instance
-            .collection('canchas')
-            .doc(_nuevaCanchaId!)
-            .get();
-        
-        if (doc.exists && doc.data() != null) {
-          return (doc.data()!['precio'] as num?)?.toDouble() ?? 0.0;
-        }
-      }
-      return widget.reserva.cancha.precio;
-    } catch (e) {
-      return widget.reserva.cancha.precio;
-    }
-  }
-
-  Future<String> _obtenerIPSesion() async {
-    return 'IP no disponible en Flutter Web/Mobile';
-  }
-
-  Future<String> _obtenerUserAgentDetallado() async {
-    return 'Flutter App v2.0 - Sistema Auditoría Mejorado';
-  }
-
-  Future<List<String>> _obtenerAccionesPreviasUsuario() async {
-    try {
-      final userId = FirebaseAuth.instance.currentUser?.uid;
-      if (userId == null) return [];
-
-      final ayer = Timestamp.fromDate(DateTime.now().subtract(Duration(days: 1)));
-      
-      final query = await FirebaseFirestore.instance
-          .collection('auditoria')
-          .where('usuario_id', isEqualTo: userId)
-          .where('timestamp', isGreaterThan: ayer)
-          .orderBy('timestamp', descending: true)
-          .limit(5)
-          .get();
-
-      return query.docs.map((doc) => doc.data()['accion'].toString()).toList();
-    } catch (e) {
-      debugPrint('Error obteniendo acciones previas: $e');
-      return [];
-    }
-  }
 
 
   Future<void> _cargarCanchasDisponibles(String sede) async {
@@ -723,7 +663,6 @@ void _initializeDataWithDebounce() {
 
 
   // 🔥 MÉTODO CORREGIDO - Aplicar cambios directos
-  // 🔥 MÉTODO CORREGIDO - Aplicar cambios directos
 Future<void> _aplicarCambiosDirectamente() async {
   try {
     final valoresActuales = _obtenerValoresActuales();
@@ -785,7 +724,7 @@ Future<void> _aplicarCambiosDirectamente() async {
         .doc(widget.reserva.id)
         .update(updateData);
 
-    // AUDITORÍA UNIFICADA - Usar ReservaAuditUtils en lugar del sistema antiguo
+    // 🔥 AUDITORÍA UNIFICADA - Usar SOLO ReservaAuditUtils (eliminar duplicación)
     await _crearAuditoriaUnificada(valoresActuales, porcentajeCambio);
 
     if (!mounted) return;
@@ -803,7 +742,10 @@ Future<void> _aplicarCambiosDirectamente() async {
   }
 }
 
+
+
 // 🔥 NUEVO MÉTODO - Auditoría unificada
+// 🔥 MÉTODO ACTUALIZADO - Auditoría unificada con descripción mejorada
 Future<void> _crearAuditoriaUnificada(
   Map<String, dynamic> valoresActuales,
   double porcentajeCambio
@@ -815,8 +757,26 @@ Future<void> _crearAuditoriaUnificada(
     final descuento = esPrecioPersonalizado && precioNuevo < precioOriginal ? 
         (precioOriginal - precioNuevo) : 0.0;
 
-    // Preparar datos para auditoría unificada
-    final datosNuevosAuditoria = {
+    // Preparar datos ANTIGUOS para auditoría (formato consistente)
+    final datosAntiguos = {
+      'nombre': _valoresOriginales['nombre'],
+      'telefono': _valoresOriginales['telefono'],
+      'correo': _valoresOriginales['correo'],
+      'valor': precioOriginal,
+      'montoPagado': _valoresOriginales['montoPagado'],
+      'precio_personalizado': _valoresOriginales['precio_personalizado'] ?? false,
+      'precio_original': _valoresOriginales['precio_original'],
+      'cancha_nombre': widget.reserva.cancha.nombre,
+      'cancha_id': _valoresOriginales['cancha_id'],
+      'sede': _valoresOriginales['sede'],
+      'fecha': _valoresOriginales['fecha'],
+      'horario': _valoresOriginales['horario'],
+      'confirmada': _valoresOriginales['confirmada'],
+      'tipo': 'reserva_normal',
+    };
+
+    // Preparar datos NUEVOS para auditoría (formato consistente)
+    final datosNuevos = {
       'nombre': valoresActuales['nombre'],
       'telefono': valoresActuales['telefono'],
       'correo': valoresActuales['correo'],
@@ -826,25 +786,42 @@ Future<void> _crearAuditoriaUnificada(
       'precio_original': esPrecioPersonalizado ? precioOriginal : null,
       'descuento_aplicado': descuento > 0 ? descuento : null,
       'cancha_nombre': widget.reserva.cancha.nombre,
+      'cancha_id': valoresActuales['cancha_id'],
       'sede': valoresActuales['sede'],
       'fecha': valoresActuales['fecha'],
       'horario': valoresActuales['horario'],
       'confirmada': valoresActuales['confirmada'],
+      'tipo': 'reserva_normal',
     };
 
-    // Usar el sistema unificado de auditoría
+    // 🆕 ANÁLISIS DE CAMBIOS para generar descripción mejorada
+    final analisisCambios = _analizarCambiosDetalladamente(
+      datosAntiguos, 
+      datosNuevos, 
+      porcentajeCambio
+    );
+
+    // 🔥 USAR SOLO ReservaAuditUtils - sistema unificado (sin descripción personalizada para usar la lógica mejorada)
     await ReservaAuditUtils.auditarEdicionReserva(
       reservaId: widget.reserva.id,
-      datosAntiguos: _valoresOriginales,
-      datosNuevos: datosNuevosAuditoria,
-      descripcionPersonalizada: 'Edición de reserva desde pantalla de edición',
+      datosAntiguos: datosAntiguos,
+      datosNuevos: datosNuevos,
+      // Sin descripcionPersonalizada para usar la lógica mejorada de ReservaAuditUtils
       metadatosAdicionales: {
+        // Información del contexto de edición
         'metodo_edicion': 'edicion_pantalla_completa',
         'usuario_tipo': widget.esSuperAdmin ? 'super_admin' : (widget.esAdmin ? 'admin' : 'usuario'),
         'interfaz_origen': 'editar_reserva_screen',
         'timestamp_edicion': DateTime.now().millisecondsSinceEpoch,
+        
+        // Control total y motivo de cambio de precio
         'control_total_activo': await _verificarControlTotalActivo(),
         'motivo_precio_personalizado': _motivoPrecioPersonalizado,
+        
+        // 🆕 ANÁLISIS DE CAMBIOS DETALLADO
+        'analisis_cambios': analisisCambios,
+        
+        // Contexto financiero detallado
         'contexto_financiero': {
           'diferencia_precio': precioNuevo - precioOriginal,
           'es_aumento': precioNuevo > precioOriginal,
@@ -853,16 +830,33 @@ Future<void> _crearAuditoriaUnificada(
           'impacto_financiero': _calcularImpactoFinanciero(precioOriginal, precioNuevo),
           'porcentaje_cambio': porcentajeCambio,
         },
+        
+        // Información contextual de la reserva
         'informacion_reserva': {
           'dias_hasta_reserva': widget.reserva.fecha.difference(DateTime.now()).inDays,
           'es_reserva_proxima': widget.reserva.fecha.difference(DateTime.now()).inDays <= 3,
           'horario_peak': _esHorarioPeak(widget.reserva.horario.horaFormateada),
           'fin_de_semana': _esFechaFinDeSemana(widget.reserva.fecha),
         },
+        
+        // Análisis de cambios detectados (mantener compatibilidad)
+        'cambios_multiples': _obtenerCamposModificados().length > 2,
+        'campos_modificados': _obtenerCamposModificados(),
+        'cambios_criticos_detectados': [
+          if (porcentajeCambio >= 50) 'precio_critico',
+          if (valoresActuales['fecha'] != _valoresOriginales['fecha']) 'cambio_fecha',
+          if (valoresActuales['horario'] != _valoresOriginales['horario']) 'cambio_horario',
+          if (valoresActuales['cancha_id'] != _valoresOriginales['cancha_id']) 'cambio_cancha',
+        ],
+        
+        // Información de validación
+        'requirio_motivo_precio': _motivoPrecioPersonalizado != null,
       },
+      tipoEdicion: 'edicion_completa',
     );
 
-    debugPrint('✅ Auditoría unificada creada exitosamente');
+    debugPrint('✅ Auditoría unificada creada exitosamente con descripción mejorada');
+    debugPrint('📝 Auditoría de edición registrada usando ReservaAuditUtils');
 
   } catch (e) {
     debugPrint('⚠️ Error en auditoría unificada: $e');
@@ -870,14 +864,82 @@ Future<void> _crearAuditoriaUnificada(
   }
 }
 
-// 🔥 AGREGAR estos métodos auxiliares
-String _calcularImpactoFinanciero(double precioOriginal, double precioNuevo) {
-  final diferencia = precioNuevo - precioOriginal;
-  final porcentaje = precioOriginal > 0 ? (diferencia / precioOriginal * 100) : 0;
+// 🆕 MÉTODO AUXILIAR - Análisis detallado de cambios
+Map<String, dynamic> _analizarCambiosDetalladamente(
+  Map<String, dynamic> datosAntiguos,
+  Map<String, dynamic> datosNuevos,
+  double porcentajeCambio,
+) {
+  final cambiosDetectados = <String>[];
   
-  if (diferencia.abs() >= 100000) return 'muy_alto';
-  if (diferencia.abs() >= 50000) return 'alto';
-  if (diferencia.abs() >= 20000) return 'medio';
+  // Detectar cambios específicos
+  if (datosNuevos['nombre'] != datosAntiguos['nombre']) {
+    cambiosDetectados.add('Cambio de cliente');
+  }
+  
+  if (datosNuevos['telefono'] != datosAntiguos['telefono']) {
+    cambiosDetectados.add('Cambio de teléfono');
+  }
+  
+  if (datosNuevos['fecha'] != datosAntiguos['fecha']) {
+    cambiosDetectados.add('Cambio de fecha');
+  }
+  
+  if (datosNuevos['horario'] != datosAntiguos['horario']) {
+    cambiosDetectados.add('Cambio de horario');
+  }
+  
+  if (datosNuevos['cancha_id'] != datosAntiguos['cancha_id']) {
+    cambiosDetectados.add('Cambio de cancha');
+  }
+  
+  if (datosNuevos['sede'] != datosAntiguos['sede']) {
+    cambiosDetectados.add('Cambio de sede');
+  }
+  
+  if (porcentajeCambio > 0) {
+    if (porcentajeCambio >= 50) {
+      cambiosDetectados.add('Cambio crítico de precio');
+    } else if (porcentajeCambio >= 15) {
+      cambiosDetectados.add('Cambio significativo de precio');
+    } else {
+      cambiosDetectados.add('Ajuste de precio');
+    }
+  }
+  
+  if (datosNuevos['montoPagado'] != datosAntiguos['montoPagado']) {
+    cambiosDetectados.add('Cambio en monto pagado');
+  }
+  
+  if (datosNuevos['confirmada'] != datosAntiguos['confirmada']) {
+    cambiosDetectados.add(datosNuevos['confirmada'] == true ? 'Confirmación' : 'Desconfirmación');
+  }
+
+  // Calcular nivel de riesgo
+  String nivelRiesgo = 'bajo';
+  if (porcentajeCambio >= 50 || cambiosDetectados.length >= 4) {
+    nivelRiesgo = 'critico';
+  } else if (porcentajeCambio >= 25 || cambiosDetectados.length >= 3) {
+    nivelRiesgo = 'alto';
+  } else if (porcentajeCambio >= 15 || cambiosDetectados.length >= 2) {
+    nivelRiesgo = 'medio';
+  }
+
+  return {
+    'cambios_detectados': cambiosDetectados,
+    'nivel_riesgo_calculado': nivelRiesgo,
+    'total_cambios': cambiosDetectados.length,
+    'porcentaje_cambio_precio': porcentajeCambio,
+  };
+}
+
+
+
+String _calcularImpactoFinanciero(double precioOriginal, double precioNuevo) {
+  final diferencia = (precioNuevo - precioOriginal).abs();
+  if (diferencia >= 100000) return 'muy_alto';
+  if (diferencia >= 50000) return 'alto';
+  if (diferencia >= 20000) return 'medio';
   return 'bajo';
 }
 
@@ -886,7 +948,7 @@ bool _esHorarioPeak(String horario) {
   final match = regex.firstMatch(horario);
   if (match != null) {
     final hora = int.parse(match.group(1)!);
-    return hora >= 18 && hora <= 22;
+    return hora >= 18 && hora <= 22; // Consistente con ReservaAuditUtils
   }
   return false;
 }
@@ -896,6 +958,22 @@ bool _esFechaFinDeSemana(DateTime fecha) {
          fecha.weekday == DateTime.saturday || 
          fecha.weekday == DateTime.sunday;
 }
+
+
+String _generarMensajeExito(double porcentajeCambio) {
+  if (porcentajeCambio >= 50) {
+    return '🚨 CAMBIO CRÍTICO aplicado - Reserva actualizada y auditada';
+  } else if (porcentajeCambio >= 30) {
+    return '⚠️ Cambio significativo aplicado - Reserva actualizada';
+  } else if (porcentajeCambio >= 15) {
+    return '📝 Cambio moderado aplicado - Reserva actualizada';
+  } else if (_obtenerCamposModificados().length > 2) {
+    return '📋 Múltiples cambios aplicados - Reserva actualizada';
+  } else {
+    return '✅ Reserva actualizada correctamente';
+  }
+}
+
 
 
   // 5. AGREGAR estos métodos nuevos:
@@ -1023,82 +1101,6 @@ bool _esFechaFinDeSemana(DateTime fecha) {
     return updateData;
   }
 
-  Future<void> _crearLogAuditoriaCompleto(
-    Map<String, dynamic> valoresActuales,
-    double porcentajeCambio
-  ) async {
-    try {
-      // Preparar contexto completo
-      final contextoPrecio = <String, dynamic>{};
-      
-      if (_precioEditableActivado) {
-        contextoPrecio.addAll({
-          'precio_editado_manualmente': true,
-          'precio_original_cancha': await _obtenerPrecioOriginalCancha(),
-          'es_descuento_aplicado': valoresActuales['valor'] < _valoresOriginales['valor'],
-          'porcentaje_cambio_calculado': porcentajeCambio,
-          'motivo_precio_personalizado': _motivoPrecioPersonalizado ?? 'No especificado',
-          'rango_cambio': _clasificarRangoCambio(porcentajeCambio),
-        });
-      }
-
-      // Usar el sistema de auditoría mejorado
-      await ReservaAuditUtils.auditarEdicionReserva(
-        reservaId: widget.reserva.id,
-        datosAntiguos: _valoresOriginales,
-        datosNuevos: valoresActuales,
-        metadatosAdicionales: {
-          'contexto_precio': contextoPrecio,
-          'tipo_usuario_editor': widget.esSuperAdmin ? 'super_admin' : (widget.esAdmin ? 'admin' : 'usuario'),
-          'control_total_activo': await _verificarControlTotalActivo(),
-          'dispositivo_info': await _obtenerInfoDispositivo(),
-          'ubicacion_edicion': await _obtenerUbicacionAproximada(),
-          'duracion_sesion_edicion': DateTime.now().difference(_inicioSesionEdicion).inMinutes,
-          'campos_modificados': _obtenerCamposModificados(),
-          'ip_session': await _obtenerIPSesion(),
-          'user_agent_detail': await _obtenerUserAgentDetallado(),
-          'timestamp_inicio_edicion': _inicioSesionEdicion.millisecondsSinceEpoch,
-          'acciones_previas_usuario': await _obtenerAccionesPreviasUsuario(),
-        },
-        esReservaRecurrente: widget.reserva.esReservaRecurrente,
-        tipoEdicion: 'normal',
-      );
-
-      debugPrint('✅ Log de auditoría completo creado');
-    } catch (e) {
-      debugPrint('⚠️ Error creando log de auditoría: $e');
-      // No fallar la operación por error de auditoría
-    }
-  }
-
-  String _clasificarRangoCambio(double porcentaje) {
-    if (porcentaje >= 70) return 'extremo';
-    if (porcentaje >= 50) return 'critico';
-    if (porcentaje >= 30) return 'alto';
-    if (porcentaje >= 15) return 'medio';
-    return 'bajo';
-  }
-
-  String _generarMensajeExito(double porcentajeCambio) {
-    String mensaje = 'Reserva actualizada exitosamente';
-    
-    if (_precioEditableActivado && porcentajeCambio >= 50) {
-      mensaje = 'Reserva actualizada con cambio crítico de precio';
-    } else if (_precioEditableActivado && porcentajeCambio >= 30) {
-      mensaje = 'Reserva actualizada con cambio significativo de precio';
-    } else if (widget.esSuperAdmin) {
-      mensaje += ' (SuperAdmin)';
-    } else {
-      mensaje += ' (Control Total)';
-    }
-    
-    if (_motivoPrecioPersonalizado != null) {
-      mensaje += '\nMotivo registrado: ${_motivoPrecioPersonalizado!.length > 30 ? 
-        _motivoPrecioPersonalizado!.substring(0, 30) + '...' : _motivoPrecioPersonalizado!}';
-    }
-    
-    return mensaje;
-  }
 
   Future<void> _manejarErrorActualizacion(dynamic error) async {
     if (!mounted) return;
@@ -1240,7 +1242,7 @@ bool _esFechaFinDeSemana(DateTime fecha) {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('Fecha: ${DateFormat('EEEE d MMMM, yyyy', 'es').format(_nuevaFecha!)}'),
-                  Text('Cancha: ${_nuevaCanchaId}'),
+                  Text('Cancha: $_nuevaCanchaId'),
                   Text('Horario: $_nuevoHorario'),
                 ],
               ),
@@ -1674,7 +1676,7 @@ bool _esFechaFinDeSemana(DateTime fecha) {
           return Card(
             elevation: 2,
             margin: const EdgeInsets.only(bottom: 16),
-            child: Container(
+            child: SizedBox(
               height: 200,
               child: const Center(child: CircularProgressIndicator()),
             ),

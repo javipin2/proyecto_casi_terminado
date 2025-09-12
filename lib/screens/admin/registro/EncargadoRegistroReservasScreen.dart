@@ -2537,15 +2537,15 @@ Future _imprimirFactura(Reserva reserva) async {
     final nombreEmpresa = centrarTexto('CANCHAS LA JUGADA');
     
     final infoClienteTitulo = centrarTexto('INFORMACION DEL CLIENTE');
-    final clienteNombre = justificarTexto('Cliente:', '${reserva.nombre ?? 'N/A'}');
-    final clienteTelefono = justificarTexto('Telefono:', '${reserva.telefono ?? 'N/A'}');
+    final clienteNombre = justificarTexto('Cliente:', reserva.nombre ?? 'N/A');
+    final clienteTelefono = justificarTexto('Telefono:', reserva.telefono ?? 'N/A');
     
     final detallesTitulo = centrarTexto('DETALLES DE LA RESERVA');
-    final detalleCancha = justificarTexto('Cancha Deportiva:', '${reserva.cancha.nombre}');
-    final detalleFecha = justificarTexto('Fecha de Reserva:', '${DateFormat('dd/MM/yyyy').format(reserva.fecha)}');
-    final detalleHorario = justificarTexto('Horario:', '${reserva.horario.horaFormateada}');
+    final detalleCancha = justificarTexto('Cancha Deportiva:', reserva.cancha.nombre);
+    final detalleFecha = justificarTexto('Fecha de Reserva:', DateFormat('dd/MM/yyyy').format(reserva.fecha));
+    final detalleHorario = justificarTexto('Horario:', reserva.horario.horaFormateada);
     final detalleDuracion = justificarTexto('Duracion:', '1 Hora');
-    final detalleEmision = justificarTexto('Fecha de Emision:', '${DateFormat('dd/MM/yyyy HH:mm').format(DateTime.now())}');
+    final detalleEmision = justificarTexto('Fecha de Emision:', DateFormat('dd/MM/yyyy HH:mm').format(DateTime.now()));
     
     final financieroTitulo = centrarTexto('RESUMEN FINANCIERO');
     final financieroValor = justificarTexto('Valor por Hora:', '\$${NumberFormat('#,###', 'es').format(valorOriginal.toInt())}');
@@ -2821,47 +2821,43 @@ console.warn = function() {};
       windowFeatures
     );
     
-    if (ventanaImpresion != null) {
-      Timer(Duration(seconds: 8), () {
-        try {
-          html.Url.revokeObjectUrl(url);
-        } catch (e) {
-          // Ignorar errores de limpieza
-        }
-      });
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                Icon(Icons.print, color: Colors.white),
-                SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Factura Lista para Imprimir',
-                        style: TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            backgroundColor: Colors.green[700],
-            duration: Duration(seconds: 4),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+    Timer(Duration(seconds: 8), () {
+      try {
+        html.Url.revokeObjectUrl(url);
+      } catch (e) {
+        // Ignorar errores de limpieza
       }
-      
-    } else {
-      throw Exception('No se pudo abrir la ventana de impresión');
+    });
+    
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              Icon(Icons.print, color: Colors.white),
+              SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Factura Lista para Imprimir',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: Colors.green[700],
+          duration: Duration(seconds: 4),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     }
     
+      
   } catch (e) {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

@@ -18,6 +18,12 @@ class ReservaAuditUtils {
     String? tipoEdicion, // 'normal', 'dia_especifico', 'precio_recurrente'
   }) async {
     try {
+      // VALIDACIÓN: Evitar llamadas duplicadas
+      if (metadatosAdicionales?.containsKey('_audit_processed') == true) {
+        debugPrint('⚠️ Auditoría ya procesada, evitando duplicación');
+        return;
+      }
+
       // Análisis completo de cambios
       final analisisCambios = _analizarCambiosCompleto(datosAntiguos, datosNuevos);
       
@@ -43,14 +49,27 @@ class ReservaAuditUtils {
         datosAntiguos: _limpiarDatosSensibles(datosAntiguos),
         datosNuevos: _limpiarDatosSensibles(datosNuevos),
         metadatos: {
+          // MARCADORES CRÍTICOS: Indica que viene de ReservaAuditUtils
+          '_audit_processed': true,
+          'fuente_original': 'ReservaAuditUtils',
+          'metodo_auditoria': 'auditarEdicionReserva',
+          
+          // Información básica de la reserva
           'cancha_nombre': datosNuevos['cancha_nombre'] ?? datosAntiguos['cancha_nombre'],
           'sede': datosNuevos['sede'] ?? datosAntiguos['sede'],
           'cliente': datosNuevos['nombre'] ?? datosAntiguos['nombre'],
           'fecha_reserva': datosNuevos['fecha'] ?? datosAntiguos['fecha'],
           'horario': datosNuevos['horario'] ?? datosAntiguos['horario'],
           
-          // Análisis de cambios detallado
-          ...analisisCambios,
+          // Análisis de cambios detallado (CLAVE: esto es lo que usará AuditProvider)
+          'nivel_riesgo_calculado': analisisCambios['nivel_riesgo_calculado'],
+          'cambios_detectados': analisisCambios['cambios_detectados'],
+          'alertas_generadas': analisisCambios['alertas_generadas'],
+          'cantidad_cambios': analisisCambios['cantidad_cambios'],
+          'esCambioCriticoPrecios': analisisCambios['esCambioCriticoPrecios'],
+          'porcentaje_cambio_precio': analisisCambios['porcentaje_cambio_precio'],
+          'diferencia_precio': analisisCambios['diferencia_precio'],
+          'metricas_cambios': analisisCambios['metricas_cambios'],
           
           // Metadatos de contexto
           'tipo_edicion': tipoEdicion ?? 'normal',
@@ -74,6 +93,9 @@ class ReservaAuditUtils {
       debugPrint('Error auditando edición de reserva: $e');
     }
   }
+
+
+
 
   /// Análisis completo de cambios con detección mejorada de anomalías
   static Map<String, dynamic> _analizarCambiosCompleto(
@@ -116,12 +138,39 @@ class ReservaAuditUtils {
     alertasGeneradas.addAll(patronesSospechosos);
 
     // 7. CALCULAR NIVEL DE RIESGO BASADO EN MÚLTIPLES FACTORES
-    final nivelRiesgo = _calcularNivelRiesgoMejorado(
+    String nivelRiesgo = _calcularNivelRiesgoMejorado(
       analisisPrecios,
       analisisFechas,
       analisisPagos,
       alertasGeneradas,
     );
+
+    // 7.1 Endurecer riesgo cuando hay DESCUENTO (no común)
+    final porcentajeCambioPrecio = (analisisPrecios['porcentaje_cambio'] ?? 0.0) as double;
+    final esDescuento = (analisisPrecios['metricas'] as Map<String, dynamic>?)?['es_descuento'] == true;
+    if (esDescuento) {
+      if (porcentajeCambioPrecio >= 50) {
+        nivelRiesgo = 'critico';
+      } else if (porcentajeCambioPrecio >= 30) {
+        // garantizar al menos ALTO para descuentos >=30%
+        if (nivelRiesgo == 'bajo' || nivelRiesgo == 'medio') nivelRiesgo = 'alto';
+      } else if (porcentajeCambioPrecio > 0) {
+        // cualquier descuento pequeño eleva al menos a MEDIO
+        if (nivelRiesgo == 'bajo') nivelRiesgo = 'medio';
+      }
+    }
+
+    // 7.2 Riesgo mínimo MEDIO cuando hay precio personalizado activo
+    final tienePrecioPersonalizado = datosNuevos['precio_personalizado'] == true;
+    if (tienePrecioPersonalizado && (nivelRiesgo == 'bajo')) {
+      nivelRiesgo = 'medio';
+    }
+
+    // 7.3 Riesgo mínimo MEDIO cuando solo se cambia fecha/hora (precios varían naturalmente)
+    final soloCambioFechaHora = _esSoloCambioFechaHora(datosAntiguos, datosNuevos, cambiosDetectados);
+    if (soloCambioFechaHora && (nivelRiesgo == 'bajo')) {
+      nivelRiesgo = 'medio';
+    }
 
     return {
       'cambios_detectados': cambiosDetectados,
@@ -197,7 +246,14 @@ class ReservaAuditUtils {
     }
 
     // Detectar descuentos inusuales - MANTENER CONSISTENTE
-    if (diferencia < 0 && diferencia.abs() > 50000) {
+    // Solo mostrar alerta de descuento si no es solo cambio de fecha/hora
+    final esSoloCambioFechaHora = _esSoloCambioFechaHora(
+      datosAntiguos, 
+      datosNuevos, 
+      <String>['Fecha:', 'Horario:'] // Lista temporal para verificar
+    );
+    
+    if (diferencia < 0 && diferencia.abs() > 50000 && !esSoloCambioFechaHora) {
       alertas.add('💰 DESCUENTO ALTO DETECTADO: \$${formatter.format(diferencia.abs())}');
     }
 
@@ -266,7 +322,7 @@ class ReservaAuditUtils {
         // Diferencia significativa en días
         final diferenciaEnDias = (fechaNueva.difference(fechaAnterior).inDays).abs();
         if (diferenciaEnDias > 30) {
-          alertas.add('📅 Cambio de fecha significativo: ${diferenciaEnDias} días de diferencia');
+          alertas.add('📅 Cambio de fecha significativo: $diferenciaEnDias días de diferencia');
         }
         
       } catch (e) {
@@ -395,7 +451,14 @@ class ReservaAuditUtils {
       final precioNuevo = _extraerValorMonetario(datosNuevos) ?? 0;
       final descuento = precioAnterior - precioNuevo;
       
-      if (descuento > precioAnterior * 0.3) { // Más del 30% de descuento
+      // Solo mostrar alerta si no es solo cambio de fecha/hora
+      final esSoloCambioFechaHora = _esSoloCambioFechaHora(
+        datosAntiguos, 
+        datosNuevos, 
+        <String>['Fecha:', 'Horario:'] // Lista temporal para verificar
+      );
+      
+      if (descuento > precioAnterior * 0.3 && !esSoloCambioFechaHora) { // Más del 30% de descuento
         alertas.add('🎯 PRECIO PERSONALIZADO CON DESCUENTO ALTO: ${(descuento/precioAnterior*100).toStringAsFixed(1)}%');
       }
     }
@@ -442,27 +505,31 @@ class ReservaAuditUtils {
     // Factores de precio (peso: 40%)
     if (analisisPrecios['es_cambio_critico'] == true) {
       final porcentaje = analisisPrecios['porcentaje_cambio'] ?? 0.0;
-      if (porcentaje >= 70) puntuacionRiesgo += 40;
-      else if (porcentaje >= 50) puntuacionRiesgo += 35;
+      if (porcentaje >= 70) {
+        puntuacionRiesgo += 40;
+      } else if (porcentaje >= 50) puntuacionRiesgo += 35;
       else if (porcentaje >= 30) puntuacionRiesgo += 25;
       else if (porcentaje >= 15) puntuacionRiesgo += 15;
     }
     
     // Factores de fecha/horario (peso: 20%)
     final alertasFechas = analisisFechas['alertas'] as List<String>;
-    if (alertasFechas.any((a) => a.contains('🚨'))) puntuacionRiesgo += 20;
-    else if (alertasFechas.any((a) => a.contains('⚠️'))) puntuacionRiesgo += 15;
+    if (alertasFechas.any((a) => a.contains('🚨'))) {
+      puntuacionRiesgo += 20;
+    } else if (alertasFechas.any((a) => a.contains('⚠️'))) puntuacionRiesgo += 15;
     else if (alertasFechas.isNotEmpty) puntuacionRiesgo += 10;
     
     // Factores de pagos (peso: 20%)
     final alertasPagos = analisisPagos['alertas'] as List<String>;
-    if (alertasPagos.any((a) => a.contains('💸'))) puntuacionRiesgo += 15;
-    else if (alertasPagos.any((a) => a.contains('💰'))) puntuacionRiesgo += 10;
+    if (alertasPagos.any((a) => a.contains('💸'))) {
+      puntuacionRiesgo += 15;
+    } else if (alertasPagos.any((a) => a.contains('💰'))) puntuacionRiesgo += 10;
     
     // Patrones sospechosos (peso: 20%)
     final cantidadAlertas = alertasGeneradas.length;
-    if (cantidadAlertas >= 5) puntuacionRiesgo += 20;
-    else if (cantidadAlertas >= 3) puntuacionRiesgo += 15;
+    if (cantidadAlertas >= 5) {
+      puntuacionRiesgo += 20;
+    } else if (cantidadAlertas >= 3) puntuacionRiesgo += 15;
     else if (cantidadAlertas >= 1) puntuacionRiesgo += 10;
     
     // Clasificación final
@@ -485,28 +552,44 @@ class ReservaAuditUtils {
     
     String prefijo = '';
     if (esReservaRecurrente) prefijo = '🔄 ';
-    if (nivelRiesgo == 'critico') prefijo += '🚨 ';
-    else if (nivelRiesgo == 'alto') prefijo += '🔴 ';
+    if (nivelRiesgo == 'critico') {
+      prefijo += '🚨 ';
+    } else if (nivelRiesgo == 'alto') prefijo += '🔴 ';
     else if (nivelRiesgo == 'medio') prefijo += '🟡 ';
     
     if (cambios.isEmpty) {
       return '${prefijo}Reserva de $cliente editada sin cambios críticos detectados';
     }
     
+    // Detectar si solo se cambió fecha/hora (sin cambios de precio significativos)
+    final soloCambioFechaHora = _esSoloCambioFechaHora(datosAntiguos, datosNuevos, cambios);
+    
     String tipoModificacion = '';
-    if (datosNuevos['precio_personalizado'] == true) {
+    if (datosNuevos['precio_personalizado'] == true && !soloCambioFechaHora) {
       tipoModificacion = ' (Precio Personalizado)';
     }
     
-    if (cambios.length == 1) {
-      return '${prefijo}Reserva de $cliente: ${cambios.first}$tipoModificacion';
+    // Filtrar cambios de precio si solo se cambió fecha/hora
+    final cambiosFiltrados = soloCambioFechaHora 
+        ? cambios.where((cambio) => !cambio.contains('Precio:')).toList()
+        : cambios;
+    
+    if (cambiosFiltrados.isEmpty) {
+      return '${prefijo}Reserva de $cliente: Cambio de fecha/hora$tipoModificacion';
     }
     
-    final cambiosPrincipales = cambios.take(2).join(' | ');
-    final sufijo = cambios.length > 2 ? ' +${cambios.length - 2} cambios más' : '';
+    if (cambiosFiltrados.length == 1) {
+      return '${prefijo}Reserva de $cliente: ${cambiosFiltrados.first}$tipoModificacion';
+    }
+    
+    final cambiosPrincipales = cambiosFiltrados.take(2).join(' | ');
+    final sufijo = cambiosFiltrados.length > 2 ? ' +${cambiosFiltrados.length - 2} cambios más' : '';
     
     return '${prefijo}Reserva de $cliente: $cambiosPrincipales$sufijo$tipoModificacion';
   }
+
+
+
 
   // Métodos auxiliares mejorados
   static double? _extraerValorMonetario(Map<String, dynamic> datos) {
@@ -535,6 +618,31 @@ class ReservaAuditUtils {
     return fecha.weekday == DateTime.friday || 
            fecha.weekday == DateTime.saturday || 
            fecha.weekday == DateTime.sunday;
+  }
+
+  /// Detectar si solo se cambió fecha/hora (sin cambios de precio significativos)
+  static bool _esSoloCambioFechaHora(
+    Map<String, dynamic> datosAntiguos,
+    Map<String, dynamic> datosNuevos,
+    List<String> cambiosDetectados,
+  ) {
+    // Verificar si solo hay cambios de fecha y/o horario
+    final soloFechaHora = cambiosDetectados.every((cambio) => 
+        cambio.contains('Fecha:') || cambio.contains('Horario:'));
+    
+    if (!soloFechaHora) return false;
+    
+    // Verificar que no haya cambios significativos de precio
+    final precioAnterior = _extraerValorMonetario(datosAntiguos);
+    final precioNuevo = _extraerValorMonetario(datosNuevos);
+    
+    if (precioAnterior == null || precioNuevo == null) return true;
+    
+    final diferencia = (precioNuevo - precioAnterior).abs();
+    final porcentajeCambio = precioAnterior > 0 ? (diferencia / precioAnterior * 100) : 0.0;
+    
+    // Si el cambio de precio es menor al 5%, se considera solo cambio de fecha/hora
+    return porcentajeCambio < 5.0;
   }
 
   static Map<String, dynamic> _calcularImpactoFinanciero(
@@ -594,12 +702,21 @@ class ReservaAuditUtils {
         accionEspecifica = 'eliminar_reserva_impacto_alto';
       }
 
+      // Forzar nivel de riesgo según el tipo de eliminación
+      final bool esAltoImpacto = accionEspecifica == 'eliminar_reserva_impacto_alto';
+      final bool esEliminacionFuturas = accionEspecifica == 'eliminar_reserva_masivo'; // Cancelar reservas futuras
+
       await AuditProvider.registrarAccion(
         accion: accionEspecifica,
         entidad: 'reserva',
         entidadId: reservaId,
         datosAntiguos: _limpiarDatosSensibles(datosReserva),
         metadatos: {
+          // Marcadores estándar para unificar formato y detección
+          '_audit_processed': true,
+          'fuente_original': 'ReservaAuditUtils',
+          'metodo_auditoria': 'auditarEliminacionReserva',
+
           'cancha_nombre': datosReserva['cancha_nombre'] ?? 'No especificada',
           'sede': datosReserva['sede'] ?? 'No especificada',
           'cliente': datosReserva['nombre'] ?? 'No especificado',
@@ -613,8 +730,14 @@ class ReservaAuditUtils {
           'estado_al_eliminar': datosReserva['estado'] ?? 'desconocido',
           'tenia_precio_personalizado': datosReserva['precio_personalizado'] ?? false,
           'reserva_confirmada': datosReserva['confirmada'] ?? false,
+          // Normalización de claves para análisis posterior
+          'nivel_riesgo_calculado': esAltoImpacto ? 'alto' : (esEliminacionFuturas ? 'bajo' : 'medio'),
+          'alertas_generadas': List<String>.from(impactoFinanciero['alertas'] ?? const <String>[]),
+          'cambios_detectados': <String>['eliminacion_reserva'],
         },
-        descripcion: _generarDescripcionEliminacion(datosReserva, motivo, impactoFinanciero),
+        descripcion: _generarDescripcionEliminacion(datosReserva, motivo, impactoFinanciero, esAltoImpacto: esAltoImpacto),
+        // Forzar nivel según tipo: alto impacto = alto, eliminar futuras = bajo, resto = medio
+        nivelRiesgoForzado: esAltoImpacto ? null : (esEliminacionFuturas ? 'bajo' : 'medio'),
       );
     } catch (e) {
       debugPrint('Error auditando eliminación de reserva: $e');
@@ -653,6 +776,28 @@ class ReservaAuditUtils {
         accionEspecifica = 'crear_reserva_precio_personalizado';
       }
 
+      // Determinar nivel de riesgo para creaciones según reglas solicitadas
+      String nivelRiesgoCreacion = 'bajo';
+      final monto = (datosReserva['montoTotal'] ?? datosReserva['valor'] ?? 0) as num;
+      final descuento = (descuentoAplicado ?? 0).toDouble();
+      final porcentajeDescuento = (tieneDescuento && (monto + descuento) > 0)
+          ? (descuento / (monto + descuento)) * 100
+          : 0.0;
+
+      // Precio personalizado activo -> riesgo mínimo MEDIO
+      if (datosReserva['precio_personalizado'] == true || tieneDescuento) {
+        nivelRiesgoCreacion = 'medio';
+      }
+
+      // Endurecer por descuentos poco comunes
+      if (porcentajeDescuento >= 50) {
+        nivelRiesgoCreacion = 'critico';
+      } else if (porcentajeDescuento >= 30) {
+        if (nivelRiesgoCreacion == 'bajo' || nivelRiesgoCreacion == 'medio') {
+          nivelRiesgoCreacion = 'alto';
+        }
+      }
+
       await AuditProvider.registrarAccion(
         accion: accionEspecifica,
         entidad: 'reserva',
@@ -672,6 +817,10 @@ class ReservaAuditUtils {
           'cantidad_horas': cantidadHoras,
           'precio_personalizado': datosReserva['precio_personalizado'] ?? false,
           'analisis_creacion': analisisCreacion,
+          // Proveer nivel para unificar con ediciones
+          'nivel_riesgo_calculado': nivelRiesgoCreacion,
+          'alertas_generadas': List<String>.from(analisisCreacion['alertas'] ?? const <String>[]),
+          'cambios_detectados': <String>['creacion_reserva'],
         },
         descripcion: _generarDescripcionCreacion(
           datosReserva, 
@@ -792,18 +941,18 @@ class ReservaAuditUtils {
     Map<String, dynamic> datosReserva,
     String? motivo,
     Map<String, dynamic> impactoFinanciero,
+    {bool esAltoImpacto = false}
   ) {
     final cliente = datosReserva['nombre'] ?? 'Cliente';
     final formatter = NumberFormat('#,##0', 'es_CO');
     final monto = (datosReserva['montoTotal'] ?? datosReserva['valor'] ?? 0) as num;
     
-    String descripcion = 'Reserva de $cliente eliminada';
+    // Prefijo coherente: Alto impacto = rojo/alarma, normal = advertencia amarilla
+    String descripcion = esAltoImpacto
+      ? '🚨 ELIMINACIÓN DE ALTO IMPACTO: Reserva de $cliente eliminada'
+      : '🟡 Reserva de $cliente eliminada';
     
-    if (impactoFinanciero['es_impacto_alto'] == true) {
-      descripcion = '🚨 ELIMINACIÓN DE ALTO IMPACTO: $descripcion';
-    }
-    
-    descripcion += ' (\${formatter.format(monto)})';
+    descripcion += ' (${formatter.format(monto)})';
     
     if (motivo != null && motivo.isNotEmpty) {
       descripcion += ' - Motivo: $motivo';
@@ -844,7 +993,20 @@ class ReservaAuditUtils {
       descripcion += 'Nueva reserva creada para $cliente';
     }
     
-    descripcion += ' en $cancha por \${formatter.format(monto)}';
+    descripcion += ' en $cancha por ${formatter.format(monto)}';
+
+    // Mostrar comparación de precio por defecto vs aplicado cuando hay precio personalizado/ descuento
+    try {
+      final contextoPrecio = analisisCreacion['contexto_precio'] as Map<String, dynamic>?;
+      final precioOriginal = (contextoPrecio?['precio_original'] as num?)?.toDouble();
+      final precioAplicado = (contextoPrecio?['precio_aplicado'] as num?)?.toDouble();
+      if (precioOriginal != null && precioAplicado != null && (precioOriginal - precioAplicado).abs() > 0.01) {
+        final direccion = precioAplicado < precioOriginal ? '↘️' : '↗️';
+        descripcion += ' | Precio: ${formatter.format(precioOriginal)} → ${formatter.format(precioAplicado)} $direccion';
+      }
+    } catch (_) {
+      // ignorar
+    }
     
     if (tieneDescuento) {
       final porcentajeDescuento = analisisCreacion['porcentaje_descuento'] ?? 0;
@@ -868,7 +1030,7 @@ class ReservaAuditUtils {
     if (monto == null) return '\$0';
     final valor = (monto as num).toDouble();
     final formatter = NumberFormat('#,##0', 'es_CO');
-    return '\${formatter.format(valor)}';
+    return formatter.format(valor);
   }
 
   /// Formatear fecha mejorada

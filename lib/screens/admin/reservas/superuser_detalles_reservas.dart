@@ -4,11 +4,8 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:provider/provider.dart';
 import 'package:reserva_canchas/models/cancha.dart';
-import 'package:reserva_canchas/models/reserva_recurrente.dart';
-import 'package:reserva_canchas/providers/reserva_recurrente_provider.dart';
 import 'package:reserva_canchas/providers/sede_provider.dart';
 
 import '../../../models/reserva.dart';

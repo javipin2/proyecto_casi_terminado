@@ -927,10 +927,10 @@ class _AdminSedesScreenState extends State<AdminSedesScreen> with SingleTickerPr
       floatingActionButton: FloatingActionButton(
         onPressed: _toggleFormVisibility,
         backgroundColor: _primaryColor,
-        child: Icon(_isFormVisible ? Icons.close : Icons.add, color: Colors.white, size: 24),
         tooltip: _isFormVisible ? 'Ocultar formulario' : 'Agregar sede',
         elevation: 4,
         mini: isSmallScreen,
+        child: Icon(_isFormVisible ? Icons.close : Icons.add, color: Colors.white, size: 24),
       ),
       body: SafeArea(
         child: Column(

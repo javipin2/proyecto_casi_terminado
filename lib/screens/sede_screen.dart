@@ -167,7 +167,7 @@ class _SedeScreenState extends State<SedeScreen>
   }) {
     return GestureDetector(
       onTap: () => _onNavigationTap(index),
-      child: Container(
+      child: SizedBox(
         height: 70,
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -455,7 +455,7 @@ class _SedeScreenContentState extends State<SedeScreenContent>
       animation: Listenable.merge([_headerSizeAnimation, _backgroundOpacityAnimation]),
       builder: (context, child) {
         final headerHeight = size.height * (0.32 * _headerSizeAnimation.value);
-        return Container(
+        return SizedBox(
           height: headerHeight,
           width: double.infinity,
           child: Stack(

@@ -58,7 +58,7 @@ class _DetallesScreenState extends State<DetallesScreen>
 
       if (llaveNormalizada == horaNormalizada) {
         debugPrint('🔍 Coincidencia encontrada: $llave -> ${entry.value}');
-        debugPrint('🔍 Campo completo específico: ${entry.value?['completo']}');
+        debugPrint('🔍 Campo completo específico: ${entry.value['completo']}');
         return entry.value;
       }
     }

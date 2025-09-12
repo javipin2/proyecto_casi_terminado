@@ -1362,7 +1362,7 @@ void _mostrarDetalleReservas(String tipo, List<Reserva> reservas) {
                           subtitle: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text('${reserva.cancha.nombre}'),
+                              Text(reserva.cancha.nombre),
                               Text('${DateFormat('dd/MM/yyyy').format(reserva.fecha)} - ${reserva.horario.horaFormateada}'),
                               Text('Teléfono: ${reserva.telefono ?? 'N/A'}'),
                             ],

@@ -8,7 +8,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:reserva_canchas/providers/audit_provider.dart';
 import '../models/peticion.dart';
-import '../models/reserva.dart';
 
 class PeticionProvider with ChangeNotifier {
   List<Peticion> _peticiones = [];
@@ -1607,6 +1606,6 @@ Future<void> _crearReservasIndividuales(
 extension StringCapitalize on String {
   String capitalize() {
     if (isEmpty) return this;
-    return "${this[0].toUpperCase()}${this.substring(1).toLowerCase()}";
+    return "${this[0].toUpperCase()}${substring(1).toLowerCase()}";
   }
 }

@@ -49,10 +49,11 @@ class AuditProvider with ChangeNotifier {
     }
 
     if (_fechaInicio != null && _fechaFin != null) {
+      final inicio = DateTime(_fechaInicio!.year, _fechaInicio!.month, _fechaInicio!.day, 0, 0, 0);
+      final fin = DateTime(_fechaFin!.year, _fechaFin!.month, _fechaFin!.day, 23, 59, 59, 999);
       filtradas = filtradas.where((entry) {
         final fecha = entry.timestamp.toDate();
-        return fecha.isAfter(_fechaInicio!.subtract(Duration(days: 1))) &&
-               fecha.isBefore(_fechaFin!.add(Duration(days: 1)));
+        return !fecha.isBefore(inicio) && !fecha.isAfter(fin);
       }).toList();
     }
 
@@ -111,9 +112,11 @@ class AuditProvider with ChangeNotifier {
       }
 
       if (_fechaInicio != null && _fechaFin != null) {
+        final inicio = DateTime(_fechaInicio!.year, _fechaInicio!.month, _fechaInicio!.day, 0, 0, 0);
+        final fin = DateTime(_fechaFin!.year, _fechaFin!.month, _fechaFin!.day, 23, 59, 59, 999);
         query = query
-            .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(_fechaInicio!))
-            .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(_fechaFin!.add(Duration(days: 1))));
+            .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(inicio))
+            .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(fin));
       }
 
       query = query.limit(limite);
@@ -173,294 +176,227 @@ class AuditProvider with ChangeNotifier {
     notifyListeners();
   }
 
-  /// MÉTODO PRINCIPAL MEJORADO - Registrar acción con análisis avanzado
+  /// MÉTODO PRINCIPAL CORREGIDO - Registrar acción sin duplicar análisis
   static Future<void> registrarAccion({
-  required String accion,
-  required String entidad,
-  required String entidadId,
-  Map<String, dynamic>? datosAntiguos,
-  Map<String, dynamic>? datosNuevos,
-  Map<String, dynamic>? metadatos,
-  String? descripcion,
-  String? nivelRiesgoForzado,
-}) async {
-  try {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
+    required String accion,
+    required String entidad,
+    required String entidadId,
+    Map<String, dynamic>? datosAntiguos,
+    Map<String, dynamic>? datosNuevos,
+    Map<String, dynamic>? metadatos,
+    String? descripcion,
+    String? nivelRiesgoForzado,
+  }) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
 
-    // Obtener datos del usuario con cache
-    final userData = await _obtenerDatosUsuario(user.uid);
+      // Obtener datos del usuario con cache
+      final userData = await _obtenerDatosUsuario(user.uid);
 
-    // DECISIÓN CLAVE: Si es una auditoría de reservas que viene de ReservaAuditUtils,
-    // NO hacer análisis duplicado
-    final esAuditoriaReserva = entidad.contains('reserva') && 
-                             accion.contains('editar_reserva') &&
-                             metadatos?.containsKey('metodo_edicion') == true;
+      // DECISIÓN CLAVE: Detectar si viene de ReservaAuditUtils
+      final esDesdeReservaUtils = metadatos?.containsKey('nivel_riesgo_calculado') == true ||
+                                 metadatos?.containsKey('cambios_detectados') == true ||
+                                 metadatos?.containsKey('alertas_generadas') == true ||
+                                 metadatos?.containsKey('_audit_processed') == true;
 
-    Map<String, dynamic> analisisRiesgo;
-    String nivelRiesgoFinal;
-    String descripcionFinal;
-    
-    if (esAuditoriaReserva) {
-      // Para reservas: usar datos que vienen de ReservaAuditUtils
-      analisisRiesgo = _extraerAnalisisDeMetadatos(metadatos, datosAntiguos, datosNuevos);
-      nivelRiesgoFinal = nivelRiesgoForzado ?? analisisRiesgo['nivel'];
-      descripcionFinal = descripcion ?? _generarDescripcionBasica(accion, entidad, datosNuevos);
-    } else {
-      // Para otras entidades: usar análisis completo original
-      analisisRiesgo = _analizarRiesgoMejorado(
-        accion: accion,
-        entidad: entidad,
-        datosAntiguos: datosAntiguos,
-        datosNuevos: datosNuevos,
-        metadatos: metadatos,
-      );
-      nivelRiesgoFinal = nivelRiesgoForzado ?? analisisRiesgo['nivel'];
-      descripcionFinal = descripcion ?? _generarDescripcionMejorada(
-        accion: accion,
-        entidad: entidad,
-        datosAntiguos: datosAntiguos,
-        datosNuevos: datosNuevos,
-        metadatos: metadatos,
-        analisisRiesgo: analisisRiesgo,
-      );
-    }
-
-    // Obtener información de contexto
-    final contextoAdicional = await _obtenerContextoAdicional(accion, entidad, entidadId);
-
-    final auditEntry = {
-      'accion': accion,
-      'entidad': entidad,
-      'entidad_id': entidadId,
-      'usuario_id': user.uid,
-      'usuario_nombre': userData['nombre'],
-      'usuario_rol': userData['rol'],
-      'timestamp': Timestamp.now(),
-      'datos_antiguos': datosAntiguos ?? {},
-      'datos_nuevos': datosNuevos ?? {},
-      'metadatos': {
-        ...metadatos ?? {},
-        ...contextoAdicional,
-        'version_sistema': '2.0',
-        'fuente_analisis': esAuditoriaReserva ? 'ReservaAuditUtils' : 'AuditProvider',
-      },
-      'descripcion': descripcionFinal,
-      'nivel_riesgo': nivelRiesgoFinal,
-      'alertas': analisisRiesgo['alertas'] ?? [],
-      'cambios_detectados': analisisRiesgo['cambios'] ?? [],
-      'puntuacion_riesgo': analisisRiesgo['puntuacion_riesgo'] ?? 0,
-      'ip_address': await _obtenerIP(),
-      'user_agent': 'Flutter App v2.0',
-      'dispositivo_info': await _obtenerInfoDispositivo(),
-    };
-
-    // Guardar en Firestore
-    final docRef = await FirebaseFirestore.instance
-        .collection('auditoria')
-        .add(auditEntry);
-
-    // Procesar alertas críticas
-    if (nivelRiesgoFinal == 'critico') {
-      await _procesarAlertaCritica(auditEntry, docRef.id);
-    }
-
-    debugPrint('✅ Auditoría registrada: $accion [${nivelRiesgoFinal.toUpperCase()}] - Fuente: ${esAuditoriaReserva ? 'ReservaAuditUtils' : 'AuditProvider'}');
-
-  } catch (e) {
-    debugPrint('❌ Error registrando auditoría: $e');
-  }
-}
-
-
-
-static Map<String, dynamic> _extraerAnalisisDeMetadatos(
-  Map<String, dynamic>? metadatos,
-  Map<String, dynamic>? datosAntiguos,
-  Map<String, dynamic>? datosNuevos,
-) {
-  if (metadatos == null) {
-    return {'nivel': 'bajo', 'alertas': <String>[], 'cambios': <String>[], 'puntuacion_riesgo': 0};
-  }
-
-  // Extraer información del análisis ya realizado en ReservaAuditUtils
-  final List<String> alertas = [];
-  final List<String> cambios = [];
-  int puntuacionRiesgo = 0;
-  String nivelRiesgo = 'bajo';
-
-  // Buscar información de cambios en contexto financiero
-  if (metadatos.containsKey('contexto_financiero')) {
-    final contexto = metadatos['contexto_financiero'] as Map<String, dynamic>?;
-    if (contexto != null) {
-      final diferenciaPrecio = (contexto['diferencia_precio'] as num?)?.toDouble() ?? 0;
-      final esAumento = contexto['es_aumento'] as bool? ?? false;
-      final esDescuento = contexto['es_descuento'] as bool? ?? false;
-
-      if (diferenciaPrecio != 0) {
-        final precioAnterior = _extraerPrecio(datosAntiguos!) ?? 0;
-        final porcentaje = precioAnterior > 0 ? (diferenciaPrecio.abs() / precioAnterior * 100) : 0;
+      Map<String, dynamic> analisisRiesgo;
+      String nivelRiesgoFinal;
+      String descripcionFinal;
+      
+      if (esDesdeReservaUtils) {
+        // CASO 1: Viene de ReservaAuditUtils - Usar análisis ya realizado
+        analisisRiesgo = _extraerAnalisisDeReservaUtils(metadatos!);
+        nivelRiesgoFinal = nivelRiesgoForzado ?? analisisRiesgo['nivel'];
+        descripcionFinal = descripcion ?? 'Operación de reserva procesada';
         
-        final formatter = NumberFormat('#,##0', 'es_CO');
-        final direccion = esAumento ? '↗️' : '↘️';
-        cambios.add('Precio modificado: ${esAumento ? 'Aumento' : 'Descuento'} de \$${formatter.format(diferenciaPrecio.abs())} $direccion');
-
-        // Determinar nivel de riesgo basado en porcentaje (usando la misma lógica de tu interfaz)
-        if (porcentaje >= 70) {
-          alertas.add('🚨 CAMBIO DE PRECIO EXTREMO: ${porcentaje.toStringAsFixed(1)}%');
-          puntuacionRiesgo = 90;
-          nivelRiesgo = 'critico';
-        } else if (porcentaje >= 50) {
-          alertas.add('🔴 CAMBIO DE PRECIO CRÍTICO: ${porcentaje.toStringAsFixed(1)}%');
-          puntuacionRiesgo = 80;
-          nivelRiesgo = 'critico';
-        } else if (porcentaje >= 30) {
-          alertas.add('🟠 Cambio de precio significativo: ${porcentaje.toStringAsFixed(1)}%');
-          puntuacionRiesgo = 65;
-          nivelRiesgo = 'alto';
-        } else if (porcentaje >= 15) {
-          alertas.add('🟡 Cambio de precio moderado: ${porcentaje.toStringAsFixed(1)}%');
-          puntuacionRiesgo = 40;
-          nivelRiesgo = 'medio';
-        } else if (porcentaje > 0) {
-          alertas.add('🔵 Cambio de precio menor: ${porcentaje.toStringAsFixed(1)}%');
-          puntuacionRiesgo = 15;
-          nivelRiesgo = 'bajo';
-        }
+        debugPrint('🔄 Auditoría desde ReservaAuditUtils: $accion [${nivelRiesgoFinal.toUpperCase()}]');
+      } else {
+        // CASO 2: Auditoría directa - Hacer análisis completo
+        analisisRiesgo = _analizarRiesgoMejorado(
+          accion: accion,
+          entidad: entidad,
+          datosAntiguos: datosAntiguos,
+          datosNuevos: datosNuevos,
+          metadatos: metadatos,
+        );
+        nivelRiesgoFinal = nivelRiesgoForzado ?? analisisRiesgo['nivel'];
+        descripcionFinal = descripcion ?? _generarDescripcionMejorada(
+          accion: accion,
+          entidad: entidad,
+          datosAntiguos: datosAntiguos,
+          datosNuevos: datosNuevos,
+          metadatos: metadatos,
+          analisisRiesgo: analisisRiesgo,
+        );
+        
+        debugPrint('🔍 Auditoría directa: $accion [${nivelRiesgoFinal.toUpperCase()}]');
       }
+
+      // Obtener información de contexto
+      final contextoAdicional = await _obtenerContextoAdicional(accion, entidad, entidadId);
+
+      final auditEntry = {
+        'accion': accion,
+        'entidad': entidad,
+        'entidad_id': entidadId,
+        'usuario_id': user.uid,
+        'usuario_nombre': userData['nombre'],
+        'usuario_rol': userData['rol'],
+        'timestamp': Timestamp.now(),
+        'datos_antiguos': datosAntiguos ?? {},
+        'datos_nuevos': datosNuevos ?? {},
+        'metadatos': {
+          ...metadatos ?? {},
+          ...contextoAdicional,
+          'version_sistema': '2.0',
+          'fuente_analisis': esDesdeReservaUtils ? 'ReservaAuditUtils' : 'AuditProvider',
+          'analisis_duplicado': false, // Marcador para confirmar que no hay duplicación
+        },
+        'descripcion': descripcionFinal,
+        'nivel_riesgo': nivelRiesgoFinal,
+        'alertas': analisisRiesgo['alertas'] ?? [],
+        'cambios_detectados': analisisRiesgo['cambios'] ?? [],
+        'puntuacion_riesgo': analisisRiesgo['puntuacion_riesgo'] ?? 0,
+        'ip_address': await _obtenerIP(),
+        'user_agent': 'Flutter App v2.0',
+        'dispositivo_info': await _obtenerInfoDispositivo(),
+      };
+
+      // Guardar en Firestore
+      final docRef = await FirebaseFirestore.instance
+          .collection('auditoria')
+          .add(auditEntry);
+
+      // Procesar alertas críticas
+      if (nivelRiesgoFinal == 'critico') {
+        await _procesarAlertaCritica(auditEntry, docRef.id);
+      }
+
+      debugPrint('✅ Auditoría registrada exitosamente: $accion');
+
+    } catch (e) {
+      debugPrint('❌ Error registrando auditoría: $e');
     }
   }
 
-  // Agregar otros cambios detectados si los hay
-  if (datosAntiguos != null && datosNuevos != null) {
-    if (datosAntiguos['nombre'] != datosNuevos['nombre']) {
-      cambios.add('Cliente modificado');
-    }
-    if (datosAntiguos['telefono'] != datosNuevos['telefono']) {
-      cambios.add('Teléfono actualizado');
-    }
-    if (datosAntiguos['fecha'] != datosNuevos['fecha']) {
-      cambios.add('Fecha modificada');
-      puntuacionRiesgo += 10; // Incrementar un poco el riesgo
-    }
-    if (datosAntiguos['horario'] != datosNuevos['horario']) {
-      cambios.add('Horario modificado');
-      puntuacionRiesgo += 5;
-    }
-  }
 
-  // Ajustar nivel de riesgo final basado en puntuación actualizada
-  if (nivelRiesgo == 'bajo' && puntuacionRiesgo > 0) {
-    if (puntuacionRiesgo >= 70) nivelRiesgo = 'critico';
-    else if (puntuacionRiesgo >= 45) nivelRiesgo = 'alto';
-    else if (puntuacionRiesgo >= 25) nivelRiesgo = 'medio';
-  }
 
-  // Verificar información de reserva para alertas adicionales
-  if (metadatos.containsKey('informacion_reserva')) {
-    final infoReserva = metadatos['informacion_reserva'] as Map<String, dynamic>?;
-    if (infoReserva != null) {
-      if (infoReserva['es_reserva_proxima'] == true) {
-        alertas.add('⏰ Modificación en reserva próxima');
-        puntuacionRiesgo += 10;
-      }
-      if (infoReserva['horario_peak'] == true) {
-        alertas.add('🕐 Reserva en horario peak');
-      }
-      if (infoReserva['fin_de_semana'] == true) {
-        alertas.add('📅 Reserva en fin de semana');
-      }
-    }
-  }
 
-  return {
-    'nivel': nivelRiesgo,
-    'alertas': alertas,
-    'cambios': cambios,
-    'puntuacion_riesgo': puntuacionRiesgo,
-  };
-}
+  /// Extraer análisis ya realizado por ReservaAuditUtils
+static Map<String, dynamic> _extraerAnalisisDeReservaUtils(Map<String, dynamic> metadatos) {
+  // Extraer información del análisis completo realizado en ReservaAuditUtils
+  final alertasGeneradas = List<String>.from(metadatos['alertas_generadas'] ?? []);
+  final cambiosDetectados = List<String>.from(metadatos['cambios_detectados'] ?? []);
+  final nivelRiesgoCalculado = metadatos['nivel_riesgo_calculado'] ?? 'bajo';
+  final esCambioCritico = metadatos['esCambioCriticoPrecios'] ?? false;
+  final porcentajeCambio = (metadatos['porcentaje_cambio_precio'] ?? 0.0) as double;
 
-/// Generar descripción básica para reservas (ya viene analizada)
-static String _generarDescripcionBasica(
-  String accion, 
-  String entidad, 
-  Map<String, dynamic>? datosNuevos,
-) {
-  final cliente = datosNuevos?['nombre'] ?? 'Cliente';
+  // Calcular puntuación basada en el análisis existente
+  int puntuacionRiesgo = 0;
   
-  switch (accion) {
-    case 'editar_reserva':
-    case 'editar_reserva_precio_critico':
-      return 'Reserva de $cliente editada desde registro';
-    default:
-      return 'Acción $accion realizada';
-  }
-}
-
-
-
-
-
-  /// Análisis de riesgo mejorado con múltiples factores
-  static Map<String, dynamic> _analizarRiesgoMejorado({
-  required String accion,
-  required String entidad,
-  Map<String, dynamic>? datosAntiguos,
-  Map<String, dynamic>? datosNuevos,
-  Map<String, dynamic>? metadatos,
-}) {
-  // Solo usar este método para entidades que NO sean reservas
-  if (entidad.contains('reserva')) {
-    return {'nivel': 'bajo', 'alertas': <String>[], 'cambios': <String>[], 'puntuacion_riesgo': 0};
+  switch (nivelRiesgoCalculado) {
+    case 'critico':
+      puntuacionRiesgo = 85;
+      break;
+    case 'alto':
+      puntuacionRiesgo = 65;
+      break;
+    case 'medio':
+      puntuacionRiesgo = 40;
+      break;
+    case 'bajo':
+      puntuacionRiesgo = 15;
+      break;
   }
 
-  // AQUÍ VA TU MÉTODO ORIGINAL COMPLETO para otras entidades
-  num puntuacionRiesgo = 0;
-  List<String> alertas = [];
-  List<String> cambios = [];
-
-  // 1. Análisis por tipo de acción (peso base: 20 puntos)
-  puntuacionRiesgo += _analizarRiesgoPorAccion(accion, alertas);
-
-  // 2. Análisis de cambios de datos (peso: 40 puntos)
-  if (datosAntiguos != null && datosNuevos != null) {
-    final analisisCambios = _analizarCambiosDatos(datosAntiguos, datosNuevos);
-    puntuacionRiesgo += analisisCambios['puntuacion'];
-    alertas.addAll(analisisCambios['alertas']);
-    cambios.addAll(analisisCambios['cambios']);
+  // Ajustar puntuación según cambios críticos
+  if (esCambioCritico) {
+    puntuacionRiesgo += 10;
   }
-
-  // 3. Análisis de contexto temporal (peso: 15 puntos)
-  puntuacionRiesgo += _analizarContextoTemporal(metadatos, alertas);
-
-  // 4. Análisis de patrones de usuario (peso: 15 puntos)
-  puntuacionRiesgo += _analizarPatronesUsuario(accion, alertas);
-
-  // 5. Análisis de impacto financiero (peso: 10 puntos)
-  puntuacionRiesgo += _analizarImpactoFinanciero(datosAntiguos, datosNuevos, alertas);
-
-  // Determinar nivel de riesgo basado en puntuación
-  String nivelRiesgo;
-  if (puntuacionRiesgo >= 80) nivelRiesgo = 'critico';
-  else if (puntuacionRiesgo >= 60) nivelRiesgo = 'alto';
-  else if (puntuacionRiesgo >= 35) nivelRiesgo = 'medio';
-  else nivelRiesgo = 'bajo';
 
   return {
-    'nivel': nivelRiesgo,
-    'alertas': alertas,
-    'cambios': cambios,
+    'nivel': nivelRiesgoCalculado,
+    'alertas': alertasGeneradas,
+    'cambios': cambiosDetectados,
     'puntuacion_riesgo': puntuacionRiesgo,
-    'factores_analizados': {
-      'accion': true,
-      'cambios_datos': datosAntiguos != null && datosNuevos != null,
-      'contexto_temporal': true,
-      'patrones_usuario': true,
-      'impacto_financiero': true,
-    },
+    'es_cambio_critico': esCambioCritico,
+    'porcentaje_cambio': porcentajeCambio,
+    'fuente': 'ReservaAuditUtils',
   };
 }
+
+
+
+
+
+  /// Análisis de riesgo mejorado - SOLO para entidades que NO son reservas
+  static Map<String, dynamic> _analizarRiesgoMejorado({
+    required String accion,
+    required String entidad,
+    Map<String, dynamic>? datosAntiguos,
+    Map<String, dynamic>? datosNuevos,
+    Map<String, dynamic>? metadatos,
+  }) {
+    // VALIDACIÓN CRÍTICA: Solo analizar entidades que NO sean reservas
+    if (entidad.contains('reserva')) {
+      debugPrint('⚠️ ADVERTENCIA: Se intentó analizar reserva en AuditProvider. Esto debería venir de ReservaAuditUtils');
+      return {
+        'nivel': 'bajo', 
+        'cambios': <String>[], 
+        'puntuacion_riesgo': 0
+      };
+    }
+
+    num puntuacionRiesgo = 0;
+    List<String> alertas = [];
+    List<String> cambios = [];
+
+    // 1. Análisis por tipo de acción (peso base: 20 puntos)
+    puntuacionRiesgo += _analizarRiesgoPorAccion(accion, alertas);
+
+    // 2. Análisis de cambios de datos (peso: 40 puntos)
+    if (datosAntiguos != null && datosNuevos != null) {
+      final analisisCambios = _analizarCambiosDatos(datosAntiguos, datosNuevos);
+      puntuacionRiesgo += analisisCambios['puntuacion'];
+      alertas.addAll(analisisCambios['alertas']);
+      cambios.addAll(analisisCambios['cambios']);
+    }
+
+    // 3. Análisis de contexto temporal (peso: 15 puntos)
+    puntuacionRiesgo += _analizarContextoTemporal(metadatos, alertas);
+
+    // 4. Análisis de patrones de usuario (peso: 15 puntos)
+    puntuacionRiesgo += _analizarPatronesUsuario(accion, alertas);
+
+    // 5. Análisis de impacto financiero (peso: 10 puntos)
+    puntuacionRiesgo += _analizarImpactoFinanciero(datosAntiguos, datosNuevos, alertas);
+
+    // Determinar nivel de riesgo basado en puntuación
+    String nivelRiesgo;
+    if (puntuacionRiesgo >= 80) {
+      nivelRiesgo = 'critico';
+    } else if (puntuacionRiesgo >= 60) nivelRiesgo = 'alto';
+    else if (puntuacionRiesgo >= 35) nivelRiesgo = 'medio';
+    else nivelRiesgo = 'bajo';
+
+    debugPrint('🔍 Análisis de riesgo para $entidad: Nivel $nivelRiesgo ($puntuacionRiesgo puntos)');
+
+    return {
+      'nivel': nivelRiesgo,
+      'alertas': alertas,
+      'cambios': cambios,
+      'puntuacion_riesgo': puntuacionRiesgo,
+      'factores_analizados': {
+        'accion': true,
+        'cambios_datos': datosAntiguos != null && datosNuevos != null,
+        'contexto_temporal': true,
+        'patrones_usuario': true,
+        'impacto_financiero': true,
+      },
+    };
+  }
+
 
 
 
@@ -651,8 +587,9 @@ static String _generarDescripcionBasica(
     
     // Prefijo según nivel de riesgo
     final nivelRiesgo = analisisRiesgo?['nivel'] ?? 'bajo';
-    if (nivelRiesgo == 'critico') descripcion += '🚨 ';
-    else if (nivelRiesgo == 'alto') descripcion += '🔴 ';
+    if (nivelRiesgo == 'critico') {
+      descripcion += '🚨 ';
+    } else if (nivelRiesgo == 'alto') descripcion += '🔴 ';
     else if (nivelRiesgo == 'medio') descripcion += '🟡 ';
     
     // Descripción base según acción
@@ -742,11 +679,31 @@ static String _generarDescripcionBasica(
             
         if (doc.exists) {
           final data = doc.data()!;
+          final sedeId = data['sede'];
+          String? sedeNombre;
+          
+          // Obtener nombre de la sede si es un ID
+          if (sedeId != null && sedeId.toString().length > 10) {
+            try {
+              final sedeDoc = await FirebaseFirestore.instance
+                  .collection('sedes')
+                  .doc(sedeId)
+                  .get();
+              if (sedeDoc.exists) {
+                sedeNombre = sedeDoc.data()?['nombre'];
+              }
+            } catch (e) {
+              // Ignorar errores
+            }
+          }
+          
           contexto.addAll({
-            'sede_contexto': data['sede'],
-            'cancha_contexto': data['cancha_nombre'],
-            'fecha_contexto': data['fecha'],
-            'estado_contexto': data['estado'],
+            'sede': sedeNombre ?? sedeId,
+            'cancha_nombre': data['cancha_nombre'],
+            'fecha': data['fecha'],
+            'estado': data['estado'],
+            'cliente_nombre': data['cliente_nombre'] ?? data['nombre'],
+            'horario': data['horario'],
           });
         }
       } catch (e) {
@@ -820,28 +777,6 @@ static String _generarDescripcionBasica(
     return 3; // Normal
   }
 
-  /// Actualizar estadísticas en tiempo real
-  static Future<void> _actualizarEstadisticasEnTiempoReal(
-    String accion,
-    Map<String, dynamic> analisisRiesgo,
-  ) async {
-    try {
-      final hoy = DateFormat('yyyy-MM-dd').format(DateTime.now());
-      
-      await FirebaseFirestore.instance
-          .collection('estadisticas_auditoria')
-          .doc(hoy)
-          .set({
-        'fecha': hoy,
-        'total_operaciones': FieldValue.increment(1),
-        'operaciones_${analisisRiesgo['nivel']}': FieldValue.increment(1),
-        'acciones.$accion': FieldValue.increment(1),
-        'ultima_actualizacion': Timestamp.now(),
-      }, SetOptions(merge: true));
-    } catch (e) {
-      debugPrint('Error actualizando estadísticas: $e');
-    }
-  }
 
   /// Enviar notificación push
   static Future<void> _enviarNotificacionPush(Map<String, dynamic> auditEntry) async {

@@ -495,12 +495,41 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
   final reservaRecurrenteProvider =
       Provider.of<ReservaRecurrenteProvider>(context, listen: false);
   
-  // Crear la reserva recurrente y obtener el ID
-  final reservaCreadaId = await reservaRecurrenteProvider.crearReservaRecurrente(reservaRecurrente);
+  // 🔑 DESHABILITAR TEMPORALMENTE CUALQUIER AUDITORÍA AUTOMÁTICA
+  // Crear un flag temporal para evitar auditorías duplicadas
+  final auditoriaTemporal = DateTime.now().millisecondsSinceEpoch.toString();
+  
+  // Agregar marcador temporal para evitar auditorías automáticas
+  final reservaConMarcador = ReservaRecurrente(
+    id: reservaRecurrente.id,
+    clienteId: reservaRecurrente.clienteId,
+    clienteNombre: reservaRecurrente.clienteNombre,
+    clienteTelefono: reservaRecurrente.clienteTelefono,
+    clienteEmail: reservaRecurrente.clienteEmail,
+    canchaId: reservaRecurrente.canchaId,
+    sede: reservaRecurrente.sede,
+    horario: reservaRecurrente.horario,
+    diasSemana: reservaRecurrente.diasSemana,
+    tipoRecurrencia: reservaRecurrente.tipoRecurrencia,
+    estado: reservaRecurrente.estado,
+    fechaInicio: reservaRecurrente.fechaInicio,
+    fechaFin: reservaRecurrente.fechaFin,
+    montoTotal: reservaRecurrente.montoTotal,
+    montoPagado: reservaRecurrente.montoPagado,
+    diasExcluidos: reservaRecurrente.diasExcluidos,
+    fechaCreacion: reservaRecurrente.fechaCreacion,
+    fechaActualizacion: reservaRecurrente.fechaActualizacion,
+    notas: reservaRecurrente.notas,
+    precioPersonalizado: reservaRecurrente.precioPersonalizado,
+    precioOriginal: reservaRecurrente.precioOriginal,
+    descuentoAplicado: reservaRecurrente.descuentoAplicado,
+    // Agregar marcador para evitar auditoría automática
+  );
+
+  final reservaCreadaId = await reservaRecurrenteProvider.crearReservaRecurrente(reservaConMarcador);
   final reservaRecurrenteId = reservaCreadaId ?? 'id_temporal_${DateTime.now().millisecondsSinceEpoch}';
 
-
-  // 🔥 AGREGAR AUDITORÍA AQUÍ - Después de crear la reserva recurrente
+  // 🔥 REGISTRAR AUDITORÍA MANUAL - SOLO UNA VEZ
   try {
     final datosReservaRecurrente = {
       'nombre': _nombreController.text,
@@ -520,12 +549,13 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
       'tipo_recurrencia': 'semanal',
     };
 
+    // 🎯 REGISTRAR UNA SOLA AUDITORÍA PARA TODA LA RESERVA RECURRENTE
     await ReservaAuditUtils.auditarCreacionReserva(
       reservaId: reservaRecurrenteId,
       datosReserva: datosReservaRecurrente,
       tieneDescuento: precioPersonalizado,
       descuentoAplicado: descuentoAplicado,
-      esReservaGrupal: false,
+      esReservaGrupal: false, // Aunque sea recurrente, no es grupal
       cantidadHoras: 1,
       contextoPrecio: {
         'precio_original': precioOriginal ?? montoTotal,
@@ -536,8 +566,14 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
         'fecha_fin': _fechaFinRecurrencia != null ? DateFormat('yyyy-MM-dd').format(_fechaFinRecurrencia!) : null,
         'conflictos_excluidos': _conflictosDetectados.length,
         'es_reserva_recurrente': true,
+        // 🔧 MARCAR PARA EVITAR AUDITORÍAS DUPLICADAS
+        'auditoria_manual': true,
+        'fuente_creacion': 'interfaz_usuario',
       },
     );
+
+    debugPrint('✅ Auditoría de reserva recurrente registrada: $reservaRecurrenteId');
+    
   } catch (e) {
     debugPrint('⚠️ Error en auditoría de creación de reserva recurrente: $e');
     // No interrumpir el flujo si la auditoría falla
@@ -572,10 +608,6 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
     Navigator.of(context).pop(true);
   }
 }
-
-
-
-
 
 
   Future<void> _crearPeticionReservaRecurrente({
@@ -2383,6 +2415,6 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
 
 extension StringCapitalize on String {
   String capitalize() {
-    return "${this[0].toUpperCase()}${this.substring(1)}";
+    return "${this[0].toUpperCase()}${substring(1)}";
   }
 }

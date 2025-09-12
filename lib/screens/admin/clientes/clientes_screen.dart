@@ -7,7 +7,7 @@ import 'editar_cliente_screen.dart';
 import 'registrar_cliente_screen.dart';
 
 class ClientesScreen extends StatefulWidget {
-  const ClientesScreen({Key? key}) : super(key: key);
+  const ClientesScreen({super.key});
 
   @override
   _ClientesScreenState createState() => _ClientesScreenState();
@@ -362,7 +362,7 @@ class _ClientesScreenState extends State<ClientesScreen>
                               color: Colors.grey.shade700, fontSize: 16),
                           textAlign: TextAlign.center,
                         ),
-                        if (!_searchQuery.isEmpty)
+                        if (_searchQuery.isNotEmpty)
                           TextButton.icon(
                             onPressed: () {
                               setState(() {

@@ -6,7 +6,6 @@ import 'package:reserva_canchas/models/cancha.dart';
 import 'package:reserva_canchas/providers/sede_provider.dart';
 import 'editar_cancha_screen.dart';
 import 'registrar_cancha_screen.dart';
-import '../admin_dashboard_screen.dart';
 
 class CanchasScreen extends StatefulWidget {
   const CanchasScreen({super.key});

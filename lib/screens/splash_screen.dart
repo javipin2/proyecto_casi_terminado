@@ -20,7 +20,7 @@ class _SplashScreenState extends State<SplashScreen>
   late Animation<double> _opacityAnimation;
   Timer? _navigationTimer;
   
-  bool _isCheckingVersion = true;
+  final bool _isCheckingVersion = true;
   String _statusMessage = 'Iniciando aplicación...';
 
   @override

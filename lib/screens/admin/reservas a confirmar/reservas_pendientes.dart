@@ -1181,7 +1181,7 @@ Future<void> _aceptarReserva(String reservaId, ReservaProvider provider) async {
               
               return SingleChildScrollView(
                 controller: _scrollControllerConfirmadas,
-                child: Container(
+                child: SizedBox(
                   width: availableWidth,
                   child: Column(
                     children: [
@@ -1207,8 +1207,8 @@ Future<void> _aceptarReserva(String reservaId, ReservaProvider provider) async {
                           final data = doc.data() as Map<String, dynamic>? ?? {};
 
                           return DataRow(
-                            color: MaterialStateProperty.resolveWith<Color?>(
-                              (Set<MaterialState> states) {
+                            color: WidgetStateProperty.resolveWith<Color?>(
+                              (Set<WidgetState> states) {
                                 return index % 2 == 0 ? _cardColor : Colors.white;
                               },
                             ),
@@ -1702,7 +1702,7 @@ Widget _buildCombinedClientMoneyCell(String nombre, String total, String pagado)
         final isMediumDesktop = availableWidth >= 800 && availableWidth < 1200;
         
         return SingleChildScrollView(
-          child: Container(
+          child: SizedBox(
             width: availableWidth,
             child: DataTable(
               columnSpacing: isSmallDesktop ? 8 : 16,
@@ -1726,8 +1726,8 @@ Widget _buildCombinedClientMoneyCell(String nombre, String total, String pagado)
                 final data = doc.data() as Map<String, dynamic>? ?? {};
 
                 return DataRow(
-                  color: MaterialStateProperty.resolveWith<Color?>(
-                    (Set<MaterialState> states) {
+                  color: WidgetStateProperty.resolveWith<Color?>(
+                    (Set<WidgetState> states) {
                       return index % 2 == 0 ? _cardColor : Colors.white;
                     },
                   ),

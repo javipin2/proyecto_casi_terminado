@@ -12,11 +12,11 @@ class PeticionCard extends StatelessWidget {
   final VoidCallback? onRechazar;
 
   const PeticionCard({
-    Key? key,
+    super.key,
     required this.peticion,
     this.onAprobar,
     this.onRechazar,
-  }) : super(key: key);
+  });
 
   final Color _primaryColor = const Color(0xFF3C4043);
   final Color _secondaryColor = const Color(0xFF4285F4);

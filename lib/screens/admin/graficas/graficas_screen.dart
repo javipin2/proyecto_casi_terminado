@@ -733,7 +733,7 @@ class EstadisticasScreenState extends State<EstadisticasScreen> {
                                       builder: (context, setState) {
                                         return AlertDialog(
                                           title: Text('Seleccionar Mes'),
-                                          content: Container(
+                                          content: SizedBox(
                                             height: 300,
                                             width: 300,
                                             child: Column(
@@ -867,7 +867,7 @@ class EstadisticasScreenState extends State<EstadisticasScreen> {
                 'Fecha de Referencia',
                 Icons.event,
                 Colors.blue,
-                Container(
+                SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
                     onPressed: () async {

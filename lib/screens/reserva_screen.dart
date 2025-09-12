@@ -9,7 +9,7 @@ import '../models/reserva.dart';
 class ReservaScreen extends StatefulWidget {
   final Reserva reserva;
 
-  const ReservaScreen({Key? key, required this.reserva}) : super(key: key);
+  const ReservaScreen({super.key, required this.reserva});
 
   @override
   State<ReservaScreen> createState() => _ReservaScreenState();
@@ -616,7 +616,7 @@ Future<bool?> _mostrarDialogoInstruccionesWhatsApp() async {
     final String canchaId = widget.reserva.cancha.id; // Asegúrate de que tienes el ID
     final String fecha = DateFormat('yyyy-MM-dd').format(widget.reserva.fecha);
     final String horario = widget.reserva.horario.horaFormateada;
-    final String reservaKey = '${canchaId}_${fecha}_${horario}';
+    final String reservaKey = '${canchaId}_${fecha}_$horario';
 
     // 1. Verificar reservas confirmadas con los campos correctos
     final QuerySnapshot reservasExistentes = await FirebaseFirestore.instance
@@ -668,7 +668,7 @@ Future<bool?> _mostrarDialogoInstruccionesWhatsApp() async {
     final String canchaId = widget.reserva.cancha.id; // Cambio aquí también
     final String fecha = DateFormat('yyyy-MM-dd').format(widget.reserva.fecha);
     final String horario = widget.reserva.horario.horaFormateada;
-    final String reservaKey = '${canchaId}_${fecha}_${horario}';
+    final String reservaKey = '${canchaId}_${fecha}_$horario';
     final int expiraEn = DateTime.now().add(Duration(minutes: 12)).millisecondsSinceEpoch;
 
     await FirebaseFirestore.instance.runTransaction((transaction) async {
@@ -758,10 +758,8 @@ Future<bool?> _mostrarDialogoInstruccionesWhatsApp() async {
     
     if (llaveNormalizada == horaNormalizada) {
       final config = entry.value;
-      if (config is Map<String, dynamic>) {
-        return (config['precio'] as num?)?.toDouble() ?? widget.reserva.cancha.precio;
-      }
-      return (config as num?)?.toDouble() ?? widget.reserva.cancha.precio;
+      return (config['precio'] as num?)?.toDouble() ?? widget.reserva.cancha.precio;
+          return (config as num?)?.toDouble() ?? widget.reserva.cancha.precio;
     }
   }
 
@@ -909,7 +907,7 @@ String _normalizarHoraFormato(String horaStr) {
                                     ),
                                     const SizedBox(height: 4),
                                     Text(
-                                      '${DateFormat('EEEE, d MMM yyyy', 'es').format(widget.reserva.fecha)}',
+                                      DateFormat('EEEE, d MMM yyyy', 'es').format(widget.reserva.fecha),
                                       style: TextStyle(
                                         fontSize: 14,
                                         color: Colors.grey[300],

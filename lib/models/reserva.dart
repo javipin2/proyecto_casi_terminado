@@ -149,8 +149,6 @@ class Reserva {
     final reservaRecurrenteId = data['reservaRecurrenteId'] as String?;
     final esReservaRecurrente = data['esReservaRecurrente'] as bool? ?? false;
 
-    // Y también necesitas leer el campo que agregamos:
-    final precioIndependiente = data['precio_independiente_de_recurrencia'] as bool? ?? false;
 
     
     // LEER LISTA DE HORARIOS SI EXISTE (para compatibilidad futura)
