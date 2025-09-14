@@ -114,7 +114,7 @@ class ReservaRecurrenteProvider with ChangeNotifier {
         entidadId: reservaId,
         datosAntiguos: datosAntiguos,
         datosNuevos: datosNuevos,
-        descripcion: 'Día excluido de la reserva recurrente: ${DateFormat('EEEE d MMMM yyyy', 'es').format(fecha)}',
+        descripcion: 'Día excluido de la reserva recurrente de ${reservaActualizada.clienteNombre}: ${DateFormat('EEEE d MMMM yyyy', 'es').format(fecha)}',
         metadatos: {
           '_audit_processed': true,
           'fuente_original': 'ReservaRecurrenteProvider',

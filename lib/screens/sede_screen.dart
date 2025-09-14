@@ -4,7 +4,6 @@ import 'package:flutter/services.dart';
 import '../providers/sede_provider.dart';
 import 'canchas_screen.dart';
 import 'admin/admin_login_screen.dart';
-import 'promociones_screen.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class SedeScreen extends StatefulWidget {

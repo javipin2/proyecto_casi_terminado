@@ -46,6 +46,7 @@ class _AuditScreenState extends State<AuditScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text('Auditoría del Sistema'),
+        automaticallyImplyLeading: false,
         backgroundColor: Colors.indigo,
         foregroundColor: Colors.white,
         actions: [
@@ -168,7 +169,7 @@ class _AuditScreenState extends State<AuditScreen> {
           Row(
             children: [
               Expanded(
-                child: Container(
+                child: SizedBox(
                   height: 48,
                 child: ElevatedButton.icon(
                   onPressed: () => _mostrarFiltros(auditProvider),
@@ -187,7 +188,7 @@ class _AuditScreenState extends State<AuditScreen> {
               ),
               SizedBox(width: 12),
               Expanded(
-                child: Container(
+                child: SizedBox(
                   height: 48,
                 child: ElevatedButton.icon(
                   onPressed: () => _mostrarEstadisticas(auditProvider),
@@ -270,7 +271,7 @@ class _AuditScreenState extends State<AuditScreen> {
             Row(
               children: [
                 Expanded(
-                  child: Container(
+                  child: SizedBox(
                     height: 44,
                     child: ElevatedButton.icon(
                     onPressed: () => _aplicarFiltros(auditProvider),
@@ -289,7 +290,7 @@ class _AuditScreenState extends State<AuditScreen> {
                 ),
                 SizedBox(width: 12),
                 Expanded(
-                  child: Container(
+                  child: SizedBox(
                     height: 44,
                     child: OutlinedButton.icon(
                     onPressed: () => _limpiarFiltros(auditProvider),
@@ -663,7 +664,7 @@ class _AuditScreenState extends State<AuditScreen> {
         Row(
           children: [
             Expanded(
-              child: Container(
+              child: SizedBox(
                 height: 40,
                 child: ElevatedButton(
                   onPressed: () {
@@ -693,7 +694,7 @@ class _AuditScreenState extends State<AuditScreen> {
             ),
             SizedBox(width: 8),
             Expanded(
-              child: Container(
+              child: SizedBox(
                 height: 40,
                 child: ElevatedButton(
                   onPressed: () async {
@@ -1165,7 +1166,7 @@ class _AuditScreenState extends State<AuditScreen> {
                                         ],
                                       ),
                                     ),
-                                    Container(
+                                    SizedBox(
                                       height: 36,
                                       child: ElevatedButton(
                         onPressed: () {

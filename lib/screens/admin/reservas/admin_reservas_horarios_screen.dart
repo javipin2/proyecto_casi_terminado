@@ -6,7 +6,6 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:reserva_canchas/providers/audit_provider.dart';
 import 'package:reserva_canchas/screens/admin/reservas/admin_detalles_reservas.dart';
 import 'package:reserva_canchas/utils/reserva_audit_utils.dart';
 import '../../../models/cancha.dart';
@@ -17,7 +16,6 @@ import '../../../providers/sede_provider.dart';
 import '../../../models/reserva_recurrente.dart';
 import '../../../providers/reserva_recurrente_provider.dart';
 import 'agregar_reserva_screen.dart';
-import '../../../providers/peticion_provider.dart';
 import '../../../models/peticion.dart';
 
 class AdminReservasScreen extends StatefulWidget {

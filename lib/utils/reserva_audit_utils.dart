@@ -229,20 +229,20 @@ class ReservaAuditUtils {
     if (porcentajeCambio >= 70) {
       severidad = 'EXTREMO';
       esCritico = true;
-      alertas.add('🚨 CAMBIO DE PRECIO EXTREMO: ${porcentajeCambio.toStringAsFixed(1)}% (${diferencia > 0 ? 'Aumento' : 'Descuento'} de \$${formatter.format(diferencia.abs())})');
+      alertas.add(' CAMBIO DE PRECIO EXTREMO: ${porcentajeCambio.toStringAsFixed(1)}% (${diferencia > 0 ? 'Aumento' : 'Descuento'} de \$${formatter.format(diferencia.abs())})');
     } else if (porcentajeCambio >= 50) {
       severidad = 'CRÍTICO';
       esCritico = true;
-      alertas.add('🔴 CAMBIO DE PRECIO CRÍTICO: ${porcentajeCambio.toStringAsFixed(1)}% (${diferencia > 0 ? 'Aumento' : 'Descuento'} de \$${formatter.format(diferencia.abs())})');
+      alertas.add(' CAMBIO DE PRECIO CRÍTICO: ${porcentajeCambio.toStringAsFixed(1)}% (${diferencia > 0 ? 'Aumento' : 'Descuento'} de \$${formatter.format(diferencia.abs())})');
     } else if (porcentajeCambio >= 30) {
       severidad = 'ALTO';
-      alertas.add('🟠 Cambio de precio significativo: ${porcentajeCambio.toStringAsFixed(1)}% (\$${formatter.format(diferencia.abs())})');
+      alertas.add(' Cambio de precio significativo: ${porcentajeCambio.toStringAsFixed(1)}% (\$${formatter.format(diferencia.abs())})');
     } else if (porcentajeCambio >= 15) {
       severidad = 'MEDIO';
-      alertas.add('🟡 Cambio de precio moderado: ${porcentajeCambio.toStringAsFixed(1)}% (\$${formatter.format(diferencia.abs())})');
+      alertas.add(' Cambio de precio moderado: ${porcentajeCambio.toStringAsFixed(1)}% (\$${formatter.format(diferencia.abs())})');
     } else if (porcentajeCambio > 0) {
       severidad = 'BAJO';
-      alertas.add('🔵 Cambio de precio menor: ${porcentajeCambio.toStringAsFixed(1)}% (\$${formatter.format(diferencia.abs())})');
+      alertas.add(' Cambio de precio menor: ${porcentajeCambio.toStringAsFixed(1)}% (\$${formatter.format(diferencia.abs())})');
     }
 
     // Detectar descuentos inusuales - MANTENER CONSISTENTE
@@ -459,7 +459,7 @@ class ReservaAuditUtils {
       );
       
       if (descuento > precioAnterior * 0.3 && !esSoloCambioFechaHora) { // Más del 30% de descuento
-        alertas.add('🎯 PRECIO PERSONALIZADO CON DESCUENTO ALTO: ${(descuento/precioAnterior*100).toStringAsFixed(1)}%');
+        alertas.add(' PRECIO PERSONALIZADO CON DESCUENTO ALTO: ${(descuento/precioAnterior*100).toStringAsFixed(1)}%');
       }
     }
     
@@ -950,7 +950,7 @@ class ReservaAuditUtils {
     // Prefijo coherente: Alto impacto = rojo/alarma, normal = advertencia amarilla
     String descripcion = esAltoImpacto
       ? '🚨 ELIMINACIÓN DE ALTO IMPACTO: Reserva de $cliente eliminada'
-      : '🟡 Reserva de $cliente eliminada';
+      : ' Reserva de $cliente eliminada';
     
     descripcion += ' (${formatter.format(monto)})';
     
