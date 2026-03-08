@@ -2,8 +2,9 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
-import 'package:reserva_canchas/providers/audit_provider.dart';
 import 'package:reserva_canchas/utils/reserva_audit_utils.dart';
+import 'package:reserva_canchas/providers/audit_provider.dart';
+import '../services/lugar_helper.dart';
 import '../models/reserva_recurrente.dart';
 import '../models/reserva.dart';
 import '../models/cancha.dart';
@@ -25,9 +26,18 @@ class ReservaRecurrenteProvider with ChangeNotifier {
     notifyListeners();
 
     try {
+      // Obtener el lugarId del usuario autenticado
+      final lugarId = await LugarHelper.getLugarId();
+      if (lugarId == null) {
+        _errorMessage = 'No se pudo obtener el lugar del usuario';
+        debugPrint('ReservaRecurrenteProvider: No se pudo obtener lugarId');
+        return;
+      }
+
       // ✅ CARGAR TODAS LAS RESERVAS RECURRENTES (activas, pausadas, canceladas)
       Query query = FirebaseFirestore.instance
-          .collection('reservas_recurrentes');
+          .collection('reservas_recurrentes')
+          .where('lugarId', isEqualTo: lugarId);
       
       if (sede != null) {
         query = query.where('sede', isEqualTo: sede);
@@ -73,7 +83,7 @@ class ReservaRecurrenteProvider with ChangeNotifier {
 
 
   /// Excluir un día específico de una reserva recurrente
-  Future<void> excluirDiaReservaRecurrente(String reservaId, DateTime fecha) async {
+  Future<void> excluirDiaReservaRecurrente(String reservaId, DateTime fecha, {String? motivo}) async {
   try {
     final index = _reservasRecurrentes.indexWhere((r) => r.id == reservaId);
     if (index == -1) throw Exception('Reserva recurrente no encontrada');
@@ -82,50 +92,45 @@ class ReservaRecurrenteProvider with ChangeNotifier {
     final reservaAnterior = _reservasRecurrentes[index];
     final reservaActualizada = reservaAnterior.excluirDia(fecha);
     
-    // Preparar datos para auditoría
-    final datosAntiguos = {
-      'id': reservaAnterior.id,
-      'nombre': reservaAnterior.clienteNombre,
-      'horario': reservaAnterior.horario,
-      'dias_excluidos': reservaAnterior.diasExcluidos,
-      'fecha': DateFormat('yyyy-MM-dd').format(fecha),
-      'montoTotal': reservaAnterior.montoTotal,
-    };
-
-    final datosNuevos = {
-      'id': reservaActualizada.id,
-      'nombre': reservaActualizada.clienteNombre,
-      'horario': reservaActualizada.horario,
-      'dias_excluidos': reservaActualizada.diasExcluidos,
-      'fecha': DateFormat('yyyy-MM-dd').format(fecha),
-      'montoTotal': reservaActualizada.montoTotal,
-    };
+    // Obtener datos completos para auditoría usando toFirestore
+    final datosAntiguos = reservaAnterior.toFirestore();
+    datosAntiguos['id'] = reservaAnterior.id;
+    datosAntiguos['nombre'] = reservaAnterior.clienteNombre;
+    datosAntiguos['cliente_nombre'] = reservaAnterior.clienteNombre;
+    
+    final datosNuevos = reservaActualizada.toFirestore();
+    datosNuevos['id'] = reservaActualizada.id;
+    datosNuevos['nombre'] = reservaActualizada.clienteNombre;
+    datosNuevos['cliente_nombre'] = reservaActualizada.clienteNombre;
     
     await FirebaseFirestore.instance
         .collection('reservas_recurrentes')
         .doc(reservaId)
         .update(reservaActualizada.toFirestore());
     
-    // 🔥 AUDITORÍA (una sola vez) y riesgo forzado MEDIO
+    // 🔍 AUDITORÍA con nivel ALTO forzado y motivo
     try {
+      final descripcion = motivo != null && motivo.isNotEmpty
+          ? 'Día excluido de la reserva recurrente de ${reservaActualizada.clienteNombre}: ${DateFormat('EEEE d MMMM yyyy', 'es').format(fecha)}. Motivo: $motivo'
+          : 'Día excluido de la reserva recurrente de ${reservaActualizada.clienteNombre}: ${DateFormat('EEEE d MMMM yyyy', 'es').format(fecha)}';
+      
       await AuditProvider.registrarAccion(
-        accion: 'excluir_dia_recurrente',
+        accion: 'excluir_dia_reserva_recurrente',
         entidad: 'reserva_recurrente',
         entidadId: reservaId,
         datosAntiguos: datosAntiguos,
         datosNuevos: datosNuevos,
-        descripcion: 'Día excluido de la reserva recurrente de ${reservaActualizada.clienteNombre}: ${DateFormat('EEEE d MMMM yyyy', 'es').format(fecha)}',
+        descripcion: descripcion,
         metadatos: {
-          '_audit_processed': true,
-          'fuente_original': 'ReservaRecurrenteProvider',
           'fecha_excluida': DateFormat('yyyy-MM-dd').format(fecha),
           'cliente': reservaActualizada.clienteNombre,
           'cliente_nombre': reservaActualizada.clienteNombre,
           'horario': reservaActualizada.horario,
           'sede': reservaActualizada.sede,
           'nombre': reservaActualizada.clienteNombre,
+          'motivo_exclusion': motivo ?? 'No especificado',
         },
-        nivelRiesgoForzado: 'medio',
+        nivelRiesgoForzado: 'alto',
       );
     } catch (e) {
       debugPrint('⚠️ Auditoría de exclusión falló: $e');
@@ -147,7 +152,19 @@ class ReservaRecurrenteProvider with ChangeNotifier {
       final index = _reservasRecurrentes.indexWhere((r) => r.id == reservaId);
       if (index == -1) throw Exception('Reserva recurrente no encontrada');
 
-      final reservaActualizada = _reservasRecurrentes[index].incluirDia(fecha);
+      final reservaAnterior = _reservasRecurrentes[index];
+      final reservaActualizada = reservaAnterior.incluirDia(fecha);
+      
+      // Obtener datos completos para auditoría usando toFirestore
+      final datosAntiguos = reservaAnterior.toFirestore();
+      datosAntiguos['id'] = reservaAnterior.id;
+      datosAntiguos['nombre'] = reservaAnterior.clienteNombre;
+      datosAntiguos['cliente_nombre'] = reservaAnterior.clienteNombre;
+      
+      final datosNuevos = reservaActualizada.toFirestore();
+      datosNuevos['id'] = reservaActualizada.id;
+      datosNuevos['nombre'] = reservaActualizada.clienteNombre;
+      datosNuevos['cliente_nombre'] = reservaActualizada.clienteNombre;
       
       await FirebaseFirestore.instance
           .collection('reservas_recurrentes')
@@ -157,13 +174,14 @@ class ReservaRecurrenteProvider with ChangeNotifier {
       _reservasRecurrentes[index] = reservaActualizada;
       notifyListeners();
 
-      // 🔍 Auditoría: incluir día previamente excluido
+      // 🔍 AUDITORÍA UNIFICADA usando ReservaAuditUtils
       try {
-        await AuditProvider.registrarAccion(
-          accion: 'incluir_dia_reserva_recurrente',
-          entidad: 'reserva_recurrente',
-          entidadId: reservaId,
-          metadatos: {
+        await ReservaAuditUtils.auditarEdicionReserva(
+          reservaId: reservaId,
+          datosAntiguos: datosAntiguos,
+          datosNuevos: datosNuevos,
+          descripcionPersonalizada: 'Día incluido nuevamente en la reserva recurrente de ${reservaActualizada.clienteNombre}: ${DateFormat('EEEE d MMMM yyyy', 'es').format(fecha)}',
+          metadatosAdicionales: {
             'fecha_incluida': DateFormat('yyyy-MM-dd').format(fecha),
             'cliente': reservaActualizada.clienteNombre,
             'cliente_nombre': reservaActualizada.clienteNombre,
@@ -171,7 +189,8 @@ class ReservaRecurrenteProvider with ChangeNotifier {
             'sede': reservaActualizada.sede,
             'nombre': reservaActualizada.clienteNombre,
           },
-          descripcion: 'Día incluido nuevamente en la reserva recurrente',
+          esReservaRecurrente: true,
+          tipoEdicion: 'dia_especifico',
         );
       } catch (e) {
         debugPrint('⚠️ Auditoría incluir día falló: $e');
@@ -341,8 +360,8 @@ Future<List<Reserva>> generarReservasDesdeRecurrentes(
         montoPagado: montoPagado, // 🔥 Ahora usa el monto pagado correcto
         nombre: reservaRecurrente.clienteNombre,
         telefono: reservaRecurrente.clienteTelefono,
-        email: reservaRecurrente.clienteEmail,
         confirmada: true,
+        lugarId: reservaRecurrente.lugarId, // ✅ Agregar lugarId de la reserva recurrente
         reservaRecurrenteId: reservaRecurrente.id,
         esReservaRecurrente: true,
         precioPersonalizado: precioPersonalizado,
@@ -413,7 +432,6 @@ Future<Map<String, Map<String, dynamic>>> _obtenerReservasIndividualesPersonaliz
       'id': reservaAnterior.id,
       'nombre': reservaAnterior.clienteNombre,
       'telefono': reservaAnterior.clienteTelefono,
-      'correo': reservaAnterior.clienteEmail,
       'fecha_inicio': DateFormat('yyyy-MM-dd').format(reservaAnterior.fechaInicio),
       'fecha_fin': reservaAnterior.fechaFin != null ? DateFormat('yyyy-MM-dd').format(reservaAnterior.fechaFin!) : null,
       'horario': reservaAnterior.horario,
@@ -477,7 +495,7 @@ Future<Map<String, Map<String, dynamic>>> _obtenerReservasIndividualesPersonaliz
   }
 
   /// ✅ MÉTODO CORREGIDO PARA CANCELAR RESERVAS FUTURAS
-  Future<void> cancelarReservasFuturas(String reservaId) async {
+  Future<void> cancelarReservasFuturas(String reservaId, {String? motivo}) async {
   try {
     final index = _reservasRecurrentes.indexWhere((r) => r.id == reservaId);
     if (index == -1) throw Exception('Reserva recurrente no encontrada');
@@ -527,6 +545,39 @@ Future<Map<String, Map<String, dynamic>>> _obtenerReservasIndividualesPersonaliz
         .doc(reservaId)
         .update(reservaActualizada.toFirestore());
     
+    // 🔍 AUDITORÍA con nivel ALTO forzado y motivo
+    try {
+      final datosReservaCancelada = reservaActual.toFirestore();
+      datosReservaCancelada['id'] = reservaActual.id;
+      datosReservaCancelada['nombre'] = reservaActual.clienteNombre;
+      datosReservaCancelada['cliente_nombre'] = reservaActual.clienteNombre;
+      
+      final descripcion = motivo != null && motivo.isNotEmpty
+          ? 'Cancelación de reservas futuras en reserva recurrente de ${reservaActual.clienteNombre}. Motivo: $motivo'
+          : 'Cancelación de reservas futuras en reserva recurrente de ${reservaActual.clienteNombre}';
+      
+      await AuditProvider.registrarAccion(
+        accion: 'cancelar_reservas_futuras_recurrente',
+        entidad: 'reserva_recurrente',
+        entidadId: reservaId,
+        datosAntiguos: datosReservaCancelada,
+        datosNuevos: reservaActualizada.toFirestore(),
+        descripcion: descripcion,
+        metadatos: {
+          'motivo_cancelacion': motivo ?? 'No especificado',
+          'cliente': reservaActual.clienteNombre,
+          'cliente_nombre': reservaActual.clienteNombre,
+          'horario': reservaActual.horario,
+          'sede': reservaActual.sede,
+          'fecha_fin_anterior': reservaActual.fechaFin != null ? DateFormat('yyyy-MM-dd').format(reservaActual.fechaFin!) : null,
+          'fecha_fin_nueva': nuevaFechaFin != null ? DateFormat('yyyy-MM-dd').format(nuevaFechaFin) : null,
+          'es_eliminacion_masiva': true,
+        },
+        nivelRiesgoForzado: 'alto',
+      );
+    } catch (e) {
+      debugPrint('⚠️ Auditoría de cancelación falló: $e');
+    }
     
     _reservasRecurrentes[index] = reservaActualizada;
     notifyListeners();

@@ -6,13 +6,18 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:reserva_canchas/providers/peticion_provider.dart';
+import 'package:reserva_canchas/providers/reserva_recurrente_provider.dart';
 import '../../../../models/reserva.dart';
+import '../../../../models/reserva_recurrente.dart';
 import '../../../../providers/cancha_provider.dart';
 import '../../../../providers/sede_provider.dart';
-import '../../../../providers/reserva_recurrente_provider.dart';
-import '../../../../models/reserva_recurrente.dart';
-import 'dart:html' as html;
+import '../../../../services/lugar_helper.dart';
+import 'dart:async';
+import 'package:flutter/foundation.dart' show kIsWeb;
+
+// Importación condicional para web
+import 'print_stub.dart'
+    if (dart.library.html) 'print_web.dart' as print_helper;
 
 class EncargadoRegistroReservasScreen extends StatefulWidget {
   const EncargadoRegistroReservasScreen({super.key});
@@ -62,9 +67,6 @@ class EncargadoRegistroReservasScreenState
       _loadReservas();
       _fadeController.forward();
       _slideController.forward();
-
-      Provider.of<PeticionProvider>(context, listen: false).iniciarEscuchaControlTotal();
-      
     });
   }
 
@@ -72,7 +74,6 @@ class EncargadoRegistroReservasScreenState
   void dispose() {
     _fadeController.dispose();
     _slideController.dispose();
-    Provider.of<PeticionProvider>(context, listen: false).detenerEscuchaControlTotal();
     super.dispose();
   }
 
@@ -102,6 +103,16 @@ class EncargadoRegistroReservasScreenState
 
     if (!mounted) return;
 
+    // Obtener lugarId del usuario autenticado
+    final lugarId = await LugarHelper.getLugarId();
+    if (lugarId == null) {
+      debugPrint('EncargadoRegistroReservasScreen: No se pudo obtener lugarId');
+      setState(() {
+        _isLoading = false;
+      });
+      return;
+    }
+
     final canchasMap = {
       for (var cancha in canchaProvider.canchas) cancha.id: cancha
     };
@@ -109,6 +120,7 @@ class EncargadoRegistroReservasScreenState
     Query<Map<String, dynamic>> query = FirebaseFirestore.instance
         .collection('reservas')
         .where('confirmada', isEqualTo: true)
+        .where('lugarId', isEqualTo: lugarId) // ✅ Agregar filtrado por lugarId
         .limit(50);
 
     if (_selectedDate != null) {
@@ -731,7 +743,6 @@ Future<void> _completarPagoReservaRecurrente(Reserva reserva) async {
         final nuevaReservaIndividual = {
           'nombre': reservaRecurrenteData['clienteNombre'],
           'telefono': reservaRecurrenteData['clienteTelefono'],
-          'correo': reservaRecurrenteData['clienteEmail'],
           'fecha': fechaStr,
           'cancha_id': reserva.cancha.id,
           'horario': reserva.horario.horaFormateada,
@@ -2286,7 +2297,6 @@ Widget _buildActionButtons(Reserva reserva, double availableWidth) {
   final currencyFormat = NumberFormat.currency(symbol: "\$", decimalDigits: 0);
   final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
   final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
-  final peticionProvider = Provider.of<PeticionProvider>(context, listen: true); // LÍNEA AGREGADA
   final totals = _calculateTotals();
   
   return Column(
@@ -2794,37 +2804,12 @@ console.warn = function() {};
     print(facturaHTML.substring(0, 50));
     
     // Crear blob con encoding específico
-    final blob = html.Blob([facturaHTML], 'text/html; charset=utf-8');
-    final url = html.Url.createObjectUrlFromBlob(blob);
-    
-    // Ventana más grande para la factura más ancha
-    final windowFeatures = [
-      'width=600',
-      'height=800',
-      'left=100',
-      'top=50',
-      'scrollbars=yes',
-      'resizable=yes',
-      'menubar=no',
-      'toolbar=no',
-      'location=no',
-      'status=no',
-      'directories=no',
-    ].join(',');
-    
-    final ventanaImpresion = html.window.open(
-      url,
-      '_blank',
-      windowFeatures
-    );
-    
-    Timer(Duration(seconds: 8), () {
-      try {
-        html.Url.revokeObjectUrl(url);
-      } catch (e) {
-        // Ignorar errores de limpieza
-      }
-    });
+    // Imprimir solo si estamos en web
+    if (kIsWeb) {
+      print_helper.imprimirHTML(facturaHTML);
+    } else {
+      print('Impresión no disponible en móvil');
+    }
     
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2839,7 +2824,7 @@ console.warn = function() {};
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Factura Lista para Imprimir',
+                      'Las facturas no estan disponibles en movil',
                       style: TextStyle(fontWeight: FontWeight.bold),
                     ),
                   ],
@@ -2881,6 +2866,7 @@ console.warn = function() {};
     }
   }
 }
+
 
 // 5. NUEVO WIDGET para totales colapsables en móvil
 Widget _buildTotalesColapsables(Map<String, double> totals) {

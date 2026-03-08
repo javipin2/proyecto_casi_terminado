@@ -11,6 +11,8 @@ class DetallesScreen extends StatefulWidget {
   final DateTime fecha;
   final Horario horario;
   final String sede;
+  final double? precioPromocional; // ✅ NUEVO: Precio promocional si viene de una promoción
+  final String? promocionId; // ✅ NUEVO: ID de la promoción para desactivarla después
 
   const DetallesScreen({
     super.key,
@@ -18,6 +20,8 @@ class DetallesScreen extends StatefulWidget {
     required this.fecha,
     required this.horario,
     required this.sede,
+    this.precioPromocional, // ✅ NUEVO: Precio promocional opcional
+    this.promocionId, // ✅ NUEVO: ID de promoción opcional
   });
 
   @override
@@ -25,10 +29,13 @@ class DetallesScreen extends StatefulWidget {
 }
 
 class _DetallesScreenState extends State<DetallesScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
   late Animation<Offset> _slideAnimation;
+  
+  // Controlador para efecto shine de promoción (null si no hay promo)
+  AnimationController? _promoShimmerController;
 
   Map<String, dynamic>? _obtenerConfiguracionHorario(String day, String horaStr) {
     final dayPrices = widget.cancha.preciosPorHorario[day];
@@ -103,8 +110,17 @@ class _DetallesScreenState extends State<DetallesScreen>
         curve: Curves.easeOutQuart,
       ),
     );
+    
+    // ✅ NUEVO: Inicializar controladores de promoción si hay promoción
+    if (widget.precioPromocional != null) {
+      _promoShimmerController = AnimationController(
+        vsync: this,
+        duration: const Duration(milliseconds: 2800),
+      )..repeat();
+    }
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
       _animationController.forward();
     });
   }
@@ -112,6 +128,7 @@ class _DetallesScreenState extends State<DetallesScreen>
   @override
   void dispose() {
     _animationController.dispose();
+    _promoShimmerController?.dispose();
     super.dispose();
   }
 
@@ -122,8 +139,11 @@ class _DetallesScreenState extends State<DetallesScreen>
 
     final Map<String, dynamic>? configuracionHorario = _obtenerConfiguracionHorario(day, horaStr);
 
-    final double precioCompleto = configuracionHorario != null ? configuracionHorario['precio']?.toDouble() ?? widget.cancha.precio : widget.cancha.precio;
+    // ✅ PRIORIDAD: Usar precio promocional si existe, sino precio normal
+    final double precioOriginal = configuracionHorario != null ? configuracionHorario['precio']?.toDouble() ?? widget.cancha.precio : widget.cancha.precio;
+    final double precioCompleto = widget.precioPromocional ?? precioOriginal;
     final bool esCompleto = configuracionHorario != null ? configuracionHorario['completo'] == true : false;
+    final bool tienePromocion = widget.precioPromocional != null;
 
     debugPrint('🔍 DEBUG - Día: $day');
     debugPrint('🔍 DEBUG - Hora: "$horaStr"');
@@ -272,10 +292,19 @@ class _DetallesScreenState extends State<DetallesScreen>
                                     ),
                                   ),
                                   const SizedBox(height: 16),
-                                  _buildPriceRow(
-                                    'Precio completo',
-                                    currencyFormat.format(precioCompleto),
-                                  ),
+                                  // ✅ MOSTRAR PRECIO ORIGINAL TACHADO SI HAY PROMOCIÓN
+                                  if (tienePromocion && precioOriginal > precioCompleto) ...[
+                                    _buildPremiumPromocionCard(
+                                      precioOriginal: precioOriginal,
+                                      precioPromocional: precioCompleto,
+                                      currencyFormat: currencyFormat,
+                                    ),
+                                  ] else ...[
+                                    _buildPriceRow(
+                                      'Precio completo',
+                                      currencyFormat.format(precioCompleto),
+                                    ),
+                                  ],
                                   if (!esCompleto)
                                     Column(
                                       children: [
@@ -481,6 +510,25 @@ class _DetallesScreenState extends State<DetallesScreen>
   }
 
   Future<void> _hacerReserva(TipoAbono tipoAbono, double montoPagado) async {
+    // ✅ USAR PRECIO PROMOCIONAL SI EXISTE
+    final double precioOriginal = precioPorHorario();
+    final double precioFinal = widget.precioPromocional ?? precioOriginal;
+    final bool tienePromocion = widget.precioPromocional != null && widget.precioPromocional! < precioOriginal;
+    final double descuentoAplicado = tienePromocion ? (precioOriginal - precioFinal) : 0.0;
+    
+    // ✅ VALIDAR PRECIO PROMOCIONAL
+    if (tienePromocion && widget.precioPromocional! >= precioOriginal) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('El precio promocional debe ser menor al precio original'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
+    
     Reserva reserva = Reserva(
       id: '',
       cancha: widget.cancha,
@@ -488,18 +536,24 @@ class _DetallesScreenState extends State<DetallesScreen>
       horario: widget.horario,
       sede: widget.sede,
       tipoAbono: tipoAbono,
-      montoTotal: montoPagado == (precioPorHorario() * 0.3).roundToDouble()
-          ? precioPorHorario()
-          : montoPagado,
+      montoTotal: precioFinal,
       montoPagado: montoPagado,
       confirmada: true,
+      // ✅ GUARDAR INFORMACIÓN DE PROMOCIÓN EN LA RESERVA
+      precioPersonalizado: tienePromocion,
+      precioOriginal: tienePromocion ? precioOriginal : null,
+      descuentoAplicado: tienePromocion ? descuentoAplicado : null,
+      promocionId: widget.promocionId, // ✅ GUARDAR ID DE PROMOCIÓN
     );
 
     try {
       final bool? reservaExitosa = await Navigator.push<bool>(
         context,
         MaterialPageRoute(
-          builder: (context) => ReservaScreen(reserva: reserva),
+          builder: (context) => ReservaScreen(
+            reserva: reserva,
+            promocionId: widget.promocionId, // ✅ PASAR ID DE PROMOCIÓN
+          ),
         ),
       );
 
@@ -524,5 +578,188 @@ class _DetallesScreenState extends State<DetallesScreen>
 
     final configuracion = _obtenerConfiguracionHorario(day, horaStr);
     return configuracion != null ? configuracion['precio']?.toDouble() ?? widget.cancha.precio : widget.cancha.precio;
+  }
+  
+  // Tarjeta de promoción estilo oscuro con borde dorado y shine
+  Widget _buildPremiumPromocionCard({
+    required double precioOriginal,
+    required double precioPromocional,
+    required NumberFormat currencyFormat,
+  }) {
+    final descuentoPct = ((precioOriginal - precioPromocional) / precioOriginal * 100).round();
+
+    const gold = Color(0xFFD4A843);
+    const goldLight = Color(0xFFE8C85A);
+    const goldDark = Color(0xFFAA8520);
+    const darkBg = Color(0xFF141414);
+
+    return AnimatedBuilder(
+      animation: _promoShimmerController!,
+      builder: (context, child) {
+        return Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            gradient: LinearGradient(
+              begin: Alignment(-1.0 + (_promoShimmerController!.value * 3), -0.5),
+              end: Alignment(1.0 + (_promoShimmerController!.value * 3), 0.5),
+              colors: const [goldDark, goldLight, gold, goldLight, goldDark],
+              stops: const [0.0, 0.35, 0.5, 0.65, 1.0],
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: gold.withOpacity(0.25),
+                blurRadius: 10,
+                offset: const Offset(0, 3),
+              ),
+            ],
+          ),
+          child: Container(
+            margin: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              color: darkBg,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Stack(
+                children: [
+                  // Shine sweep
+                  Positioned.fill(
+                    child: ShaderMask(
+                      shaderCallback: (bounds) {
+                        final pos = _promoShimmerController!.value;
+                        return LinearGradient(
+                          begin: Alignment(-2.0 + (pos * 4), -0.3),
+                          end: Alignment(-1.0 + (pos * 4), 0.3),
+                          colors: [
+                            Colors.transparent,
+                            gold.withOpacity(0.06),
+                            Colors.transparent,
+                          ],
+                        ).createShader(bounds);
+                      },
+                      blendMode: BlendMode.srcATop,
+                      child: Container(color: Colors.transparent),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        // Badge descuento
+                        Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [gold.withOpacity(0.25), goldDark.withOpacity(0.15)],
+                            ),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: gold.withOpacity(0.6), width: 1.2),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                '-$descuentoPct%',
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w900,
+                                  color: goldLight,
+                                  height: 1,
+                                ),
+                              ),
+                              const Text(
+                                'OFF',
+                                style: TextStyle(
+                                  fontSize: 7,
+                                  fontWeight: FontWeight.w700,
+                                  color: gold,
+                                  letterSpacing: 1.5,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        // Label + precio original tachado
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Row(
+                                children: [
+                                  ShaderMask(
+                                    shaderCallback: (bounds) {
+                                      final pos = _promoShimmerController!.value;
+                                      return LinearGradient(
+                                        begin: Alignment(-1.0 + (pos * 3), 0),
+                                        end: Alignment(1.0 + (pos * 3), 0),
+                                        colors: const [goldDark, goldLight, gold],
+                                      ).createShader(bounds);
+                                    },
+                                    child: const Text(
+                                      'OFERTA',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w800,
+                                        color: Colors.white,
+                                        letterSpacing: 1.8,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Container(width: 20, height: 1, color: gold.withOpacity(0.4)),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                currencyFormat.format(precioOriginal),
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.white.withOpacity(0.45),
+                                  decoration: TextDecoration.lineThrough,
+                                  decorationColor: Colors.white.withOpacity(0.45),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        // Precio promocional con shine
+                        ShaderMask(
+                          shaderCallback: (bounds) {
+                            final pos = _promoShimmerController!.value;
+                            return LinearGradient(
+                              begin: Alignment(-1.0 + (pos * 3), 0),
+                              end: Alignment(1.0 + (pos * 3), 0),
+                              colors: const [goldDark, goldLight, Colors.white, goldLight, goldDark],
+                              stops: const [0.0, 0.3, 0.5, 0.7, 1.0],
+                            ).createShader(bounds);
+                          },
+                          child: Text(
+                            currencyFormat.format(precioPromocional),
+                            style: const TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.w900,
+                              color: Colors.white,
+                              letterSpacing: -0.5,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 }

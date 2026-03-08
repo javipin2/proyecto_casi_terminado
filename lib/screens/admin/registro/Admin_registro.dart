@@ -8,14 +8,21 @@ import 'package:provider/provider.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:reserva_canchas/providers/audit_provider.dart';
-import 'package:reserva_canchas/providers/peticion_provider.dart';
 import 'package:reserva_canchas/utils/reserva_audit_utils.dart';
+import '../../../services/lugar_helper.dart';
 import '../../../../models/reserva.dart';
 import '../../../../providers/cancha_provider.dart';
 import '../../../../providers/sede_provider.dart';
 import '../../../../providers/reserva_recurrente_provider.dart';
 import '../../../../models/reserva_recurrente.dart';
-import 'dart:html' as html;
+import '../../../../providers/auth_provider.dart' as app_auth;
+
+import 'dart:async';
+import 'package:flutter/foundation.dart' show kIsWeb;
+
+// Importación condicional para web
+import 'print_stub.dart'
+    if (dart.library.html) 'print_web.dart' as print_helper;
 
 class AdminRegistroReservasScreen extends StatefulWidget {
   const AdminRegistroReservasScreen({super.key});
@@ -28,6 +35,7 @@ class AdminRegistroReservasScreen extends StatefulWidget {
 class AdminRegistroReservasScreenState
     extends State<AdminRegistroReservasScreen> with TickerProviderStateMixin {
   List<Reserva> _reservas = [];
+  List<Reserva> _devoluciones = [];
   DateTime? _selectedDate;
   String? _selectedSedeId;
   String? _selectedCanchaId;
@@ -36,9 +44,11 @@ class AdminRegistroReservasScreenState
   bool _viewTable = true;
   bool _filtersVisible = true;
   bool _totalesColapsados = true;
+  int _currentTabIndex = 0; // 0 = Registro, 1 = Devoluciones
 
   late AnimationController _fadeController;
   late AnimationController _slideController;
+  late TabController _tabController;
 
   final Color _primaryColor = const Color(0xFF3C4043);
   final Color _secondaryColor = const Color(0xFF4285F4);
@@ -52,6 +62,19 @@ class AdminRegistroReservasScreenState
     super.initState();
     initializeDateFormatting('es', null);
     _selectedDate = DateTime.now();
+    _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(() {
+      if (!_tabController.indexIsChanging && _tabController.index != _currentTabIndex) {
+        setState(() {
+          _currentTabIndex = _tabController.index;
+        });
+        if (_currentTabIndex == 1) {
+          _loadDevoluciones();
+        } else {
+          _loadReservas();
+        }
+      }
+    });
     _fadeController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 800),
@@ -65,9 +88,6 @@ class AdminRegistroReservasScreenState
       _loadReservas();
       _fadeController.forward();
       _slideController.forward();
-
-      Provider.of<PeticionProvider>(context, listen: false).iniciarEscuchaControlTotal();
-      
     });
   }
 
@@ -75,12 +95,114 @@ class AdminRegistroReservasScreenState
   void dispose() {
     _fadeController.dispose();
     _slideController.dispose();
-    Provider.of<PeticionProvider>(context, listen: false).detenerEscuchaControlTotal();
+    _tabController.dispose();
     super.dispose();
   }
 
   Future<void> _loadReservas() async {
     await _loadReservasWithFilters();
+  }
+
+  Future<void> _loadDevoluciones() async {
+    await _loadDevolucionesWithFilters();
+  }
+
+  Future<void> _loadDevolucionesWithFilters() async {
+    if (!mounted) return;
+    
+    setState(() {
+      _isLoading = true;
+      _devoluciones.clear();
+    });
+    
+    try {
+      final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
+      final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
+      
+      await Future.wait([
+        canchaProvider.fetchAllCanchas(),
+        sedeProvider.fetchSedes(),
+      ]);
+
+      if (!mounted) return;
+
+      final canchasMap = {
+        for (var cancha in canchaProvider.canchas) cancha.id: cancha
+      };
+
+      // Obtener el lugarId del usuario autenticado
+      final lugarId = await LugarHelper.getLugarId();
+      if (lugarId == null) {
+        debugPrint('Admin_registro: No se pudo obtener lugarId');
+        return;
+      }
+
+      Query<Map<String, dynamic>> query = FirebaseFirestore.instance
+          .collection('reservas')
+          .where('estado', isEqualTo: 'devolucion')
+          .where('lugarId', isEqualTo: lugarId)
+          .limit(50);
+
+      if (_selectedDate != null) {
+        final String dateStr = DateFormat('yyyy-MM-dd').format(_selectedDate!);
+        query = query.where('fecha', isEqualTo: dateStr);
+      }
+
+      if (_selectedSedeId != null) {
+        query = query.where('sede', isEqualTo: _selectedSedeId);
+      }
+
+      if (_selectedCanchaId != null) {
+        query = query.where('cancha_id', isEqualTo: _selectedCanchaId);
+      }
+
+      QuerySnapshot querySnapshot = await query
+          .get()
+          .timeout(const Duration(seconds: 10), onTimeout: () {
+            throw TimeoutException('La consulta a Firestore tardó demasiado');
+          });
+
+      if (!mounted) return;
+
+      List<Reserva> devolucionesTemp = [];
+      
+      for (var doc in querySnapshot.docs) {
+        try {
+          final data = doc.data() as Map<String, dynamic>?;
+          if (data == null ||
+              !data.containsKey('fecha') ||
+              !data.containsKey('cancha_id') ||
+              !data.containsKey('sede') ||
+              !data.containsKey('horario')) {
+            continue;
+          }
+
+          final reserva = Reserva.fromFirestoreWithCanchas(doc, canchasMap);
+          if (reserva.cancha.id.isNotEmpty) {
+            devolucionesTemp.add(reserva);
+          }
+        } catch (e) {
+          debugPrint('Error al procesar devolución: $e');
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _devoluciones = devolucionesTemp
+            ..sort((a, b) => a.horario.hora.compareTo(b.horario.hora));
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        _showErrorSnackBar('Error al cargar devoluciones: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
   }
 
   Future<void> _loadReservasWithFilters() async {
@@ -109,9 +231,17 @@ class AdminRegistroReservasScreenState
       for (var cancha in canchaProvider.canchas) cancha.id: cancha
     };
 
+    // Obtener el lugarId del usuario autenticado
+    final lugarId = await LugarHelper.getLugarId();
+    if (lugarId == null) {
+      debugPrint('Admin_registro: No se pudo obtener lugarId');
+      return;
+    }
+
     Query<Map<String, dynamic>> query = FirebaseFirestore.instance
         .collection('reservas')
         .where('confirmada', isEqualTo: true)
+        .where('lugarId', isEqualTo: lugarId)
         .limit(50);
 
     if (_selectedDate != null) {
@@ -516,12 +646,11 @@ Future<void> _editarReservaDiaEspecifico(Reserva reserva) async {
   final formKey = GlobalKey<FormState>();
   final nombreController = TextEditingController(text: reserva.nombre ?? '');
   final telefonoController = TextEditingController(text: reserva.telefono ?? '');
-  final emailController = TextEditingController(text: reserva.email ?? '');
   final precioController = TextEditingController(text: reserva.montoTotal.toString());
 
-  // Obtener estado del control total
-  final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-  final puedeHacerCambiosDirectos = await peticionProvider.puedeHacerCambiosDirectos();
+  // Obtener estado del control total: los cambios se aplican siempre directamente
+  final auth = Provider.of<app_auth.AuthProvider>(context, listen: false);
+  final puedeHacerCambiosDirectos = auth.isSuperAdmin || auth.isAdmin;
 
   final result = await showDialog<bool>(
     context: context,
@@ -534,27 +663,21 @@ Future<void> _editarReservaDiaEspecifico(Reserva reserva) async {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
-              color: puedeHacerCambiosDirectos ? Colors.green.withOpacity(0.2) : Colors.orange.withOpacity(0.2),
+              color: Colors.green.withOpacity(0.2),
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: puedeHacerCambiosDirectos ? Colors.green.withOpacity(0.5) : Colors.orange.withOpacity(0.5),
-              ),
+              border: Border.all(color: Colors.green.withOpacity(0.5)),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  puedeHacerCambiosDirectos ? Icons.check_circle : Icons.pending,
-                  size: 14,
-                  color: puedeHacerCambiosDirectos ? Colors.green.shade700 : Colors.orange.shade700,
-                ),
+                Icon(Icons.check_circle, size: 14, color: Colors.green.shade700),
                 const SizedBox(width: 4),
                 Text(
-                  puedeHacerCambiosDirectos ? 'DIRECTO' : 'PETICIÓN',
+                  'APLICAR CAMBIOS',
                   style: GoogleFonts.montserrat(
                     fontSize: 10,
                     fontWeight: FontWeight.w600,
-                    color: puedeHacerCambiosDirectos ? Colors.green.shade700 : Colors.orange.shade700,
+                    color: Colors.green.shade700,
                   ),
                 ),
               ],
@@ -568,38 +691,28 @@ Future<void> _editarReservaDiaEspecifico(Reserva reserva) async {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // Banner informativo
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
-                    colors: puedeHacerCambiosDirectos 
-                      ? [Colors.blue.withOpacity(0.1), Colors.green.withOpacity(0.1)]
-                      : [Colors.orange.withOpacity(0.1), Colors.amber.withOpacity(0.1)],
+                    colors: [Colors.blue.withOpacity(0.1), Colors.green.withOpacity(0.1)],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                   ),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
-                    color: puedeHacerCambiosDirectos ? Colors.blue.withOpacity(0.3) : Colors.orange.withOpacity(0.3),
-                  ),
+                  border: Border.all(color: Colors.blue.withOpacity(0.3)),
                 ),
                 child: Column(
                   children: [
                     Row(
                       children: [
-                        Icon(
-                          Icons.edit_calendar,
-                          color: puedeHacerCambiosDirectos ? Colors.blue[700] : Colors.orange[700],
-                        ),
+                        Icon(Icons.edit_calendar, color: Colors.blue[700]),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            puedeHacerCambiosDirectos 
-                              ? 'Edición de Día Específico - Modo Directo'
-                              : 'Edición de Día Específico - Modo Petición',
+                            'Edición de Día Específico',
                             style: GoogleFonts.montserrat(
-                              color: puedeHacerCambiosDirectos ? Colors.blue[700] : Colors.orange[700],
+                              color: Colors.blue[700],
                               fontWeight: FontWeight.w600,
                               fontSize: 14,
                             ),
@@ -609,12 +722,10 @@ Future<void> _editarReservaDiaEspecifico(Reserva reserva) async {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      puedeHacerCambiosDirectos 
-                          ? '✓ Solo esta fecha será modificada\n✓ La reserva recurrente permanece intacta\n✓ Cambios se aplicarán inmediatamente'
-                          : '📋 Se creará petición para este día específico\n⏳ Requiere aprobación del SuperAdmin\n🔒 La reserva recurrente no se verá afectada',
+                      '✓ Solo esta fecha será modificada\n✓ La reserva recurrente permanece intacta\n✓ Cambios se aplicarán inmediatamente',
                       style: GoogleFonts.montserrat(
                         fontSize: 11,
-                        color: puedeHacerCambiosDirectos ? Colors.blue[600] : Colors.orange[600],
+                        color: Colors.blue[600],
                         height: 1.3,
                       ),
                     ),
@@ -692,20 +803,6 @@ Future<void> _editarReservaDiaEspecifico(Reserva reserva) async {
               ),
               const SizedBox(height: 12),
               
-              _buildCampoFormulario(
-                controller: emailController,
-                label: 'Correo Electrónico',
-                icon: Icons.email,
-                keyboardType: TextInputType.emailAddress,
-                required: false,
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) return null;
-                  final emailRegex = RegExp(r'^[\w\.-]+@([\w-]+\.)+[\w-]{2,4}$');
-                  return emailRegex.hasMatch(value) ? 'Ingrese un correo válido' : null;
-                },
-              ),
-              const SizedBox(height: 12),
-              
               // Campo de precio con advertencias
               _buildCampoPrecio(
                 controller: precioController,
@@ -733,12 +830,12 @@ Future<void> _editarReservaDiaEspecifico(Reserva reserva) async {
             }
           },
           style: ElevatedButton.styleFrom(
-            backgroundColor: puedeHacerCambiosDirectos ? _secondaryColor : Colors.orange,
+            backgroundColor: _secondaryColor,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
           ),
           child: Text(
-            puedeHacerCambiosDirectos ? 'Aplicar Cambios' : 'Crear Petición',
+            'Aplicar Cambios',
             style: GoogleFonts.montserrat(color: Colors.white, fontWeight: FontWeight.w600),
           ),
         ),
@@ -752,7 +849,6 @@ Future<void> _editarReservaDiaEspecifico(Reserva reserva) async {
       datosAntiguos: datosAntiguos,
       nombreController: nombreController,
       telefonoController: telefonoController,
-      emailController: emailController,
       precioController: precioController,
       puedeHacerCambiosDirectos: puedeHacerCambiosDirectos,
     );
@@ -761,7 +857,6 @@ Future<void> _editarReservaDiaEspecifico(Reserva reserva) async {
   // Limpiar controladores
   nombreController.dispose();
   telefonoController.dispose();
-  emailController.dispose();
   precioController.dispose();
 }
 
@@ -770,7 +865,6 @@ Future<void> _procesarEdicionDiaEspecifico({
   required Map<String, dynamic> datosAntiguos,
   required TextEditingController nombreController,
   required TextEditingController telefonoController,
-  required TextEditingController emailController,
   required TextEditingController precioController,
   required bool puedeHacerCambiosDirectos,
 }) async {
@@ -786,7 +880,6 @@ Future<void> _procesarEdicionDiaEspecifico({
     final datosNuevos = {
       'nombre': nombreController.text.trim(),
       'telefono': telefonoController.text.trim(),
-      'correo': emailController.text.trim(),
       'valor': nuevoPrecio,
       'montoPagado': reserva.montoPagado,
       'precio_personalizado': esPrecioPersonalizado,
@@ -806,10 +899,10 @@ Future<void> _procesarEdicionDiaEspecifico({
     if (puedeHacerCambiosDirectos) {
       await _aplicarCambiosDirectosDiaEspecifico(
         reserva, datosAntiguos, datosNuevos, 
-        nombreController, telefonoController, emailController, nuevoPrecio, porcentajeCambio
+        nombreController, telefonoController, nuevoPrecio, porcentajeCambio
       );
     } else {
-      await _crearPeticionDiaEspecificoConAuditoriaUnificada(reserva, datosAntiguos, datosNuevos);
+      _showErrorSnackBar('Solo admin o superadmin pueden editar.');
     }
     
     await _loadReservasWithFilters();
@@ -827,7 +920,6 @@ Future<void> _aplicarCambiosDirectosDiaEspecifico(
   Map<String, dynamic> datosNuevos,
   TextEditingController nombreController,
   TextEditingController telefonoController,
-  TextEditingController emailController,
   double nuevoPrecio,
   double porcentajeCambio,
 ) async {
@@ -869,7 +961,6 @@ Future<void> _aplicarCambiosDirectosDiaEspecifico(
     Map<String, dynamic> reservaIndividualData = {
       'nombre': nombreController.text.trim(),
       'telefono': telefonoController.text.trim(),
-      'correo': emailController.text.trim(),
       'valor': nuevoPrecio,
       'montoTotal': nuevoPrecio,
       'montoPagado': reserva.montoPagado,
@@ -1043,92 +1134,10 @@ Future<void> _aplicarCambiosDirectosDiaEspecifico(
   }
 }
 
-Future<void> _crearPeticionDiaEspecificoConAuditoriaUnificada(
-  Reserva reserva,
-  Map<String, dynamic> datosAntiguos,
-  Map<String, dynamic> datosNuevos,
-) async {
-  
-  final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-  
-  // Añadir información adicional para la petición
-  datosNuevos.addAll({
-    'justificacion_cambios': _generarJustificacionCambiosDiaEspecifico(datosAntiguos, datosNuevos),
-    'urgencia': _evaluarUrgenciaCambios(reserva.fecha),
-    'tipo_peticion': 'edicion_dia_especifico',
-  });
-
-  final peticionId = await peticionProvider.crearPeticion(
-    reservaId: reserva.id,
-    valoresAntiguos: datosAntiguos,
-    valoresNuevos: datosNuevos,
-  );
-
-  // AUDITORÍA UNIFICADA - usando solo ReservaAuditUtils
-  await ReservaAuditUtils.auditarEdicionReserva(
-    reservaId: reserva.id,
-    datosAntiguos: datosAntiguos,
-    datosNuevos: datosNuevos,
-    descripcionPersonalizada: 'Petición de edición de día específico creada desde registro de reservas',
-    metadatosAdicionales: {
-      'peticion_id': peticionId,
-      'tipo_operacion': 'peticion_edicion_dia_especifico',
-      'requiere_aprobacion': true,
-      'usuario_tipo': 'admin_sin_control_total',
-      'interfaz_origen': 'registro_reservas_screen',
-      'reserva_recurrente_id': reserva.reservaRecurrenteId,
-      'es_dia_independiente': true,
-      'justificacion': datosNuevos['justificacion_cambios'],
-      'urgencia': datosNuevos['urgencia'],
-      'timestamp_peticion': DateTime.now().millisecondsSinceEpoch,
-      'contexto_financiero': {
-        'diferencia_precio': (datosNuevos['valor'] ?? 0) - (datosAntiguos['valor'] ?? 0),
-        'porcentaje_cambio': datosNuevos['porcentaje_cambio'] ?? 0,
-      },
-    },
-    tipoEdicion: 'peticion',
-  );
-
-  if (mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: [
-            const Icon(Icons.send, color: Colors.white),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'Petición de edición de día específico creada',
-                    style: GoogleFonts.montserrat(color: Colors.white, fontWeight: FontWeight.w600),
-                  ),
-                  Text(
-                    'ID: ${peticionId.substring(0, 8)}... | Estado: Esperando aprobación',
-                    style: GoogleFonts.montserrat(color: Colors.white70, fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        backgroundColor: Colors.orange,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        margin: const EdgeInsets.all(12),
-        duration: const Duration(seconds: 4),
-      ),
-    );
-  }
-}
-
 Map<String, dynamic> _prepararDatosEspecificoParaAuditoria(Reserva reserva) {
   return {
     'nombre': reserva.nombre ?? '',
     'telefono': reserva.telefono ?? '',
-    'correo': reserva.email ?? '',
     'valor': reserva.montoTotal,
     'montoPagado': reserva.montoPagado,
     'precio_personalizado': reserva.precioPersonalizado,
@@ -1146,27 +1155,6 @@ Map<String, dynamic> _prepararDatosEspecificoParaAuditoria(Reserva reserva) {
   };
 }
 
-String _generarJustificacionCambiosDiaEspecifico(Map<String, dynamic> datosAntiguos, Map<String, dynamic> datosNuevos) {
-  final cambios = <String>[];
-  
-  if (datosAntiguos['nombre'] != datosNuevos['nombre']) {
-    cambios.add('actualización de cliente');
-  }
-  if (datosAntiguos['telefono'] != datosNuevos['telefono']) {
-    cambios.add('cambio de teléfono');
-  }
-  if (datosAntiguos['valor'] != datosNuevos['valor']) {
-    final porcentaje = datosNuevos['porcentaje_cambio'] ?? 0;
-    cambios.add('ajuste de precio específico (${porcentaje.toStringAsFixed(1)}%)');
-  }
-  
-  return cambios.isEmpty ? 'Actualización de día específico en reserva recurrente' : 'Día específico: ${cambios.join(', ')}';
-}
-
-
-
-
-
 Future<void> _editarReservaNormal(Reserva reserva) async {
     if (!mounted) return;
     
@@ -1176,12 +1164,11 @@ Future<void> _editarReservaNormal(Reserva reserva) async {
     final formKey = GlobalKey<FormState>();
     final nombreController = TextEditingController(text: reserva.nombre ?? '');
     final telefonoController = TextEditingController(text: reserva.telefono ?? '');
-    final emailController = TextEditingController(text: reserva.email ?? '');
     final precioController = TextEditingController(text: reserva.montoTotal.toString());
 
-    // Obtener estado del control total
-    final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-    final puedeHacerCambiosDirectos = await peticionProvider.puedeHacerCambiosDirectos();
+    // Obtener estado del control total: los cambios se aplican siempre directamente
+    final auth = Provider.of<app_auth.AuthProvider>(context, listen: false);
+    final puedeHacerCambiosDirectos = auth.isSuperAdmin || auth.isAdmin;
 
     final result = await showDialog<bool>(
       context: context,
@@ -1191,31 +1178,24 @@ Future<void> _editarReservaNormal(Reserva reserva) async {
           children: [
             Text('Editar Reserva', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
             const SizedBox(width: 8),
-            // Indicador de modo mejorado
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
-                color: puedeHacerCambiosDirectos ? Colors.green.withOpacity(0.2) : Colors.orange.withOpacity(0.2),
+                color: Colors.green.withOpacity(0.2),
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: puedeHacerCambiosDirectos ? Colors.green.withOpacity(0.5) : Colors.orange.withOpacity(0.5),
-                ),
+                border: Border.all(color: Colors.green.withOpacity(0.5)),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    puedeHacerCambiosDirectos ? Icons.check_circle : Icons.pending,
-                    size: 14,
-                    color: puedeHacerCambiosDirectos ? Colors.green.shade700 : Colors.orange.shade700,
-                  ),
+                  Icon(Icons.check_circle, size: 14, color: Colors.green.shade700),
                   const SizedBox(width: 4),
                   Text(
-                    puedeHacerCambiosDirectos ? 'DIRECTO' : 'PETICIÓN',
+                    'APLICAR CAMBIOS',
                     style: GoogleFonts.montserrat(
                       fontSize: 10,
                       fontWeight: FontWeight.w600,
-                      color: puedeHacerCambiosDirectos ? Colors.green.shade700 : Colors.orange.shade700,
+                      color: Colors.green.shade700,
                     ),
                   ),
                 ],
@@ -1229,38 +1209,28 @@ Future<void> _editarReservaNormal(Reserva reserva) async {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Banner informativo mejorado
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
-                      colors: puedeHacerCambiosDirectos 
-                        ? [Colors.blue.withOpacity(0.1), Colors.green.withOpacity(0.1)]
-                        : [Colors.orange.withOpacity(0.1), Colors.amber.withOpacity(0.1)],
+                      colors: [Colors.blue.withOpacity(0.1), Colors.green.withOpacity(0.1)],
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                     ),
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: puedeHacerCambiosDirectos ? Colors.blue.withOpacity(0.3) : Colors.orange.withOpacity(0.3),
-                    ),
+                    border: Border.all(color: Colors.blue.withOpacity(0.3)),
                   ),
                   child: Column(
                     children: [
                       Row(
                         children: [
-                          Icon(
-                            puedeHacerCambiosDirectos ? Icons.edit : Icons.request_page,
-                            color: puedeHacerCambiosDirectos ? Colors.blue[700] : Colors.orange[700],
-                          ),
+                          Icon(Icons.edit, color: Colors.blue[700]),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              puedeHacerCambiosDirectos 
-                                ? 'Modo Directo Activo'
-                                : 'Modo Petición Activo',
+                              'Modo Directo Activo',
                               style: GoogleFonts.montserrat(
-                                color: puedeHacerCambiosDirectos ? Colors.blue[700] : Colors.orange[700],
+                                color: Colors.blue[700],
                                 fontWeight: FontWeight.w600,
                                 fontSize: 14,
                               ),
@@ -1270,12 +1240,10 @@ Future<void> _editarReservaNormal(Reserva reserva) async {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        puedeHacerCambiosDirectos 
-                            ? '✓ Los cambios se aplicarán inmediatamente\n✓ Se registrarán en auditoría automáticamente\n✓ Alertas críticas se activarán si es necesario'
-                            : '📋 Se creará una petición para revisión\n⏳ Requiere aprobación del SuperAdmin\n📊 Se registrará en auditoría como petición',
+                        '✓ Los cambios se aplicarán inmediatamente\n✓ Se registrarán en auditoría automáticamente\n✓ Alertas críticas se activarán si es necesario',
                         style: GoogleFonts.montserrat(
                           fontSize: 11,
-                          color: puedeHacerCambiosDirectos ? Colors.blue[600] : Colors.orange[600],
+                          color: Colors.blue[600],
                           height: 1.3,
                         ),
                       ),
@@ -1350,24 +1318,10 @@ Future<void> _editarReservaNormal(Reserva reserva) async {
                 ),
                 const SizedBox(height: 12),
                 
-                _buildCampoFormulario(
-                  controller: emailController,
-                  label: 'Correo Electrónico',
-                  icon: Icons.email,
-                  keyboardType: TextInputType.emailAddress,
-                  required: false,
-                  validator: (value) {
-                    if (value == null || value.trim().isEmpty) return null;
-                    final emailRegex = RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$');
-                    return emailRegex.hasMatch(value) ? null : 'Ingrese un correo válido';
-                  },
-                ),
-                const SizedBox(height: 12),
-                
-                // Campo de precio con advertencias
+                // Campo de precio con advertencias (baseline = precio con el que se creó la reserva)
                 _buildCampoPrecio(
                   controller: precioController,
-                  precioOriginal: reserva.precioOriginal ?? reserva.montoTotal,
+                  precioOriginal: reserva.montoTotal,
                   validator: (value) {
                     if (value == null || value.trim().isEmpty) return 'Ingrese el precio';
                     final precio = double.tryParse(value);
@@ -1391,12 +1345,12 @@ Future<void> _editarReservaNormal(Reserva reserva) async {
               }
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: puedeHacerCambiosDirectos ? _secondaryColor : Colors.orange,
+              backgroundColor: _secondaryColor,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
             ),
             child: Text(
-              puedeHacerCambiosDirectos ? 'Aplicar Cambios' : 'Crear Petición',
+              'Aplicar Cambios',
               style: GoogleFonts.montserrat(color: Colors.white, fontWeight: FontWeight.w600),
             ),
           ),
@@ -1410,7 +1364,6 @@ Future<void> _editarReservaNormal(Reserva reserva) async {
         datosAntiguos: datosAntiguos,
         nombreController: nombreController,
         telefonoController: telefonoController,
-        emailController: emailController,
         precioController: precioController,
         puedeHacerCambiosDirectos: puedeHacerCambiosDirectos,
       );
@@ -1419,7 +1372,6 @@ Future<void> _editarReservaNormal(Reserva reserva) async {
     // Limpiar controladores
     nombreController.dispose();
     telefonoController.dispose();
-    emailController.dispose();
     precioController.dispose();
   }
 
@@ -1546,13 +1498,13 @@ Future<void> _procesarEdicionReserva({
   required Map<String, dynamic> datosAntiguos,
   required TextEditingController nombreController,
   required TextEditingController telefonoController,
-  required TextEditingController emailController,
   required TextEditingController precioController,
   required bool puedeHacerCambiosDirectos,
 }) async {
   try {
     final nuevoPrecio = double.parse(precioController.text.trim());
-    final precioOriginal = reserva.precioOriginal ?? reserva.montoTotal;
+    // Precio de referencia = con el que se creó la reserva (para % y alertas)
+    final precioOriginal = reserva.montoTotal;
     final esPrecioPersonalizado = (nuevoPrecio - precioOriginal).abs() > 0.01;
     final porcentajeCambio = precioOriginal > 0 ? ((nuevoPrecio - precioOriginal) / precioOriginal * 100).abs() : 0.0;
     
@@ -1560,7 +1512,6 @@ Future<void> _procesarEdicionReserva({
     final datosNuevos = {
       'nombre': nombreController.text.trim(),
       'telefono': telefonoController.text.trim(),
-      'correo': emailController.text.trim(),
       'valor': nuevoPrecio,
       'montoPagado': reserva.montoPagado,
       'precio_personalizado': esPrecioPersonalizado,
@@ -1578,10 +1529,10 @@ Future<void> _procesarEdicionReserva({
     if (puedeHacerCambiosDirectos) {
       await _aplicarCambiosDirectosConAuditoriaUnificada(
         reserva, datosAntiguos, datosNuevos, 
-        nombreController, telefonoController, emailController, nuevoPrecio, porcentajeCambio
+        nombreController, telefonoController, nuevoPrecio, porcentajeCambio
       );
     } else {
-      await _crearPeticionConAuditoriaUnificada(reserva, datosAntiguos, datosNuevos);
+      _showErrorSnackBar('Solo admin o superadmin pueden editar.');
     }
     
     await _loadReservasWithFilters();
@@ -1599,12 +1550,12 @@ Future<void> _aplicarCambiosDirectosConAuditoriaUnificada(
   Map<String, dynamic> datosNuevos,
   TextEditingController nombreController,
   TextEditingController telefonoController,
-  TextEditingController emailController,
   double nuevoPrecio,
   double porcentajeCambio,
 ) async {
   
-  final precioOriginal = reserva.precioOriginal ?? reserva.montoTotal;
+  // Precio de referencia = con el que se creó la reserva (para guardar precio_original en BD)
+  final precioOriginal = reserva.montoTotal;
   final esPrecioPersonalizado = (nuevoPrecio - precioOriginal).abs() > 0.01;
   final descuento = esPrecioPersonalizado && nuevoPrecio < precioOriginal 
       ? (precioOriginal - nuevoPrecio) : 0.0;
@@ -1613,7 +1564,6 @@ Future<void> _aplicarCambiosDirectosConAuditoriaUnificada(
   Map<String, dynamic> updateData = {
     'nombre': nombreController.text.trim(),
     'telefono': telefonoController.text.trim(),
-    'correo': emailController.text.trim(),
     'valor': nuevoPrecio,
     'montoPagado': reserva.montoPagado,
     'estado': reserva.montoPagado >= nuevoPrecio ? 'completo' : 'parcial',
@@ -1714,80 +1664,6 @@ Future<void> _aplicarCambiosDirectosConAuditoriaUnificada(
   }
 }
 
-Future<void> _crearPeticionConAuditoriaUnificada(
-  Reserva reserva,
-  Map<String, dynamic> datosAntiguos,
-  Map<String, dynamic> datosNuevos,
-) async {
-  
-  final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-  
-  // Añadir información adicional para la petición
-  datosNuevos.addAll({
-    'justificacion_cambios': _generarJustificacionCambios(datosAntiguos, datosNuevos),
-    'urgencia': _evaluarUrgenciaCambios(reserva.fecha),
-  });
-
-  final peticionId = await peticionProvider.crearPeticion(
-    reservaId: reserva.id,
-    valoresAntiguos: datosAntiguos,
-    valoresNuevos: datosNuevos,
-  );
-
-  // AUDITORÍA UNIFICADA - usando solo ReservaAuditUtils
-  await ReservaAuditUtils.auditarEdicionReserva(
-    reservaId: reserva.id,
-    datosAntiguos: datosAntiguos,
-    datosNuevos: datosNuevos,
-    descripcionPersonalizada: 'Petición de edición creada desde registro de reservas',
-    metadatosAdicionales: {
-      'peticion_id': peticionId,
-      'tipo_operacion': 'peticion_edicion_registro',
-      'requiere_aprobacion': true,
-      'usuario_tipo': 'admin_sin_control_total',
-      'interfaz_origen': 'registro_reservas_screen',
-      'justificacion': datosNuevos['justificacion_cambios'],
-      'urgencia': datosNuevos['urgencia'],
-      'timestamp_peticion': DateTime.now().millisecondsSinceEpoch,
-    },
-    tipoEdicion: 'peticion',
-  );
-
-  if (mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: [
-            const Icon(Icons.send, color: Colors.white),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'Petición creada exitosamente',
-                    style: GoogleFonts.montserrat(color: Colors.white, fontWeight: FontWeight.w600),
-                  ),
-                  Text(
-                    'ID: ${peticionId.substring(0, 8)}... | Estado: Esperando aprobación',
-                    style: GoogleFonts.montserrat(color: Colors.white70, fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        backgroundColor: Colors.orange,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        margin: const EdgeInsets.all(12),
-        duration: const Duration(seconds: 4),
-      ),
-    );
-  }
-}
-
   String _calcularImpactoFinanciero(double precioOriginal, double precioNuevo) {
     final diferencia = precioNuevo - precioOriginal;
     final porcentaje = precioOriginal > 0 ? (diferencia / precioOriginal * 100) : 0;
@@ -1796,31 +1672,6 @@ Future<void> _crearPeticionConAuditoriaUnificada(
     if (diferencia.abs() >= 50000) return 'alto';
     if (diferencia.abs() >= 20000) return 'medio';
     return 'bajo';
-  }
-
-  String _generarJustificacionCambios(Map<String, dynamic> datosAntiguos, Map<String, dynamic> datosNuevos) {
-    final cambios = <String>[];
-    
-    if (datosAntiguos['nombre'] != datosNuevos['nombre']) {
-      cambios.add('actualización de cliente');
-    }
-    if (datosAntiguos['telefono'] != datosNuevos['telefono']) {
-      cambios.add('cambio de teléfono');
-    }
-    if (datosAntiguos['valor'] != datosNuevos['valor']) {
-      final porcentaje = datosNuevos['porcentaje_cambio'] ?? 0;
-      cambios.add('ajuste de precio (${porcentaje.toStringAsFixed(1)}%)');
-    }
-    
-    return cambios.isEmpty ? 'Actualización general' : cambios.join(', ');
-  }
-
-  String _evaluarUrgenciaCambios(DateTime fechaReserva) {
-    final dias = fechaReserva.difference(DateTime.now()).inDays;
-    if (dias <= 1) return 'critica';
-    if (dias <= 3) return 'alta';
-    if (dias <= 7) return 'media';
-    return 'baja';
   }
 
   bool _esHorarioPeak(String horario) {
@@ -1843,7 +1694,6 @@ Future<void> _crearPeticionConAuditoriaUnificada(
     return {
       'nombre': reserva.nombre ?? '',
       'telefono': reserva.telefono ?? '',
-      'correo': reserva.email ?? '',
       'valor': reserva.montoTotal,
       'montoPagado': reserva.montoPagado,
       'precio_personalizado': reserva.precioPersonalizado,
@@ -1873,9 +1723,9 @@ Future<void> _editarPrecioReservaRecurrente(Reserva reserva) async {
   final formKey = GlobalKey<FormState>();
   final precioController = TextEditingController(text: reserva.montoTotal.toString());
 
-  // Obtener estado del control total
-  final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-  final puedeHacerCambiosDirectos = await peticionProvider.puedeHacerCambiosDirectos();
+  // Obtener estado del control total: los cambios se aplican siempre directamente
+  final auth = Provider.of<app_auth.AuthProvider>(context, listen: false);
+  final puedeHacerCambiosDirectos = auth.isSuperAdmin || auth.isAdmin;
 
   // Obtener la reserva recurrente completa de la base de datos
   DocumentSnapshot? reservaRecurrenteDoc;
@@ -1910,19 +1760,18 @@ Future<void> _editarPrecioReservaRecurrente(Reserva reserva) async {
             style: GoogleFonts.montserrat(fontWeight: FontWeight.bold),
           ),
           const SizedBox(width: 8),
-          // Indicador de modo
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
             decoration: BoxDecoration(
-              color: puedeHacerCambiosDirectos ? Colors.green.withOpacity(0.2) : Colors.orange.withOpacity(0.2),
+              color: Colors.green.withOpacity(0.2),
               borderRadius: BorderRadius.circular(4),
             ),
             child: Text(
-              puedeHacerCambiosDirectos ? 'DIRECTO' : 'PETICIÓN',
+              'DIRECTO',
               style: GoogleFonts.montserrat(
                 fontSize: 10,
                 fontWeight: FontWeight.w600,
-                color: puedeHacerCambiosDirectos ? Colors.green.shade700 : Colors.orange.shade700,
+                color: Colors.green.shade700,
               ),
             ),
           ),
@@ -1963,29 +1812,21 @@ Future<void> _editarPrecioReservaRecurrente(Reserva reserva) async {
                     Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: puedeHacerCambiosDirectos ? Colors.green.withOpacity(0.1) : Colors.orange.withOpacity(0.1),
+                        color: Colors.green.withOpacity(0.1),
                         borderRadius: BorderRadius.circular(6),
-                        border: Border.all(
-                          color: puedeHacerCambiosDirectos ? Colors.green.withOpacity(0.3) : Colors.orange.withOpacity(0.3),
-                        ),
+                        border: Border.all(color: Colors.green.withOpacity(0.3)),
                       ),
                       child: Row(
                         children: [
-                          Icon(
-                            puedeHacerCambiosDirectos ? Icons.edit : Icons.request_page,
-                            color: puedeHacerCambiosDirectos ? Colors.green.shade600 : Colors.orange.shade600,
-                            size: 14,
-                          ),
+                          Icon(Icons.edit, color: Colors.green.shade600, size: 14),
                           const SizedBox(width: 6),
                           Expanded(
                             child: Text(
-                              puedeHacerCambiosDirectos 
-                                  ? 'Los cambios se aplicarán a toda la recurrencia inmediatamente'
-                                  : 'Se creará una petición para cambios en toda la recurrencia',
+                              'Los cambios se aplicarán a toda la recurrencia inmediatamente',
                               style: GoogleFonts.montserrat(
                                 fontSize: 10,
                                 fontWeight: FontWeight.w500,
-                                color: puedeHacerCambiosDirectos ? Colors.green.shade700 : Colors.orange.shade700,
+                                color: Colors.green.shade700,
                               ),
                             ),
                           ),
@@ -2062,9 +1903,7 @@ Future<void> _editarPrecioReservaRecurrente(Reserva reserva) async {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      puedeHacerCambiosDirectos
-                          ? '• El documento de la reserva recurrente\n• Todas las reservas individuales generadas'
-                          : '• Se creará una petición para aprobación\n• Los cambios se aplicarán tras aprobación',
+                      '• El documento de la reserva recurrente\n• Todas las reservas individuales generadas',
                       style: GoogleFonts.montserrat(
                         fontSize: 11,
                         color: Colors.blue[600],
@@ -2089,11 +1928,11 @@ Future<void> _editarPrecioReservaRecurrente(Reserva reserva) async {
             }
           },
           style: ElevatedButton.styleFrom(
-            backgroundColor: puedeHacerCambiosDirectos ? Colors.orange : Colors.orange.shade700,
+            backgroundColor: _secondaryColor,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           ),
           child: Text(
-            puedeHacerCambiosDirectos ? 'Actualizar Precio' : 'Crear Petición',
+            'Actualizar Precio',
             style: GoogleFonts.montserrat(color: Colors.white),
           ),
         ),
@@ -2170,7 +2009,7 @@ Future<void> _procesarEdicionReservaRecurrente({
         esPrecioPersonalizado, precioOriginal, descuento, porcentajeCambio
       );
     } else {
-      await _crearPeticionRecurrenteConAuditoriaUnificada(reserva, datosAntiguos, datosNuevos);
+      _showErrorSnackBar('Solo admin o superadmin pueden editar.');
     }
     
     await _loadReservasWithFilters();
@@ -2366,86 +2205,6 @@ Future<void> _aplicarCambiosDirectosRecurrenteConAuditoriaUnificada(
   }
 }
 
-Future<void> _crearPeticionRecurrenteConAuditoriaUnificada(
-  Reserva reserva,
-  Map<String, dynamic> datosAntiguos,
-  Map<String, dynamic> datosNuevos,
-) async {
-  
-  final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-  
-  // Añadir información adicional para la petición
-  datosNuevos.addAll({
-    'justificacion_cambios': 'Cambio de precio en reserva recurrente',
-    'urgencia': _evaluarUrgenciaCambios(reserva.fecha),
-    'tipo_peticion': 'cambio_precio_recurrente',
-  });
-
-  final peticionId = await peticionProvider.crearPeticion(
-    reservaId: reserva.id,
-    valoresAntiguos: datosAntiguos,
-    valoresNuevos: datosNuevos,
-  );
-
-  // AUDITORÍA UNIFICADA - usando solo ReservaAuditUtils
-  await ReservaAuditUtils.auditarEdicionReserva(
-    reservaId: reserva.id,
-    datosAntiguos: datosAntiguos,
-    datosNuevos: datosNuevos,
-    descripcionPersonalizada: 'Petición de cambio de precio en reserva recurrente creada desde registro',
-    metadatosAdicionales: {
-      'peticion_id': peticionId,
-      'tipo_operacion': 'peticion_edicion_recurrente',
-      'requiere_aprobacion': true,
-      'usuario_tipo': 'admin_sin_control_total',
-      'interfaz_origen': 'registro_reservas_screen',
-      'reserva_recurrente_id': reserva.reservaRecurrenteId,
-      'justificacion': datosNuevos['justificacion_cambios'],
-      'urgencia': datosNuevos['urgencia'],
-      'timestamp_peticion': DateTime.now().millisecondsSinceEpoch,
-      'contexto_financiero': {
-        'diferencia_precio': (datosNuevos['montoTotal'] ?? 0) - (datosAntiguos['montoTotal'] ?? 0),
-        'porcentaje_cambio': datosNuevos['porcentaje_cambio'] ?? 0,
-      },
-    },
-    tipoEdicion: 'peticion',
-  );
-
-  if (mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: [
-            const Icon(Icons.send, color: Colors.white),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'Petición de cambio de precio recurrente creada',
-                    style: GoogleFonts.montserrat(color: Colors.white, fontWeight: FontWeight.w600),
-                  ),
-                  Text(
-                    'ID: ${peticionId.substring(0, 8)}... | Estado: Esperando aprobación',
-                    style: GoogleFonts.montserrat(color: Colors.white70, fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        backgroundColor: Colors.orange,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        margin: const EdgeInsets.all(12),
-        duration: const Duration(seconds: 4),
-      ),
-    );
-  }
-}
-
 Widget _buildCampoPrecioRecurrente({
   required TextEditingController controller,
   required double precioOriginal,
@@ -2564,7 +2323,6 @@ Future<Map<String, dynamic>> _prepararDatosRecurrenteParaAuditoria(Reserva reser
       'precioOriginal': data['precioOriginal'],
       'clienteNombre': data['clienteNombre'] ?? '',
       'clienteTelefono': data['clienteTelefono'] ?? '',
-      'clienteEmail': data['clienteEmail'] ?? '',
       'diasSemana': data['diasSemana'] ?? [],
       'cancha_nombre': reserva.cancha.nombre,
       'cancha_id': reserva.cancha.id,
@@ -2588,7 +2346,7 @@ Future<Map<String, dynamic>> _prepararDatosRecurrenteParaAuditoria(Reserva reser
   
   final montoRestante = reserva.montoTotal - reserva.montoPagado;
   
-  final result = await showDialog<bool>(
+  final result = await showDialog<String>(
     context: context,
     builder: (context) => AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
@@ -2645,54 +2403,147 @@ Future<Map<String, dynamic>> _prepararDatosRecurrenteParaAuditoria(Reserva reser
           ),
           const SizedBox(height: 12),
           Text(
-            '¿Confirmar pago completo de la reserva?',
-            style: GoogleFonts.montserrat(color: _primaryColor),
+            'Selecciona cómo deseas completar el pago:',
+            style: GoogleFonts.montserrat(color: _primaryColor, fontWeight: FontWeight.w500),
           ),
         ],
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(context, false),
+          onPressed: () => Navigator.pop(context, 'cancel'),
           child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
         ),
         ElevatedButton(
-          onPressed: () => Navigator.pop(context, true),
+          onPressed: () => Navigator.pop(context, 'solo_abono'),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.orange,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          child: Text('Solo con Abono', style: GoogleFonts.montserrat(color: Colors.white)),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.pop(context, 'completo'),
           style: ElevatedButton.styleFrom(
             backgroundColor: _reservedColor,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           ),
-          child: Text('Confirmar Pago', style: GoogleFonts.montserrat(color: Colors.white)),
+          child: Text('Pago Completo', style: GoogleFonts.montserrat(color: Colors.white)),
         ),
       ],
     ),
   );
 
-  if (result == true && mounted) {
+  if (result != null && result != 'cancel' && mounted) {
     try {
-      await FirebaseFirestore.instance
-          .collection('reservas')
-          .doc(reserva.id)
-          .update({
-        'montoPagado': reserva.montoTotal, // Pagar el total completo
-        'estado': 'completo',
-      });
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              const Icon(Icons.check_circle, color: Colors.white),
-              const SizedBox(width: 10),
-              Text('Pago completado correctamente', style: GoogleFonts.montserrat(color: Colors.white)),
-            ],
+      if (result == 'solo_abono') {
+        // 🔍 Capturar datos antiguos para auditoría ANTES de actualizar
+        final estadoAnterior = reserva.tipoAbono == TipoAbono.completo ? 'completo' : 'parcial';
+        final datosAntiguos = {
+          'valor': reserva.montoTotal,
+          'montoTotal': reserva.montoTotal,
+          'montoPagado': reserva.montoPagado,
+          'estado': estadoAnterior,
+          'nombre': reserva.nombre ?? '',
+          'cancha_nombre': reserva.cancha.nombre,
+          'sede': reserva.sede,
+          'fecha': DateFormat('yyyy-MM-dd').format(reserva.fecha),
+          'horario': reserva.horario.horaFormateada,
+        };
+        
+        // Completar pago solo con abono: estado completo, restante = 0 (ajustando valor)
+        await FirebaseFirestore.instance
+            .collection('reservas')
+            .doc(reserva.id)
+            .update({
+          'valor': reserva.montoPagado, // Ajustar el total al monto pagado (restante = 0)
+          'estado': 'completo',
+        });
+        
+        // 🔍 Preparar datos nuevos para auditoría
+        final datosNuevos = {
+          'valor': reserva.montoPagado,
+          'montoTotal': reserva.montoPagado,
+          'montoPagado': reserva.montoPagado,
+          'estado': 'completo',
+          'nombre': reserva.nombre ?? '',
+          'cancha_nombre': reserva.cancha.nombre,
+          'sede': reserva.sede,
+          'fecha': DateFormat('yyyy-MM-dd').format(reserva.fecha),
+          'horario': reserva.horario.horaFormateada,
+        };
+        
+        // 🔍 AUDITORÍA AUTOMÁTICA - Completar pago solo con abono (NIVEL ALTO)
+        try {
+          await AuditProvider.registrarAccion(
+            accion: 'completar_pago_solo_abono',
+            entidad: 'reserva',
+            entidadId: reserva.id,
+            datosAntiguos: datosAntiguos,
+            datosNuevos: datosNuevos,
+            descripcion: 'Pago completado solo con abono. Total ajustado de \$${NumberFormat('#,###', 'es').format(reserva.montoTotal.toInt())} a \$${NumberFormat('#,###', 'es').format(reserva.montoPagado.toInt())}',
+            metadatos: {
+              'tipo_operacion': 'completar_pago_solo_abono',
+              'monto_total_original': reserva.montoTotal,
+              'monto_pagado': reserva.montoPagado,
+              'diferencia_perdida': reserva.montoTotal - reserva.montoPagado,
+              'porcentaje_perdido': reserva.montoTotal > 0 ? ((reserva.montoTotal - reserva.montoPagado) / reserva.montoTotal * 100) : 0,
+              'cancha_nombre': reserva.cancha.nombre,
+              'sede': reserva.sede,
+              'cliente': reserva.nombre ?? '',
+              'fecha_reserva': DateFormat('yyyy-MM-dd').format(reserva.fecha),
+              'horario': reserva.horario.horaFormateada,
+              'interfaz_origen': 'registro_reservas_screen',
+            },
+            nivelRiesgoForzado: 'alto',
+          );
+        } catch (auditError) {
+          debugPrint('⚠️ Error en auditoría de completar pago solo con abono: $auditError');
+        }
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.check_circle, color: Colors.white),
+                const SizedBox(width: 10),
+                Text('Pago completado solo con abono. Restante ajustado a 0.', style: GoogleFonts.montserrat(color: Colors.white)),
+              ],
+            ),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            margin: const EdgeInsets.all(12),
+            duration: const Duration(seconds: 2),
           ),
-          backgroundColor: _reservedColor,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          margin: const EdgeInsets.all(12),
-          duration: const Duration(seconds: 2),
-        ),
-      );
+        );
+      } else if (result == 'completo') {
+        // Completar pago completo: pagar el total
+        await FirebaseFirestore.instance
+            .collection('reservas')
+            .doc(reserva.id)
+            .update({
+          'montoPagado': reserva.montoTotal, // Pagar el total completo
+          'estado': 'completo',
+        });
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.check_circle, color: Colors.white),
+                const SizedBox(width: 10),
+                Text('Pago completado correctamente', style: GoogleFonts.montserrat(color: Colors.white)),
+              ],
+            ),
+            backgroundColor: _reservedColor,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            margin: const EdgeInsets.all(12),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+      
       await _loadReservasWithFilters();
     } catch (e) {
       if (mounted) {
@@ -2703,6 +2554,251 @@ Future<Map<String, dynamic>> _prepararDatosRecurrenteParaAuditoria(Reserva reser
 }
 
 
+
+  Future<void> _procesarDevolucion(Reserva reserva) async {
+    if (!mounted) return;
+    
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+        title: Text('Procesar Devolución', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '¿Deseas procesar la devolución de esta reserva?',
+              style: GoogleFonts.montserrat(color: _primaryColor),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Reserva: ${reserva.cancha.nombre}', 
+                       style: GoogleFonts.montserrat(fontWeight: FontWeight.w600)),
+                  Text('Fecha: ${DateFormat('dd/MM/yyyy').format(reserva.fecha)} - ${reserva.horario.horaFormateada}', 
+                       style: GoogleFonts.montserrat()),
+                  Text('Cliente: ${reserva.nombre ?? "N/A"}', 
+                       style: GoogleFonts.montserrat()),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'La reserva cambiará a estado "devolución" y se eliminará el campo de confirmación.',
+              style: GoogleFonts.montserrat(color: Colors.orange, fontSize: 12),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.orange,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: Text('Procesar Devolución', style: GoogleFonts.montserrat(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (result == true && mounted) {
+      try {
+        // 🔍 OBTENER DATOS ANTES DE ACTUALIZAR PARA AUDITORÍA
+        final datosReservaParaAuditoria = {
+          'nombre': reserva.nombre,
+          'telefono': reserva.telefono,
+          'fecha': DateFormat('yyyy-MM-dd').format(reserva.fecha),
+          'horario': reserva.horario.horaFormateada,
+          'montoTotal': reserva.montoTotal,
+          'valor': reserva.montoTotal, // Para compatibilidad
+          'montoPagado': reserva.montoPagado,
+          'cancha_nombre': reserva.cancha.nombre,
+          'cancha_id': reserva.cancha.id,
+          'sede': reserva.sede,
+          'estado': reserva.tipoAbono.toString(),
+          'confirmada': reserva.confirmada,
+          'precio_personalizado': reserva.precioPersonalizado ?? false,
+        };
+        
+        await FirebaseFirestore.instance
+            .collection('reservas')
+            .doc(reserva.id)
+            .update({
+          'estado': 'devolucion',
+          'confirmada': FieldValue.delete(), // ✅ Eliminar el campo confirmada
+          'abono_entregado': false, // ✅ Inicializar como pendiente (abono no entregado)
+        });
+        
+        // 🔍 AUDITORÍA AUTOMÁTICA - Registrar procesamiento de devolución
+        await ReservaAuditUtils.auditarProcesarDevolucion(
+          reservaId: reserva.id,
+          datosReserva: datosReservaParaAuditoria,
+          motivo: 'Procesamiento desde sesión de registro',
+        );
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.check_circle, color: Colors.white),
+                const SizedBox(width: 10),
+                Text('Devolución procesada correctamente', style: GoogleFonts.montserrat(color: Colors.white)),
+              ],
+            ),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            margin: const EdgeInsets.all(12),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        
+        // Recargar reservas y devoluciones
+        if (_currentTabIndex == 0) {
+          await _loadReservasWithFilters();
+        } else {
+          await _loadDevolucionesWithFilters();
+        }
+      } catch (e) {
+        if (mounted) {
+          _showErrorSnackBar('Error al procesar devolución: $e');
+        }
+      }
+    }
+  }
+
+  Future<void> _realizarDevolucion(Reserva reserva) async {
+    if (!mounted) return;
+    
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+        title: Text('Realizar Devolución', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '¿Confirmas que el abono ya fue entregado al cliente?',
+              style: GoogleFonts.montserrat(color: _primaryColor),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: _reservedColor.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Reserva: ${reserva.cancha.nombre}', 
+                       style: GoogleFonts.montserrat(fontWeight: FontWeight.w600)),
+                  Text('Fecha: ${DateFormat('dd/MM/yyyy').format(reserva.fecha)} - ${reserva.horario.horaFormateada}', 
+                       style: GoogleFonts.montserrat()),
+                  Text('Cliente: ${reserva.nombre ?? "N/A"}', 
+                       style: GoogleFonts.montserrat()),
+                  const SizedBox(height: 8),
+                  Text('Abono: \$${NumberFormat('#,###', 'es').format(reserva.montoPagado.toInt())}', 
+                       style: GoogleFonts.montserrat(fontWeight: FontWeight.w600, color: _reservedColor)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Esta acción marcará la devolución como completada.',
+              style: GoogleFonts.montserrat(color: _reservedColor, fontSize: 12),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _reservedColor,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: Text('Confirmar Entrega', style: GoogleFonts.montserrat(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (result == true && mounted) {
+      try {
+        // 🔍 OBTENER DATOS ANTES DE ACTUALIZAR PARA AUDITORÍA
+        final datosReservaParaAuditoria = {
+          'nombre': reserva.nombre,
+          'telefono': reserva.telefono,
+          'fecha': DateFormat('yyyy-MM-dd').format(reserva.fecha),
+          'horario': reserva.horario.horaFormateada,
+          'montoTotal': reserva.montoTotal,
+          'valor': reserva.montoTotal,
+          'montoPagado': reserva.montoPagado,
+          'cancha_nombre': reserva.cancha.nombre,
+          'cancha_id': reserva.cancha.id,
+          'sede': reserva.sede,
+          'estado': reserva.tipoAbono.toString(),
+          'abono_entregado': false, // Estado anterior
+        };
+        
+        await FirebaseFirestore.instance
+            .collection('reservas')
+            .doc(reserva.id)
+            .update({
+          'abono_entregado': true, // ✅ Marcar que el abono fue entregado
+        });
+        
+        // 🔍 AUDITORÍA AUTOMÁTICA - Registrar confirmación de devolución
+        await ReservaAuditUtils.auditarConfirmarDevolucion(
+          reservaId: reserva.id,
+          datosReserva: datosReservaParaAuditoria,
+        );
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.check_circle, color: Colors.white),
+                const SizedBox(width: 10),
+                Text('Devolución completada. Abono entregado al cliente.', style: GoogleFonts.montserrat(color: Colors.white)),
+              ],
+            ),
+            backgroundColor: _reservedColor,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            margin: const EdgeInsets.all(12),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        
+        // Recargar devoluciones
+        await _loadDevolucionesWithFilters();
+      } catch (e) {
+        if (mounted) {
+          _showErrorSnackBar('Error al realizar devolución: $e');
+        }
+      }
+    }
+  }
 
 Future<void> _completarPagoReservaRecurrente(Reserva reserva) async {
   if (!mounted || reserva.reservaRecurrenteId == null) return;
@@ -2874,7 +2970,6 @@ Future<void> _completarPagoReservaRecurrente(Reserva reserva) async {
         final nuevaReservaIndividual = {
           'nombre': reservaRecurrenteData['clienteNombre'],
           'telefono': reservaRecurrenteData['clienteTelefono'],
-          'correo': reservaRecurrenteData['clienteEmail'],
           'fecha': fechaStr,
           'cancha_id': reserva.cancha.id,
           'horario': reserva.horario.horaFormateada,
@@ -3380,7 +3475,6 @@ Future<void> confirmarYEjecutarReseteoContabilidad() async {
         final datosReservaParaAuditoria = {
           'nombre': reserva.nombre,
           'telefono': reserva.telefono,
-          'correo': reserva.email,
           'fecha': DateFormat('yyyy-MM-dd').format(reserva.fecha),
           'horario': reserva.horario.horaFormateada,
           'montoTotal': reserva.montoTotal,
@@ -3401,11 +3495,31 @@ Future<void> confirmarYEjecutarReseteoContabilidad() async {
             .doc(reservaId)
             .delete();
         
-        // 🔍 AUDITORÍA AUTOMÁTICA - Registrar eliminación
-        await ReservaAuditUtils.auditarEliminacionReserva(
-          reservaId: reservaId,
-          datosReserva: datosReservaParaAuditoria,
-          motivo: motivo?.isNotEmpty == true ? motivo : 'Eliminación desde listado de reservas',
+        // 🔍 AUDITORÍA AUTOMÁTICA - Registrar eliminación con nivel ALTO
+        final descripcion = motivo?.isNotEmpty == true 
+            ? 'Eliminación de reserva desde listado de reservas. Motivo: $motivo'
+            : 'Eliminación de reserva desde listado de reservas';
+        
+        await AuditProvider.registrarAccion(
+          accion: 'eliminar_reserva',
+          entidad: 'reserva',
+          entidadId: reservaId,
+          datosAntiguos: datosReservaParaAuditoria,
+          datosNuevos: {},
+          descripcion: descripcion,
+          metadatos: {
+            'cancha_nombre': datosReservaParaAuditoria['cancha_nombre'],
+            'sede': datosReservaParaAuditoria['sede'],
+            'cliente': datosReservaParaAuditoria['nombre'],
+            'fecha_reserva': datosReservaParaAuditoria['fecha'],
+            'horario': datosReservaParaAuditoria['horario'],
+            'motivo_eliminacion': motivo ?? 'No especificado',
+            'valor_perdido': datosReservaParaAuditoria['montoTotal'],
+            'abono_perdido': datosReservaParaAuditoria['montoPagado'],
+            'estado_al_eliminar': datosReservaParaAuditoria['estado'],
+            'interfaz_origen': 'registro_reservas_screen',
+          },
+          nivelRiesgoForzado: 'alto',
         );
         
         if (mounted) {
@@ -3475,6 +3589,43 @@ Future<void> confirmarYEjecutarReseteoContabilidad() async {
               ),
             ),
         ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(48),
+          child: Container(
+            color: _cardColor,
+            child: TabBar(
+              controller: _tabController,
+              labelColor: _secondaryColor,
+              unselectedLabelColor: _disabledColor,
+              indicatorColor: _secondaryColor,
+              indicatorWeight: 3,
+              labelStyle: GoogleFonts.montserrat(fontWeight: FontWeight.w600, fontSize: 14),
+              unselectedLabelStyle: GoogleFonts.montserrat(fontWeight: FontWeight.w500, fontSize: 14),
+              tabs: [
+                Tab(
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.book, size: 20, color: _currentTabIndex == 0 ? _secondaryColor : _disabledColor),
+                      const SizedBox(width: 6),
+                      Text('Registro', style: GoogleFonts.montserrat()),
+                    ],
+                  ),
+                ),
+                Tab(
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.undo, size: 20, color: _currentTabIndex == 1 ? _secondaryColor : _disabledColor),
+                      const SizedBox(width: 6),
+                      Text('Devoluciones', style: GoogleFonts.montserrat()),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
       body: Row(
         children: [
@@ -3507,24 +3658,38 @@ Future<void> confirmarYEjecutarReseteoContabilidad() async {
                                     valueColor: AlwaysStoppedAnimation<Color>(_secondaryColor),
                                   ),
                                   const SizedBox(height: 16),
-                                  Text('Cargando reservas...', style: GoogleFonts.montserrat(color: _primaryColor, fontSize: 16)),
+                                  Text(
+                                    _currentTabIndex == 0 ? 'Cargando reservas...' : 'Cargando devoluciones...',
+                                    style: GoogleFonts.montserrat(color: _primaryColor, fontSize: 16),
+                                  ),
                                 ],
                               ),
                             )
-                          : _reservas.isEmpty
+                          : (_currentTabIndex == 0 ? _reservas : _devoluciones).isEmpty
                               ? Center(
                                   child: Column(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      Icon(Icons.event_busy, size: 60, color: Colors.grey.shade400),
+                                      Icon(
+                                        _currentTabIndex == 0 ? Icons.event_busy : Icons.undo,
+                                        size: 60,
+                                        color: Colors.grey.shade400,
+                                      ),
                                       const SizedBox(height: 16),
                                       Text(
-                                        _selectedDate == null &&
-                                                _selectedSedeId == null &&
-                                                _selectedCanchaId == null &&
-                                                _selectedEstado == null
-                                            ? 'No hay reservas para hoy. Verifica los datos en Firestore.'
-                                            : 'No hay reservas que coincidan con los filtros.',
+                                        _currentTabIndex == 0
+                                            ? (_selectedDate == null &&
+                                                      _selectedSedeId == null &&
+                                                      _selectedCanchaId == null &&
+                                                      _selectedEstado == null
+                                                  ? 'No hay reservas para hoy. Verifica los datos en Firestore.'
+                                                  : 'No hay reservas que coincidan con los filtros.')
+                                            : (_selectedDate == null &&
+                                                      _selectedSedeId == null &&
+                                                      _selectedCanchaId == null &&
+                                                      _selectedEstado == null
+                                                  ? 'No hay devoluciones registradas.'
+                                                  : 'No hay devoluciones que coincidan con los filtros.'),
                                         style: GoogleFonts.montserrat(color: _primaryColor, fontSize: 16),
                                         textAlign: TextAlign.center,
                                       ),
@@ -3923,11 +4088,13 @@ Future<void> confirmarYEjecutarReseteoContabilidad() async {
   final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
   final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
   
+  final listaActual = _currentTabIndex == 0 ? _reservas : _devoluciones;
+  
   return LayoutBuilder(
     builder: (context, constraints) {
       final availableWidth = constraints.maxWidth;
       final columnWidths = _calculateResponsiveColumnWidths(availableWidth);
-      final totals = _calculateTotals();
+      final totals = _calculateTotals(listaActual);
       
       return Column(
         children: [
@@ -3998,7 +4165,7 @@ Future<void> confirmarYEjecutarReseteoContabilidad() async {
                     7: FixedColumnWidth(columnWidths['estado']!),
                     8: FixedColumnWidth(columnWidths['acciones']!),
                   },
-                  children: _reservas.asMap().entries.map((entry) {
+                  children: listaActual.asMap().entries.map((entry) {
                     final index = entry.key;
                     final reserva = entry.value;
                     final montoRestante = reserva.montoTotal - reserva.montoPagado;
@@ -4062,8 +4229,8 @@ Future<void> confirmarYEjecutarReseteoContabilidad() async {
           ),
           
           // FILA DE TOTALES
-          if (_reservas.isNotEmpty)
-            _buildTotalsRow(columnWidths, totals),
+          if (listaActual.isNotEmpty)
+            _buildTotalsRow(columnWidths, totals, listaActual),
         ],
       );
     },
@@ -4071,7 +4238,76 @@ Future<void> confirmarYEjecutarReseteoContabilidad() async {
 }
 
 // Nuevo método para construir la fila de totales
-Widget _buildTotalsRow(Map<String, double> columnWidths, Map<String, double> totals) {
+Widget _buildTotalsRow(Map<String, double> columnWidths, Map<String, double> totals, List<Reserva> listaActual) {
+  // ✅ En la pestaña de devoluciones, mostrar totales de devoluciones
+  if (_currentTabIndex == 1) {
+    final devolucionesPendientes = listaActual.where((r) => r.abonoEntregado == null || r.abonoEntregado == false).length;
+    final devolucionesCompletadas = listaActual.where((r) => r.abonoEntregado == true).length;
+    final totalAbonosADevolver = listaActual.fold<double>(0, (sum, r) => sum + r.montoPagado);
+    final totalAbonosDevueltos = listaActual.where((r) => r.abonoEntregado == true).fold<double>(0, (sum, r) => sum + r.montoPagado);
+    final totalAbonosPendientes = totalAbonosADevolver - totalAbonosDevueltos;
+    
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: Colors.orange.withOpacity(0.05),
+        border: Border.all(color: Colors.orange.shade300, width: 0.5),
+        borderRadius: const BorderRadius.only(
+          bottomLeft: Radius.circular(8),
+          bottomRight: Radius.circular(8),
+        ),
+      ),
+      child: Table(
+        columnWidths: {
+          0: FixedColumnWidth(columnWidths['cancha']!),
+          1: FixedColumnWidth(columnWidths['sede']!),
+          2: FixedColumnWidth(columnWidths['fecha']!),
+          3: FixedColumnWidth(columnWidths['hora']!),
+          4: FixedColumnWidth(columnWidths['cliente']!),
+          5: FixedColumnWidth(columnWidths['abono']!),
+          6: FixedColumnWidth(columnWidths['restante']!),
+          7: FixedColumnWidth(columnWidths['estado']!),
+          8: FixedColumnWidth(columnWidths['acciones']!),
+        },
+        children: [
+          TableRow(
+            children: [
+              // Celdas vacías hasta llegar a la columna de cliente
+              _buildTotalCell('', columnWidths['cancha']!, TextAlign.left),
+              _buildTotalCell('', columnWidths['sede']!, TextAlign.left),
+              _buildTotalCell('', columnWidths['fecha']!, TextAlign.center),
+              _buildTotalCell('', columnWidths['hora']!, TextAlign.center),
+              
+              // Celda de "TOTALES DEVOLUCIONES"
+              _buildTotalLabelCell('TOTALES DEVOLUCIONES', columnWidths['cliente']!),
+              
+              // Total Abonos Pendientes
+              _buildTotalAmountCell(
+                '\$${NumberFormat('#,###', 'es').format(totalAbonosPendientes.toInt())}',
+                columnWidths['abono']!,
+                Colors.orange[700]!,
+              ),
+              
+              // Total Abonos Devueltos
+              _buildTotalAmountCell(
+                '\$${NumberFormat('#,###', 'es').format(totalAbonosDevueltos.toInt())}',
+                columnWidths['restante']!,
+                _reservedColor,
+              ),
+              
+              // Resumen (se extiende por las últimas dos columnas)
+              _buildTotalDevolucionesCell(
+                'Pendientes: $devolucionesPendientes | Completadas: $devolucionesCompletadas',
+                columnWidths['estado']! + columnWidths['acciones']!,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+  
+  // ✅ Pestaña de Registro: mostrar totales normales
   return Container(
     width: double.infinity,
     decoration: BoxDecoration(
@@ -4188,6 +4424,36 @@ Widget _buildTotalEnCajaCell(String amount, double width) {
   );
 }
 
+// ✅ Nuevo método para celda de resumen de devoluciones
+Widget _buildTotalDevolucionesCell(String text, double width) {
+  return Container(
+    width: width,
+    height: 60,
+    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+    alignment: Alignment.center,
+    decoration: BoxDecoration(
+      color: Colors.orange.withOpacity(0.1),
+      border: Border(
+        left: BorderSide(color: Colors.orange.shade300, width: 0.5),
+      ),
+      borderRadius: const BorderRadius.only(
+        bottomRight: Radius.circular(8),
+      ),
+    ),
+    child: Text(
+      text,
+      style: GoogleFonts.montserrat(
+        fontSize: 10,
+        fontWeight: FontWeight.w600,
+        color: Colors.orange[700],
+      ),
+      textAlign: TextAlign.center,
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+    ),
+  );
+}
+
 
 
 // Widget para la celda de etiqueta "TOTALES"
@@ -4271,12 +4537,13 @@ Widget _buildTotalCell(String text, double width, TextAlign textAlign) {
 
 
 
-Map<String, double> _calculateTotals() {
+Map<String, double> _calculateTotals([List<Reserva>? lista]) {
+  final listaActual = lista ?? (_currentTabIndex == 0 ? _reservas : _devoluciones);
   double totalAbonado = 0;
   double totalRestante = 0;
   double totalEnCaja = 0;
 
-  for (var reserva in _reservas) {
+  for (var reserva in listaActual) {
     totalAbonado += reserva.montoPagado;
     totalRestante += (reserva.montoTotal - reserva.montoPagado);
     totalEnCaja += reserva.montoTotal;
@@ -4384,6 +4651,36 @@ Widget _buildClientCell(Reserva reserva, double width) {
 
 // Widget para celda de estado
 Widget _buildStatusCell(Reserva reserva, double width) {
+  // ✅ En la pestaña de devoluciones, mostrar estado según abono_entregado
+  if (_currentTabIndex == 1) {
+    final abonoEntregado = reserva.abonoEntregado ?? false;
+    return Container(
+      width: width,
+      height: 56,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+      alignment: Alignment.center,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: abonoEntregado 
+              ? _reservedColor.withOpacity(0.15)
+              : Colors.orange.withOpacity(0.15),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          abonoEntregado ? 'Completado' : 'Pendiente',
+          style: GoogleFonts.montserrat(
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+            color: abonoEntregado ? _reservedColor : Colors.orange[700],
+          ),
+          textAlign: TextAlign.center,
+        ),
+      ),
+    );
+  }
+  
+  // Estado normal para la pestaña de registro
   return Container(
     width: width,
     height: 56,
@@ -4532,8 +4829,29 @@ String _formatCurrency(double amount) {
 
 // Widget para los botones de acción optimizados por espacio
 Widget _buildActionButtons(Reserva reserva, double availableWidth) {
-  // AGREGAR ESTA LÍNEA AL INICIO
-  final peticionProvider = Provider.of<PeticionProvider>(context, listen: true);
+  // ✅ En la pestaña de devoluciones, solo mostrar el botón de realizar devolución
+  if (_currentTabIndex == 1) {
+    // Solo mostrar si el abono NO está entregado
+    if (reserva.abonoEntregado == null || reserva.abonoEntregado == false) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          _buildMicroActionButton(
+            icon: Icons.check_circle,
+            color: _reservedColor,
+            onPressed: () => _realizarDevolucion(reserva),
+            tooltip: 'Confirmar devolución',
+          ),
+        ],
+      );
+    }
+    // Si ya está entregado, no mostrar ningún botón
+    return const SizedBox.shrink();
+  }
+  
+  // ✅ Pestaña de Registro: mostrar todos los botones normales
+  final auth = Provider.of<app_auth.AuthProvider>(context, listen: true);
   
   List<Widget> buttons = [];
   
@@ -4561,8 +4879,8 @@ Widget _buildActionButtons(Reserva reserva, double availableWidth) {
     );
   }
   
-  // Botón de eliminar (visible solo si el control total está activado)
-  if (peticionProvider.controlTotalActivado) {
+  // Botón de eliminar (visible solo si es admin o superadmin)
+  if (auth.isSuperAdmin || auth.isAdmin) {
     buttons.add(
       _buildMicroActionButton(
         icon: Icons.delete,
@@ -4582,6 +4900,18 @@ Widget _buildActionButtons(Reserva reserva, double availableWidth) {
       tooltip: 'Imprimir factura',
     ),
   );
+  
+  // Botón de devolución (solo si NO está completo)
+  if (reserva.tipoAbono != TipoAbono.completo) {
+    buttons.add(
+      _buildMicroActionButton(
+        icon: Icons.undo,
+        color: Colors.orange,
+        onPressed: () => _procesarDevolucion(reserva),
+        tooltip: 'Procesar devolución',
+      ),
+    );
+  }
   
   return Row(
     mainAxisSize: MainAxisSize.min,
@@ -4628,17 +4958,18 @@ Widget _buildActionButtons(Reserva reserva, double availableWidth) {
   final currencyFormat = NumberFormat.currency(symbol: "\$", decimalDigits: 0);
   final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
   final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
-  final peticionProvider = Provider.of<PeticionProvider>(context, listen: true); // LÍNEA AGREGADA
-  final totals = _calculateTotals();
+  final auth = Provider.of<app_auth.AuthProvider>(context, listen: true);
+  final listaActual = _currentTabIndex == 0 ? _reservas : _devoluciones;
+  final totals = _calculateTotals(listaActual);
   
   return Column(
     children: [
       // Lista de reservas
       Expanded(
         child: ListView.builder(
-          itemCount: _reservas.length,
+          itemCount: listaActual.length,
           itemBuilder: (context, index) {
-            final reserva = _reservas[index];
+            final reserva = listaActual[index];
             final montoRestante = reserva.montoTotal - reserva.montoPagado;
             final horaReserva = reserva.horario.hora;
             final horasReservadas = canchaProvider.horasReservadasPorCancha(reserva.cancha.id);
@@ -4684,40 +5015,53 @@ Widget _buildActionButtons(Reserva reserva, double availableWidth) {
                           Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Tooltip(
-                                message: reserva.esReservaRecurrente ? 'Ver opciones recurrentes' : 'Editar datos del cliente',
-                                child: IconButton(
-                                  icon: Icon(Icons.edit, size: 18, color: _secondaryColor),
-                                  onPressed: () => _editReserva(reserva),
-                                ),
-                              ),
-                              if (reserva.tipoAbono == TipoAbono.parcial)
+                              // ✅ En la pestaña de devoluciones, solo mostrar el botón de confirmar devolución
+                              if (_currentTabIndex == 1) ...[
+                                if (reserva.abonoEntregado == null || reserva.abonoEntregado == false)
+                                  Tooltip(
+                                    message: 'Confirmar devolución',
+                                    child: IconButton(
+                                      icon: Icon(Icons.check_circle, size: 18, color: _reservedColor),
+                                      onPressed: () => _realizarDevolucion(reserva),
+                                    ),
+                                  ),
+                              ] else ...[
+                                // ✅ Pestaña de Registro: mostrar todos los botones normales
                                 Tooltip(
-                                  message: reserva.esReservaRecurrente ? 'Completar pago recurrente' : 'Completar pago',
+                                  message: reserva.esReservaRecurrente ? 'Ver opciones recurrentes' : 'Editar datos del cliente',
                                   child: IconButton(
-                                    icon: Icon(Icons.attach_money, size: 18, color: _reservedColor),
-                                    onPressed: () => reserva.esReservaRecurrente 
-                                        ? _completarPagoReservaRecurrente(reserva)
-                                        : _completarPago(reserva),
+                                    icon: Icon(Icons.edit, size: 18, color: _secondaryColor),
+                                    onPressed: () => _editReserva(reserva),
                                   ),
                                 ),
-                              // Botón de eliminar (visible solo si el control total está activado)
-                              if (peticionProvider.controlTotalActivado)
+                                if (reserva.tipoAbono == TipoAbono.parcial)
+                                  Tooltip(
+                                    message: reserva.esReservaRecurrente ? 'Completar pago recurrente' : 'Completar pago',
+                                    child: IconButton(
+                                      icon: Icon(Icons.attach_money, size: 18, color: _reservedColor),
+                                      onPressed: () => reserva.esReservaRecurrente 
+                                          ? _completarPagoReservaRecurrente(reserva)
+                                          : _completarPago(reserva),
+                                    ),
+                                  ),
+                                // Botón de eliminar (visible solo si es admin o superadmin)
+                                if (auth.isSuperAdmin || auth.isAdmin)
+                                  Tooltip(
+                                    message: reserva.esReservaRecurrente ? 'Opciones de eliminación' : 'Eliminar reserva',
+                                    child: IconButton(
+                                      icon: Icon(Icons.delete, size: 18, color: Colors.redAccent),
+                                      onPressed: () => _deleteReserva(reserva.id),
+                                    ),
+                                  ),
+                                // Nuevo botón de impresión para facturas de cada hora jugada
                                 Tooltip(
-                                  message: reserva.esReservaRecurrente ? 'Opciones de eliminación' : 'Eliminar reserva',
+                                  message: 'Imprimir factura',
                                   child: IconButton(
-                                    icon: Icon(Icons.delete, size: 18, color: Colors.redAccent),
-                                    onPressed: () => _deleteReserva(reserva.id),
+                                    icon: Icon(Icons.print, size: 18, color: Colors.blue),
+                                    onPressed: () => _imprimirFactura(reserva),
                                   ),
                                 ),
-                              // Nuevo botón de impresión para facturas de cada hora jugada
-                              Tooltip(
-                                message: 'Imprimir factura',
-                                child: IconButton(
-                                  icon: Icon(Icons.print, size: 18, color: Colors.blue),
-                                  onPressed: () => _imprimirFactura(reserva),
-                                ),
-                              ),
+                              ],
                             ],
                           ),
                         ],
@@ -4842,8 +5186,8 @@ Widget _buildActionButtons(Reserva reserva, double availableWidth) {
       ),
       
       // CARD DE TOTALES COLAPSABLE para vista de lista
-      if (_reservas.isNotEmpty)
-        _buildTotalesColapsables(totals),
+      if (listaActual.isNotEmpty)
+        _buildTotalesColapsables(totals, listaActual),
     ],
   );
 }
@@ -5151,37 +5495,12 @@ console.warn = function() {};
     print(facturaHTML.substring(0, 50));
     
     // Crear blob con encoding específico
-    final blob = html.Blob([facturaHTML], 'text/html; charset=utf-8');
-    final url = html.Url.createObjectUrlFromBlob(blob);
-    
-    // Ventana más grande para la factura más ancha
-    final windowFeatures = [
-      'width=600',
-      'height=800',
-      'left=100',
-      'top=50',
-      'scrollbars=yes',
-      'resizable=yes',
-      'menubar=no',
-      'toolbar=no',
-      'location=no',
-      'status=no',
-      'directories=no',
-    ].join(',');
-    
-    final ventanaImpresion = html.window.open(
-      url,
-      '_blank',
-      windowFeatures
-    );
-    
-    Timer(Duration(seconds: 8), () {
-      try {
-        html.Url.revokeObjectUrl(url);
-      } catch (e) {
-        // Ignorar errores de limpieza
-      }
-    });
+    // Imprimir solo si estamos en web
+    if (kIsWeb) {
+      print_helper.imprimirHTML(facturaHTML);
+    } else {
+      print('Impresión no disponible en móvil');
+    }
     
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -5196,7 +5515,7 @@ console.warn = function() {};
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Factura Lista para Imprimir',
+                      'Las facturas no estan disponibles en movil',
                       style: TextStyle(fontWeight: FontWeight.bold),
                     ),
                   ],
@@ -5239,8 +5558,177 @@ console.warn = function() {};
   }
 }
 
+
 // 5. NUEVO WIDGET para totales colapsables en móvil
-Widget _buildTotalesColapsables(Map<String, double> totals) {
+Widget _buildTotalesColapsables(Map<String, double> totals, List<Reserva> listaActual) {
+  // ✅ En la pestaña de devoluciones, mostrar totales de devoluciones
+  if (_currentTabIndex == 1) {
+    final devolucionesPendientes = listaActual.where((r) => r.abonoEntregado == null || r.abonoEntregado == false).length;
+    final devolucionesCompletadas = listaActual.where((r) => r.abonoEntregado == true).length;
+    final totalAbonosADevolver = listaActual.fold<double>(0, (sum, r) => sum + r.montoPagado);
+    final totalAbonosDevueltos = listaActual.where((r) => r.abonoEntregado == true).fold<double>(0, (sum, r) => sum + r.montoPagado);
+    final totalAbonosPendientes = totalAbonosADevolver - totalAbonosDevueltos;
+    
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      child: Card(
+        elevation: 3,
+        color: Colors.orange.withOpacity(0.05),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: Colors.orange.withOpacity(0.3), width: 1),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            InkWell(
+              onTap: () {
+                setState(() {
+                  _totalesColapsados = !_totalesColapsados;
+                });
+              },
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(12),
+                topRight: Radius.circular(12),
+              ),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.undo, color: Colors.orange[700], size: 18),
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Text(
+                              'RESUMEN DEVOLUCIONES',
+                              style: GoogleFonts.montserrat(
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                                color: _primaryColor,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_totalesColapsados)
+                          Flexible(
+                            child: Text(
+                              'Pendientes: $devolucionesPendientes',
+                              style: GoogleFonts.montserrat(
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.orange[700],
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        const SizedBox(width: 8),
+                        Icon(
+                          _totalesColapsados ? Icons.expand_more : Icons.expand_less,
+                          color: Colors.orange[700],
+                          size: 20,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            AnimatedSize(
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeInOut,
+              child: _totalesColapsados 
+                  ? const SizedBox.shrink()
+                  : Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            height: 1,
+                            color: Colors.orange.shade300,
+                            margin: const EdgeInsets.only(bottom: 16),
+                          ),
+                          IntrinsicHeight(
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: _buildTotalSummaryItem(
+                                    'Abonos Pendientes',
+                                    '\$${NumberFormat('#,###', 'es').format(totalAbonosPendientes.toInt())}',
+                                    Colors.orange[700]!,
+                                    Icons.pending_actions,
+                                  ),
+                                ),
+                                Container(
+                                  width: 1,
+                                  color: Colors.orange.shade300,
+                                  margin: const EdgeInsets.symmetric(horizontal: 16),
+                                ),
+                                Expanded(
+                                  child: _buildTotalSummaryItem(
+                                    'Abonos Devueltos',
+                                    '\$${NumberFormat('#,###', 'es').format(totalAbonosDevueltos.toInt())}',
+                                    _reservedColor,
+                                    Icons.check_circle,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.orange.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.orange.withOpacity(0.3), width: 1),
+                            ),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.info_outline, color: Colors.orange[700], size: 22),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      'Pendientes: $devolucionesPendientes | Completadas: $devolucionesCompletadas',
+                                      style: GoogleFonts.montserrat(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.orange[700],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  // ✅ Pestaña de Registro: mostrar totales normales
   return Container(
     margin: const EdgeInsets.only(top: 8),
     child: Card(
@@ -5514,8 +6002,6 @@ Widget _buildTotalSummaryItem(String label, String amount, Color color, IconData
             children: [
               Text('Cliente: ${reservaRecurrente.clienteNombre}', style: GoogleFonts.montserrat()),
               Text('Teléfono: ${reservaRecurrente.clienteTelefono}', style: GoogleFonts.montserrat()),
-              if (reservaRecurrente.clienteEmail != null)
-                Text('Email: ${reservaRecurrente.clienteEmail}', style: GoogleFonts.montserrat()),
               const SizedBox(height: 8),
               Text('Días: ${reservaRecurrente.diasSemana.join(", ")}', style: GoogleFonts.montserrat()),
               Text('Horario: ${reservaRecurrente.horario}', style: GoogleFonts.montserrat()),
@@ -5562,22 +6048,49 @@ Widget _buildTotalSummaryItem(String label, String amount, Color color, IconData
   }
 
   void _mostrarDialogoExcluirDiaRecurrente(Reserva reserva) async {
-  final result = await showDialog<bool>(
+  final motivoController = TextEditingController();
+  
+  final result = await showDialog<String>(
     context: context,
     builder: (context) => AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
       title: Text('Excluir día específico', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
-      content: Text(
-        'Esto excluirá la reserva recurrente solo para el día ${DateFormat('dd/MM/yyyy').format(reserva.fecha)}.',
-        style: GoogleFonts.montserrat(),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Esto excluirá la reserva recurrente solo para el día ${DateFormat('dd/MM/yyyy').format(reserva.fecha)}.',
+            style: GoogleFonts.montserrat(),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Motivo de la exclusión:',
+            style: GoogleFonts.montserrat(fontWeight: FontWeight.w500, color: _primaryColor),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: motivoController,
+            maxLines: 3,
+            decoration: InputDecoration(
+              hintText: 'Ingresa el motivo de la exclusión...',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              filled: true,
+              fillColor: Colors.grey.shade50,
+            ),
+            style: GoogleFonts.montserrat(),
+          ),
+        ],
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(context, false),
+          onPressed: () => Navigator.pop(context, null),
           child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
         ),
         ElevatedButton(
-          onPressed: () => Navigator.pop(context, true),
+          onPressed: () => Navigator.pop(context, motivoController.text.trim()),
           style: ElevatedButton.styleFrom(
             backgroundColor: Colors.orange,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -5588,28 +6101,13 @@ Widget _buildTotalSummaryItem(String label, String amount, Color color, IconData
     ),
   );
 
-  if (result == true && mounted && reserva.reservaRecurrenteId != null) {
+  if (result != null && mounted && reserva.reservaRecurrenteId != null) {
     try {
-      // Capturar datos antiguos
-      final datosAntiguos = reserva.toFirestore();
-
       final reservaRecurrenteProvider = Provider.of<ReservaRecurrenteProvider>(context, listen: false);
       await reservaRecurrenteProvider.excluirDiaReservaRecurrente(
         reserva.reservaRecurrenteId!, 
-        reserva.fecha
-      );
-      
-      // Registrar en auditoría
-      await AuditProvider.registrarAccion(
-        accion: 'excluir_dia_recurrente',
-        entidad: 'reserva_recurrente',
-        entidadId: reserva.reservaRecurrenteId!,
-        datosAntiguos: datosAntiguos,
-        datosNuevos: {}, // No hay nuevos datos, ya que es exclusión
-        descripcion: 'Exclusión de día específico en reserva recurrente',
-        metadatos: {
-          'fecha_excluida': DateFormat('yyyy-MM-dd').format(reserva.fecha),
-        },
+        reserva.fecha,
+        motivo: result.isEmpty ? null : result,
       );
       
       ScaffoldMessenger.of(context).showSnackBar(
@@ -5671,21 +6169,8 @@ Widget _buildTotalSummaryItem(String label, String amount, Color color, IconData
 
   if (result == true && mounted) {
     try {
-      // Capturar datos antiguos (asumiendo ReservaRecurrente tiene toFirestore())
-      final datosAntiguos = reservaRecurrente.toFirestore();
-
       final reservaRecurrenteProvider = Provider.of<ReservaRecurrenteProvider>(context, listen: false);
       await reservaRecurrenteProvider.cancelarReservasFuturas(reservaRecurrente.id);
-      
-      // Registrar en auditoría
-      await AuditProvider.registrarAccion(
-        accion: 'cancelar_reserva_recurrente',
-        entidad: 'reserva_recurrente',
-        entidadId: reservaRecurrente.id,
-        datosAntiguos: datosAntiguos,
-        datosNuevos: {}, // No hay nuevos datos, ya que es cancelación
-        descripcion: 'Cancelación de reservas futuras en reserva recurrente',
-      );
       
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

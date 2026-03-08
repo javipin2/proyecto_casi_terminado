@@ -2,8 +2,12 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:reserva_canchas/models/cancha.dart';
 import 'package:reserva_canchas/providers/sede_provider.dart';
+import 'package:reserva_canchas/providers/cancha_provider.dart';
+import 'package:reserva_canchas/services/lugar_helper.dart';
+import 'package:reserva_canchas/services/plan_feature_service.dart';
 import 'editar_cancha_screen.dart';
 import 'registrar_cancha_screen.dart';
 
@@ -31,11 +35,30 @@ class CanchasScreenState extends State<CanchasScreen>
   }
 
   void _initializeScreen() {
-    Future.microtask(() {
+    Future.microtask(() async {
       if (mounted) {
         final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
+        final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
+        
+        // Obtener el lugarId del usuario autenticado
+        final user = FirebaseAuth.instance.currentUser;
+        if (user != null) {
+          final userDoc = await FirebaseFirestore.instance
+              .collection('usuarios')
+              .doc(user.uid)
+              .get();
+          if (userDoc.exists) {
+            final lugarId = userDoc.data()?['lugarId'];
+            if (lugarId != null) {
+              // Establecer el lugar en ambos providers
+              sedeProvider.setLugar(lugarId);
+              canchaProvider.setLugar(lugarId);
+            }
+          }
+        }
+        
         if (sedeProvider.sedes.isEmpty) {
-          sedeProvider.fetchSedes();
+          await sedeProvider.fetchSedes();
         }
       }
     });
@@ -122,6 +145,32 @@ class CanchasScreenState extends State<CanchasScreen>
 
   Future<void> _navigateToAddCancha() async {
     if (!mounted) return;
+
+    // Verificar límite de canchas según el plan / configuración del lugar
+    final lugarId = await LugarHelper.getLugarId();
+    final maxCanchas = await PlanFeatureService.getLugarMaxCanchas();
+    if (lugarId != null && maxCanchas != null) {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('canchas')
+          .where('lugarId', isEqualTo: lugarId)
+          .get();
+      if (snapshot.docs.length >= maxCanchas) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Has alcanzado el máximo de canchas permitido por tu plan ($maxCanchas). '
+              'Puedes ajustar el límite desde la gestión de lugares.',
+              style: GoogleFonts.montserrat(color: Colors.white),
+            ),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            margin: const EdgeInsets.all(12),
+          ),
+        );
+        return;
+      }
+    }
 
     await Navigator.push(
       context,
@@ -319,14 +368,41 @@ class CanchasScreenState extends State<CanchasScreen>
   }
 
   Widget _buildMainContent(bool isDesktop, bool isTablet, double textScale, SedeProvider sedeProvider) {
-    return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance
-          .collection('canchas')
-          .where('sedeId', isEqualTo: sedeProvider.sedes.isNotEmpty && sedeProvider.selectedSede.isNotEmpty
-              ? sedeProvider.sedes.firstWhere((s) => s['nombre'] == sedeProvider.selectedSede)['id']
-              : null, // Si no hay filtro, no aplica where
-          )
-          .snapshots(),
+    return FutureBuilder<String?>(
+      future: LugarHelper.getLugarId(),
+      builder: (context, lugarSnapshot) {
+        if (lugarSnapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        
+        if (lugarSnapshot.hasError || lugarSnapshot.data == null) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.error_outline, color: Colors.redAccent, size: 60 * textScale),
+                SizedBox(height: 16),
+                Text(
+                  'Error: No se pudo obtener el lugar del usuario',
+                  style: GoogleFonts.montserrat(color: Colors.redAccent, fontSize: 16 * textScale),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          );
+        }
+        
+        final lugarId = lugarSnapshot.data!;
+        
+        return StreamBuilder<QuerySnapshot>(
+          stream: FirebaseFirestore.instance
+              .collection('canchas')
+              .where('lugarId', isEqualTo: lugarId)
+              .where('sedeId', isEqualTo: sedeProvider.sedes.isNotEmpty && sedeProvider.selectedSede.isNotEmpty
+                  ? sedeProvider.sedes.firstWhere((s) => s['nombre'] == sedeProvider.selectedSede)['id']
+                  : null, // Si no hay filtro, no aplica where
+              )
+              .snapshots(),
       builder: (context, snapshot) {
         if (!mounted) return const SizedBox.shrink();
 
@@ -353,8 +429,12 @@ class CanchasScreenState extends State<CanchasScreen>
         bool hasData = snapshot.hasData && snapshot.data!.docs.isNotEmpty;
         bool isLoading = snapshot.connectionState == ConnectionState.waiting;
 
+        final canchaDocs = snapshot.data?.docs ?? [];
+
+        Widget content;
+
         if (isLoading && !hasData) {
-          return SizedBox(
+          content = SizedBox(
             width: double.infinity,
             child: Center(
               child: Column(
@@ -370,18 +450,14 @@ class CanchasScreenState extends State<CanchasScreen>
               ),
             ),
           );
-        }
-
-        final canchaDocs = snapshot.data?.docs ?? [];
-
-        if (canchaDocs.isEmpty) {
-          return SizedBox(
+        } else if (canchaDocs.isEmpty) {
+          content = SizedBox(
             width: double.infinity,
             child: Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.sports_soccer, color: Color.fromRGBO(60, 64, 67, 0.5), size: 70 * textScale),
+                  Icon(Icons.sports_soccer, color: const Color.fromRGBO(60, 64, 67, 0.5), size: 70 * textScale),
                   SizedBox(height: 16),
                   Text(
                     'No se encontraron canchas',
@@ -390,21 +466,60 @@ class CanchasScreenState extends State<CanchasScreen>
                   SizedBox(height: 8),
                   Text(
                     'Intenta con otro filtro o registra una nueva cancha',
-                    style: GoogleFonts.montserrat(fontSize: 14 * textScale, color: Color.fromRGBO(60, 64, 67, 0.8)),
+                    style: GoogleFonts.montserrat(fontSize: 14 * textScale, color: const Color.fromRGBO(60, 64, 67, 0.8)),
                   ),
                 ],
               ),
             ),
           );
+        } else {
+          content = LayoutBuilder(
+            builder: (context, constraints) {
+              return (isDesktop || isTablet)
+                  ? _buildDataTable(canchaDocs, constraints.maxWidth, textScale, sedeProvider)
+                  : _buildListView(canchaDocs, textScale, sedeProvider);
+            },
+          );
         }
 
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            return (isDesktop || isTablet)
-                ? _buildDataTable(canchaDocs, constraints.maxWidth, textScale, sedeProvider)
-                : _buildListView(canchaDocs, textScale, sedeProvider);
-          },
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            FutureBuilder<int?>(
+              future: PlanFeatureService.getLugarMaxCanchas(),
+              builder: (context, snapshotCap) {
+                final maxCanchas = snapshotCap.data;
+                final current = canchaDocs.length;
+                String text;
+                if (maxCanchas == null) {
+                  text = 'Canchas registradas: $current (ilimitadas)';
+                } else {
+                  text = 'Canchas registradas: $current / $maxCanchas';
+                }
+                return Align(
+                  alignment: Alignment.centerLeft,
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 4, right: 4, top: 4, bottom: 4),
+                    child: Chip(
+                      backgroundColor: Colors.green.shade50,
+                      label: Text(
+                        text,
+                        style: GoogleFonts.montserrat(
+                          fontSize: 12 * textScale,
+                          color: Colors.green.shade800,
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 4),
+            Expanded(child: content),
+          ],
         );
+      },
+    );
       },
     );
   }

@@ -3,12 +3,16 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import 'package:table_calendar/table_calendar.dart';
+import 'dart:math' as math;
 import '../models/cancha.dart';
 import '../models/horario.dart';
 import '../providers/sede_provider.dart';
 import '../providers/cancha_provider.dart';
 import '../models/reserva_recurrente.dart';
 import '../providers/reserva_recurrente_provider.dart';
+import '../providers/promocion_provider.dart';
+import '../models/config_lugar.dart';
+import '../services/config_lugar_service.dart';
 import 'detalles_screen.dart';
 import 'reserva_detalles_screen.dart';
 import '../main.dart';
@@ -37,6 +41,18 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
   late Animation<double> _fadeAnimation;
   late AnimationController _slideController;
   late Animation<Offset> _slideAnimation;
+  
+  // ✅ OPTIMIZADO: Variables para promociones (ahora usando Provider centralizado)
+  Map<String, Map<String, dynamic>> _promocionesPorHorario = {}; // horarioNormalizado -> {precio, id, precio_promocional, ...}
+  StreamSubscription<Map<String, Map<String, dynamic>>>? _promocionesSubscription;
+  late AnimationController _goldShimmerController;
+  
+  // ✅ NUEVO: Streams en tiempo real para reservas
+  StreamSubscription<QuerySnapshot>? _reservasSubscription;
+  StreamSubscription<QuerySnapshot>? _reservasTemporalesSubscription;
+
+  /// Configuración del lugar (horarios de actividad). Si el día está cerrado o fuera de horario, no se puede reservar.
+  ConfigLugar? _configLugar;
 
   @override
   void initState() {
@@ -62,6 +78,12 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
       parent: _slideController,
       curve: Curves.easeOutCubic,
     ));
+    
+    // ✅ NUEVO: Controlador para efecto dorado
+    _goldShimmerController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2000),
+    )..repeat();
 
     final canchaProvider = Provider.of<CanchaProvider>(context, listen: false);
     final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
@@ -92,6 +114,7 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
           });
         });
       } else {
+        if (!mounted) return;
         setState(() {
           _updatedCancha = widget.cancha;
           _isLoading = false;
@@ -116,6 +139,17 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
         _refreshHorariosEstados();
       }
     });
+    
+    // ✅ NUEVO: Iniciar escucha de promociones
+    _iniciarEscuchaPromociones();
+
+    // Cargar configuración del lugar (horarios de actividad para mostrar "Cerrado" / bloquear reservas)
+    final lugarId = widget.cancha.lugarId;
+    if (lugarId != null && lugarId.isNotEmpty) {
+      ConfigLugarService.getConfig(lugarId).then((c) {
+        if (mounted) setState(() => _configLugar = c);
+      });
+    }
   }
 
   @override
@@ -129,6 +163,10 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
     routeObserver.unsubscribe(this);
     _fadeController.dispose();
     _slideController.dispose();
+    _goldShimmerController.dispose(); // ✅ NUEVO
+    _promocionesSubscription?.cancel(); // ✅ NUEVO
+    _reservasSubscription?.cancel(); // ✅ NUEVO: Cancelar stream de reservas
+    _reservasTemporalesSubscription?.cancel(); // ✅ NUEVO: Cancelar stream de reservas temporales
     _debounceTimer?.cancel();
     _updateTimer?.cancel();
     super.dispose();
@@ -137,6 +175,87 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
   @override
   void didPopNext() {
     _loadHorarios();
+  }
+  
+  // ✅ OPTIMIZADO: Método para escuchar promociones usando Provider centralizado
+  void _iniciarEscuchaPromociones() {
+    if (!mounted) return;
+    _promocionesSubscription?.cancel();
+    
+    final fechaSeleccionadaStr = DateFormat('yyyy-MM-dd').format(_selectedDate);
+    
+    debugPrint('🔍 Iniciando escucha de promociones (Provider centralizado)...');
+    debugPrint('   - Fecha: $fechaSeleccionadaStr');
+    debugPrint('   - Cancha ID: ${widget.cancha.id}');
+    
+    // ✅ Obtener lugarId desde SedeProvider o desde la cancha
+    final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
+    final lugarId = sedeProvider.lugarId ?? widget.cancha.lugarId;
+    
+    if (lugarId == null || lugarId.isEmpty) {
+      debugPrint('❌ No se pudo obtener lugarId (SedeProvider: ${sedeProvider.lugarId}, Cancha: ${widget.cancha.lugarId})');
+      return;
+    }
+    
+    // Obtener sedeId y sedeNombre
+    String? sedeId;
+    String? sedeNombre;
+    
+    if (sedeProvider.selectedSede.isNotEmpty) {
+      try {
+        final sede = sedeProvider.sedes.firstWhere(
+          (s) => s['id'] == sedeProvider.selectedSede || s['nombre'] == sedeProvider.selectedSede,
+          orElse: () => {'id': widget.cancha.sedeId, 'nombre': sedeProvider.selectedSede},
+        );
+        sedeId = sede['id'] as String? ?? widget.cancha.sedeId;
+        sedeNombre = sede['nombre'] as String?;
+      } catch (e) {
+        debugPrint('⚠️ Error obteniendo sede: $e');
+        sedeId = widget.cancha.sedeId;
+      }
+    } else {
+      sedeId = widget.cancha.sedeId;
+    }
+    
+    debugPrint('   - Lugar ID: $lugarId (desde ${sedeProvider.lugarId != null ? "SedeProvider" : "Cancha"})');
+    debugPrint('   - Sede ID: $sedeId');
+    debugPrint('   - Sede Nombre: $sedeNombre');
+    
+    // ✅ OPTIMIZADO: Usar PromocionProvider centralizado
+    final promocionProvider = Provider.of<PromocionProvider>(context, listen: false);
+    
+    _promocionesSubscription = promocionProvider.getPromociones(
+      lugarId: lugarId,
+      canchaId: widget.cancha.id,
+      fecha: fechaSeleccionadaStr,
+      sedeId: sedeId,
+      sedeNombre: sedeNombre,
+    ).listen(
+      (promocionesTemp) {
+        if (!mounted) return;
+        
+        setState(() {
+          _promocionesPorHorario = promocionesTemp;
+        });
+        
+        debugPrint('🎯 Promociones cargadas en mapa: ${_promocionesPorHorario.length}');
+        if (_promocionesPorHorario.isNotEmpty) {
+          _promocionesPorHorario.forEach((key, value) {
+            debugPrint('   📌 "$key" -> S/ ${value['precio_promocional']}');
+          });
+        } else {
+          debugPrint('   ⚠️ No se cargaron promociones en el mapa');
+        }
+      },
+      onError: (error) {
+        debugPrint('❌ Error en stream de promociones: $error');
+        if (mounted) {
+          setState(() {
+            _promocionesPorHorario = {};
+          });
+        }
+      },
+    );
   }
 
   Future<void> _loadHorarios() async {
@@ -183,30 +302,27 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
         debugPrint('   - Canceladas: ${todasReservasRecurrentes.where((r) => r.estado == EstadoRecurrencia.cancelada).length}');
         debugPrint('   - Pausadas: ${todasReservasRecurrentes.where((r) => r.estado == EstadoRecurrencia.pausada).length}');
 
-        // ✅ CARGAR RESERVAS NORMALES (INCLUYENDO NO CONFIRMADAS)
-        final snapshotKey = '$_selectedDate-${widget.cancha.id}-$sedeId';
-        QuerySnapshot? reservasSnapshot = _reservasSnapshots[snapshotKey];
+        // ✅ NUEVO: Iniciar escucha en tiempo real de reservas
+        _iniciarEscuchaReservasEnTiempoReal(sedeId);
 
-        if (reservasSnapshot == null) {
-          debugPrint('🔍 Consultando reservas normales...');
-          reservasSnapshot = await FirebaseFirestore.instance
-              .collection('reservas')
-              .where('fecha', isEqualTo: DateFormat('yyyy-MM-dd').format(_selectedDate))
-              .where('cancha_id', isEqualTo: widget.cancha.id)
-              .where('sede', isEqualTo: sedeId)
-              // ✅ REMOVIDO: .where('confirmada', isEqualTo: true) 
-              // Para incluir tanto confirmadas como no confirmadas
-              .get();
-          _reservasSnapshots[snapshotKey] = reservasSnapshot;
-          debugPrint('📋 Reservas normales encontradas: ${reservasSnapshot.docs.length}');
-        }
-
+        // ✅ CARGAR RESERVAS INICIALES (primera carga)
+        debugPrint('🔍 Consultando reservas normales (carga inicial)...');
+        final reservasSnapshotInicial = await FirebaseFirestore.instance
+            .collection('reservas')
+            .where('fecha', isEqualTo: DateFormat('yyyy-MM-dd').format(_selectedDate))
+            .where('cancha_id', isEqualTo: widget.cancha.id)
+            .where('sede', isEqualTo: sedeId)
+            .limit(24)
+            .get();
+        
+        debugPrint('📋 Reservas normales encontradas: ${reservasSnapshotInicial.docs.length}');
+        
         // Generar horarios base
         final nuevosHorarios = await Horario.generarHorarios(
           fecha: _selectedDate,
           canchaId: widget.cancha.id,
           sede: sedeId,
-          reservasSnapshot: reservasSnapshot,
+          reservasSnapshot: reservasSnapshotInicial,
           cancha: _updatedCancha ?? widget.cancha,
         );
 
@@ -263,7 +379,6 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
                   'id': reservaRecurrente.id,
                   'clienteId': reservaRecurrente.clienteId,
                   'clienteTelefono': reservaRecurrente.clienteTelefono,
-                  'clienteEmail': reservaRecurrente.clienteEmail,
                   'montoTotal': reservaRecurrente.montoTotal,
                   'montoPagado': reservaRecurrente.montoPagado,
                   'precioPersonalizado': reservaRecurrente.precioPersonalizado,
@@ -293,6 +408,9 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
         debugPrint('📊 === RESUMEN FINAL ===');
         debugPrint('📊 Reservas recurrentes aplicadas: $reservasAplicadas de ${reservasRecurrentesActivas.length}');
 
+        // ✅ NUEVO: Recargar promociones después de cargar horarios
+        _iniciarEscuchaPromociones();
+        
         if (mounted) {
           setState(() {
             horarios = nuevosHorarios;
@@ -324,6 +442,171 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
         }
       }
     });
+  }
+
+  // ✅ NUEVO: Escuchar reservas en tiempo real
+  void _iniciarEscuchaReservasEnTiempoReal(String sedeId) {
+    _reservasSubscription?.cancel();
+    _reservasTemporalesSubscription?.cancel();
+    
+    final fechaStr = DateFormat('yyyy-MM-dd').format(_selectedDate);
+    
+    debugPrint('🔍 Iniciando escucha en tiempo real de reservas...');
+    debugPrint('   - Fecha: $fechaStr');
+    debugPrint('   - Cancha: ${widget.cancha.id}');
+    debugPrint('   - Sede: $sedeId');
+    
+    // ✅ Escuchar reservas normales
+    _reservasSubscription = FirebaseFirestore.instance
+        .collection('reservas')
+        .where('fecha', isEqualTo: fechaStr)
+        .where('cancha_id', isEqualTo: widget.cancha.id)
+        .where('sede', isEqualTo: sedeId)
+        .limit(24)
+        .snapshots()
+        .listen(
+          (querySnapshot) async {
+            if (!mounted) return;
+            
+            debugPrint('📊 Reservas actualizadas: ${querySnapshot.docs.length}');
+            await _actualizarHorariosConReservas(querySnapshot, sedeId);
+          },
+          onError: (error) {
+            debugPrint('❌ Error en stream de reservas: $error');
+          },
+        );
+    
+    // ✅ Escuchar reservas temporales (en proceso de pago)
+    final ahora = DateTime.now().millisecondsSinceEpoch;
+    _reservasTemporalesSubscription = FirebaseFirestore.instance
+        .collection('reservas_temporales')
+        .where('cancha_id', isEqualTo: widget.cancha.id)
+        .where('fecha', isEqualTo: fechaStr)
+        .where('sede', isEqualTo: sedeId)
+        .where('expira_en', isGreaterThan: ahora)
+        .snapshots()
+        .listen(
+          (querySnapshot) async {
+            if (!mounted) return;
+            
+            debugPrint('⏳ Reservas temporales actualizadas: ${querySnapshot.docs.length}');
+            // Las reservas temporales se procesan dentro de _actualizarHorariosConReservas
+            // pero necesitamos obtener las reservas normales también
+            final reservasSnapshot = await FirebaseFirestore.instance
+                .collection('reservas')
+                .where('fecha', isEqualTo: fechaStr)
+                .where('cancha_id', isEqualTo: widget.cancha.id)
+                .where('sede', isEqualTo: sedeId)
+                .limit(24)
+                .get();
+            
+            await _actualizarHorariosConReservas(reservasSnapshot, sedeId);
+          },
+          onError: (error) {
+            debugPrint('❌ Error en stream de reservas temporales: $error');
+          },
+        );
+  }
+  
+  // ✅ NUEVO: Actualizar horarios cuando cambian las reservas
+  Future<void> _actualizarHorariosConReservas(QuerySnapshot reservasSnapshot, String sedeId) async {
+    if (!mounted) return;
+    
+    try {
+      final reservaRecurrenteProvider = Provider.of<ReservaRecurrenteProvider>(context, listen: false);
+      
+      // Generar horarios base con las reservas actualizadas
+      final nuevosHorarios = await Horario.generarHorarios(
+        fecha: _selectedDate,
+        canchaId: widget.cancha.id,
+        sede: sedeId,
+        reservasSnapshot: reservasSnapshot,
+        cancha: _updatedCancha ?? widget.cancha,
+      );
+      
+      // ✅ OBTENER RESERVAS RECURRENTES PARA ESTA FECHA ESPECÍFICA
+      final reservasRecurrentesActivas = reservaRecurrenteProvider.obtenerReservasActivasParaFecha(
+        _selectedDate, 
+        sede: sedeId, 
+        canchaId: widget.cancha.id
+      );
+      
+      // ✅ PROCESAR RESERVAS RECURRENTES
+      for (var reservaRecurrente in reservasRecurrentesActivas) {
+        final horarioOriginal = reservaRecurrente.horario.trim();
+        final horaNormalizada = _normalizarHorarioMejorado(horarioOriginal);
+        
+        final indiceHorario = nuevosHorarios.indexWhere((h) {
+          final horaNormalizadaDisponible = _normalizarHorarioMejorado(h.horaFormateada);
+          return horaNormalizadaDisponible == horaNormalizada;
+        });
+        
+        if (indiceHorario != -1) {
+          final horarioActual = nuevosHorarios[indiceHorario];
+          
+          if (horarioActual.estado == EstadoHorario.disponible) {
+            nuevosHorarios[indiceHorario] = Horario(
+              hora: horarioActual.hora,
+              estado: EstadoHorario.reservado,
+              esReservaRecurrente: true,
+              clienteNombre: reservaRecurrente.clienteNombre,
+              reservaRecurrenteData: {
+                'id': reservaRecurrente.id,
+                'clienteId': reservaRecurrente.clienteId,
+                'clienteTelefono': reservaRecurrente.clienteTelefono,
+                'montoTotal': reservaRecurrente.montoTotal,
+                'montoPagado': reservaRecurrente.montoPagado,
+                'precioPersonalizado': reservaRecurrente.precioPersonalizado,
+                'precioOriginal': reservaRecurrente.precioOriginal,
+                'descuentoAplicado': reservaRecurrente.descuentoAplicado,
+                'esReservaRecurrente': true,
+              },
+            );
+          }
+        }
+      }
+      
+      if (mounted) {
+        setState(() {
+          horarios = nuevosHorarios;
+        });
+        
+        debugPrint('✅ Horarios actualizados en tiempo real');
+        debugPrint('   - Disponibles: ${horarios.where((h) => h.estado == EstadoHorario.disponible).length}');
+        debugPrint('   - Reservados: ${horarios.where((h) => h.estado == EstadoHorario.reservado).length}');
+        debugPrint('   - Procesando pago: ${horarios.where((h) => h.estado == EstadoHorario.procesandoPago).length}');
+      }
+    } catch (e) {
+      debugPrint('❌ Error actualizando horarios: $e');
+    }
+  }
+
+  // ✅ NUEVO: Actualizar estado local inmediatamente cuando se crea una reserva
+  Future<void> _actualizarEstadoLocalReservaCreada(Horario horario) async {
+    try {
+      final horaNormalizada = Horario.normalizarHora(horario.horaFormateada);
+      
+      // Buscar el horario en la lista y actualizar su estado
+      final indice = horarios.indexWhere((h) => 
+        Horario.normalizarHora(h.horaFormateada) == horaNormalizada
+      );
+      
+      if (indice != -1 && mounted) {
+        setState(() {
+          // Actualizar el estado a "procesando pago"
+          horarios[indice] = Horario(
+            hora: horarios[indice].hora,
+            estado: EstadoHorario.procesandoPago,
+            esReservaRecurrente: false,
+            clienteNombre: 'Procesando pago',
+          );
+        });
+        
+        debugPrint('✅ Estado local actualizado: $horaNormalizada -> PROCESANDO PAGO');
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error actualizando estado local: $e');
+    }
   }
 
   // ✅ MÉTODO DE NORMALIZACIÓN MEJORADO
@@ -410,7 +693,10 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
       });
 
       _debounceTimer?.cancel();
-      _debounceTimer = Timer(const Duration(milliseconds: 300), _loadHorarios);
+      _debounceTimer = Timer(const Duration(milliseconds: 300), () {
+        _loadHorarios();
+        _iniciarEscuchaPromociones(); // ✅ NUEVO: Actualizar promociones al cambiar fecha
+      });
     }
   }
 
@@ -436,45 +722,56 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
             backgroundColor: Colors.white,
             scrolledUnderElevation: 0,
             elevation: 0,
-            leading: Container(
-              margin: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade100,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: IconButton(
-                icon: const Icon(Icons.arrow_back, color: Color(0xFF424242)),
-                onPressed: () {
-                  if (mounted) Navigator.pop(context);
-                },
+            leading: Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: Center(
+                child: Material(
+                  color: Colors.grey.shade200,
+                  borderRadius: BorderRadius.circular(24),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(24),
+                    onTap: () {
+                      if (mounted) Navigator.pop(context);
+                    },
+                    child: const Padding(
+                      padding: EdgeInsets.all(10),
+                      child: Icon(Icons.arrow_back_ios_new_rounded, color: Color(0xFF424242), size: 20),
+                    ),
+                  ),
+                ),
               ),
             ),
             title: FadeTransition(
               opacity: _fadeAnimation,
-              child: Text(
-                widget.cancha.nombre,
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w600,
-                  color: Color(0xFF424242),
+              child: const Text(
+                'Reserva de Cancha',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF1F2937),
                 ),
               ),
             ),
             centerTitle: true,
             actions: [
-              Container(
-                margin: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: IconButton(
-                  icon: const Icon(Icons.refresh, color: Color(0xFF424242)),
-                  onPressed: () {
-                    _reservasSnapshots.clear();
-                    _loadHorarios();
-                  },
-                  tooltip: 'Actualizar horarios',
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Center(
+                  child: Material(
+                    color: Colors.grey.shade200,
+                    borderRadius: BorderRadius.circular(24),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(24),
+                      onTap: () {
+                        _reservasSnapshots.clear();
+                        _loadHorarios();
+                      },
+                      child: const Padding(
+                        padding: EdgeInsets.all(10),
+                        child: Icon(Icons.refresh_rounded, color: Color(0xFF424242), size: 22),
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ],
@@ -483,22 +780,35 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
             opacity: _fadeAnimation,
             child: SlideTransition(
               position: _slideAnimation,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildCanchaInfo(),
-                    const SizedBox(height: 24),
-                    _buildDateSelector(),
-                    const SizedBox(height: 8),
-                    if (_calendarExpanded) _buildCalendar(),
-                    const SizedBox(height: 24),
-                    _buildHorariosHeader(),
-                    const SizedBox(height: 16),
-                    _buildHorariosGrid(),
-                  ],
-                ),
+              child: Column(
+                children: [
+                  Expanded(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _buildCanchaInfo(),
+                          const SizedBox(height: 20),
+                          _buildDateSelector(),
+                          const SizedBox(height: 8),
+                          if (_calendarExpanded) _buildCalendar(),
+                          const SizedBox(height: 20),
+                          _buildWarningOficina(),
+                          const SizedBox(height: 16),
+                          if (_mostrarAvisoCerrado()) _buildAvisoCerrado(),
+                          if (_mostrarAvisoCerrado()) const SizedBox(height: 16),
+                          _buildHorariosHeader(),
+                          const SizedBox(height: 16),
+                          _buildHorariosGridContent(),
+                          const SizedBox(height: 24),
+                        ],
+                      ),
+                    ),
+                  ),
+                  _buildBottomButton(),
+                ],
               ),
             ),
           ),
@@ -508,15 +818,18 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
   }
 
   Widget _buildCanchaInfo() {
+    final cancha = _updatedCancha ?? widget.cancha;
+    final sedeNombre = Provider.of<SedeProvider>(context).selectedSede;
+    final techada = cancha.techada;
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withAlpha(13),
-            blurRadius: 10,
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 12,
             offset: const Offset(0, 4),
           ),
         ],
@@ -525,80 +838,70 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(12),
-            child: Image.network(
-              (_updatedCancha?.imagen ?? widget.cancha.imagen).startsWith('http')
-                  ? _updatedCancha?.imagen ?? widget.cancha.imagen
-                  : 'assets/cancha_demo.png',
-              width: 70,
-              height: 70,
-              fit: BoxFit.cover,
-              cacheWidth: 140,
-              errorBuilder: (context, error, stackTrace) {
-                return Container(
-                  width: 70,
-                  height: 70,
-                  color: Colors.grey.shade200,
-                  child: const Icon(Icons.sports_soccer_outlined, color: Colors.grey),
-                );
-              },
+            child: SizedBox(
+              width: 72,
+              height: 72,
+              child: cancha.imagen.startsWith('http')
+                  ? Image.network(
+                      cancha.imagen,
+                      fit: BoxFit.cover,
+                      cacheWidth: 144,
+                      errorBuilder: (_, __, ___) => _canchaPlaceholder(),
+                    )
+                  : Image.asset(
+                      cancha.imagen.isNotEmpty ? cancha.imagen : 'assets/demo.png',
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => _canchaPlaceholder(),
+                    ),
             ),
           ),
-          const SizedBox(width: 16),
+          const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  _updatedCancha?.nombre ?? widget.cancha.nombre,
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.grey.shade800,
+                  (cancha.nombre).toUpperCase(),
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1F2937),
+                    letterSpacing: 0.3,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
-                const SizedBox(height: 4),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: (_updatedCancha?.techada ?? widget.cancha.techada)
-                        ? Colors.blue.shade50
-                        : Colors.amber.shade50,
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                      color: (_updatedCancha?.techada ?? widget.cancha.techada)
-                          ? Colors.blue.shade200
-                          : Colors.amber.shade200,
-                      width: 1,
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Icon(Icons.location_on_outlined, size: 16, color: Colors.grey.shade600),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        'Sede $sedeNombre',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.grey.shade600,
+                          fontWeight: FontWeight.w500,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
-                  ),
-                  child: Text(
-                    (_updatedCancha?.techada ?? widget.cancha.techada) ? 'Techada' : 'Al aire libre',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                      color: (_updatedCancha?.techada ?? widget.cancha.techada)
-                          ? Colors.blue.shade700
-                          : Colors.amber.shade700,
-                    ),
-                  ),
+                  ],
                 ),
-                if ((!(_updatedCancha?.disponible ?? widget.cancha.disponible)) &&
-                    (_updatedCancha?.motivoNoDisponible ?? widget.cancha.motivoNoDisponible) != null) ...[
-                  const SizedBox(height: 4),
+                if ((!cancha.disponible) && cancha.motivoNoDisponible != null) ...[
+                  const SizedBox(height: 6),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                     decoration: BoxDecoration(
                       color: Colors.red.shade50,
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.red.shade200, width: 1),
+                      border: Border.all(color: Colors.red.shade200),
                     ),
                     child: Text(
-                      _updatedCancha?.motivoNoDisponible ?? widget.cancha.motivoNoDisponible!,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                        color: Colors.red.shade700,
-                      ),
+                      cancha.motivoNoDisponible!,
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: Colors.red.shade700),
                     ),
                   ),
                 ],
@@ -606,29 +909,20 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
             ),
           ),
           Container(
-            padding: const EdgeInsets.all(8),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             decoration: BoxDecoration(
-              color: Colors.grey.shade50,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.grey.shade200),
+              color: const Color(0xFF2DD4BF).withOpacity(0.15),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: const Color(0xFF2DD4BF).withOpacity(0.4)),
             ),
-            child: Column(
-              children: [
-                Icon(
-                  Icons.location_on_outlined,
-                  color: Colors.grey.shade700,
-                  size: 20,
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  Provider.of<SedeProvider>(context).selectedSede,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: Colors.grey.shade700,
-                  ),
-                ),
-              ],
+            child: Text(
+              techada ? 'TECHADA' : 'AL AIRE LIBRE',
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF0D9488),
+                letterSpacing: 0.3,
+              ),
             ),
           ),
         ],
@@ -636,68 +930,71 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
     );
   }
 
+  Widget _canchaPlaceholder() {
+    return Container(
+      color: Colors.grey.shade200,
+      child: const Icon(Icons.sports_soccer_rounded, color: Colors.grey, size: 36),
+    );
+  }
+
   Widget _buildDateSelector() {
-    return GestureDetector(
-      onTap: (_updatedCancha?.disponible ?? widget.cancha.disponible) ? _toggleCalendar : null,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withAlpha(13),
-              blurRadius: 10,
-              offset: const Offset(0, 2),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 8),
+          child: Text(
+            'FECHA SELECCIONADA',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: Colors.grey.shade500,
+              letterSpacing: 0.6,
             ),
-          ],
+          ),
         ),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade50,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.grey.shade200),
-              ),
-              child: Icon(
-                Icons.calendar_today_outlined,
-                color: Colors.grey.shade800,
-                size: 20,
-              ),
-            ),
-            const SizedBox(width: 16),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Fecha seleccionada',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: Colors.grey.shade500,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  DateFormat('EEEE, d MMMM yyyy', 'es').format(_selectedDate),
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.grey.shade800,
-                  ),
+        GestureDetector(
+          onTap: (_updatedCancha?.disponible ?? widget.cancha.disponible) ? _toggleCalendar : null,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.06),
+                  blurRadius: 10,
+                  offset: const Offset(0, 2),
                 ),
               ],
             ),
-            const Spacer(),
-            Icon(
-              _calendarExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
-              color: Colors.grey.shade700,
+            child: Row(
+              children: [
+                Icon(Icons.calendar_today_outlined, color: Colors.grey.shade600, size: 22),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Text(
+                    DateFormat('EEEE, d MMMM yyyy', 'es').format(_selectedDate),
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF1F2937),
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                Icon(
+                  _calendarExpanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                  color: Colors.grey.shade600,
+                  size: 24,
+                ),
+              ],
             ),
-          ],
+          ),
         ),
-      ),
+      ],
     );
   }
 
@@ -755,30 +1052,32 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
 
   Widget _buildHorariosHeader() {
     return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
+        Icon(Icons.schedule_rounded, color: const Color(0xFF2DD4BF), size: 22),
+        const SizedBox(width: 8),
         Text(
           'Horarios Disponibles',
-          style: TextStyle(
+          style: const TextStyle(
             fontSize: 18,
-            fontWeight: FontWeight.w600,
-            color: Colors.grey.shade800,
-            letterSpacing: 0.3,
+            fontWeight: FontWeight.w700,
+            color: Color(0xFF1F2937),
+            letterSpacing: 0.2,
           ),
         ),
+        const Spacer(),
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           decoration: BoxDecoration(
-            color: Colors.green.shade50,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: Colors.green.shade100),
+            color: const Color(0xFF1A2033),
+            borderRadius: BorderRadius.circular(8),
           ),
           child: Text(
-            DateFormat('d MMM', 'es').format(_selectedDate),
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: Colors.green.shade700,
+            DateFormat('d MMM', 'es').format(_selectedDate).toUpperCase(),
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+              letterSpacing: 0.4,
             ),
           ),
         ),
@@ -786,10 +1085,135 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
     );
   }
 
-  Widget _buildHorariosGrid() {
+  /// True si el día está cerrado o (si es hoy) fuera del rango de horario de actividad.
+  bool _noReservarPorHorario() {
+    if (_configLugar == null) return false;
+    final weekday = _selectedDate.weekday;
+    if (_configLugar!.estaCerradoDia(weekday)) return true;
+    final now = DateTime.now();
+    if (!isSameDay(_selectedDate, now)) return false;
+    return !_configLugar!.estaDentroDeHorario(weekday, now.hour, now.minute);
+  }
+
+  bool _mostrarAvisoCerrado() => _noReservarPorHorario();
+
+  /// Aviso: reservas fuera de horario de oficina pueden tardar en confirmarse.
+  Widget _buildWarningOficina() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.amber.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.amber.shade200),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline_rounded, color: Colors.amber.shade700, size: 22),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'Recuerda que las reservas fuera de horario de oficina podrían tardar unos minutos en confirmarse.',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+                color: Colors.grey.shade800,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBottomButton() {
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.fromLTRB(16, 12, 16, 12 + MediaQuery.of(context).padding.bottom),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 8,
+            offset: const Offset(0, -2),
+          ),
+        ],
+      ),
+      child: SafeArea(
+        top: false,
+        child: Material(
+          color: const Color(0xFF1A2033),
+          borderRadius: BorderRadius.circular(16),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: const Text('Selecciona un horario disponible de la lista para continuar'),
+                  behavior: SnackBarBehavior.floating,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  margin: const EdgeInsets.all(12),
+                ),
+              );
+            },
+            child: const Padding(
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: Center(
+                child: Text(
+                  'CONFIRMAR RESERVA',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAvisoCerrado() {
+    final weekday = _selectedDate.weekday;
+    final bool cerrado = _configLugar!.estaCerradoDia(weekday);
+    final String mensaje = cerrado
+        ? 'Cerrado este día. No se pueden realizar reservas.'
+        : 'Fuera del horario de atención. No se pueden realizar reservas.';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.orange.shade200),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.info_outline_rounded, color: Colors.orange.shade700, size: 24),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              mensaje,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+                color: Colors.orange.shade900,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Contenido del área de horarios (sin Expanded, para usar dentro de Expanded del body).
+  Widget _buildHorariosGridContent() {
     if (!(_updatedCancha?.disponible ?? widget.cancha.disponible)) {
-      return Expanded(
-        child: Center(
+      return Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -832,13 +1256,11 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
               ),
             ],
           ),
-        ),
       );
     }
 
     if (_isLoading) {
-      return Expanded(
-        child: Center(
+      return Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -861,13 +1283,11 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
               ),
             ],
           ),
-        ),
       );
     }
 
     if (horarios.isEmpty) {
-      return Expanded(
-        child: Center(
+      return Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -910,13 +1330,11 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
               ),
             ],
           ),
-        ),
       );
     }
 
     // Responsividad mejorada
-    return Expanded(
-      child: LayoutBuilder(
+    return LayoutBuilder(
         builder: (context, constraints) {
           // Calcular crossAxisCount basado en el ancho disponible
           int crossAxisCount;
@@ -941,14 +1359,15 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
           }
 
           return GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: crossAxisCount,
               crossAxisSpacing: 10,
               mainAxisSpacing: 10,
               childAspectRatio: childAspectRatio,
             ),
-            physics: const BouncingScrollPhysics(),
-            padding: const EdgeInsets.only(bottom: 16),
+            padding: EdgeInsets.zero,
             itemCount: horarios.length,
             itemBuilder: (context, index) {
               final horario = horarios[index];
@@ -956,19 +1375,37 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
             },
           );
         },
-      ),
     );
   }
 
   Widget _buildHorarioCard(Horario horario, String sedeNombre) {
     final String day = DateFormat('EEEE', 'es').format(_selectedDate).toLowerCase();
     final String horaStr = horario.horaFormateada;
+    final horaNormalizada = Horario.normalizarHora(horaStr);
+    
+    // ✅ OPTIMIZADO: Verificar promoción usando solo la clave normalizada
+    final tienePromocion = _promocionesPorHorario.containsKey(horaNormalizada);
+    final promocion = tienePromocion ? _promocionesPorHorario[horaNormalizada] : null;
+    
+    // Debug para verificar promociones
+    if (_promocionesPorHorario.isNotEmpty && horario.estado == EstadoHorario.disponible) {
+      debugPrint('🔍 Verificando promoción para: "$horaStr" (normalizado: "$horaNormalizada")');
+      debugPrint('   - Promociones disponibles: ${_promocionesPorHorario.keys.toList()}');
+      debugPrint('   - Tiene promoción: $tienePromocion');
+    }
+    
     final Map<String, Map<String, dynamic>>? dayPrices = (_updatedCancha?.preciosPorHorario ?? widget.cancha.preciosPorHorario)[day];
-    final double precio = dayPrices != null && dayPrices.containsKey(horaStr)
+    double precio = dayPrices != null && dayPrices.containsKey(horaStr)
         ? (dayPrices[horaStr] is Map<String, dynamic>
             ? (dayPrices[horaStr]!['precio'] as num?)?.toDouble() ?? (_updatedCancha?.precio ?? widget.cancha.precio)
             : (dayPrices[horaStr] as num?)?.toDouble() ?? (_updatedCancha?.precio ?? widget.cancha.precio))
         : (_updatedCancha?.precio ?? widget.cancha.precio);
+    
+    // ✅ NUEVO: Aplicar precio promocional si está disponible y no está reservado
+    if (tienePromocion && promocion != null && horario.estado == EstadoHorario.disponible) {
+      precio = promocion['precio_promocional'] as double;
+      debugPrint('✨ Precio promocional aplicado: S/ $precio para $horaStr');
+    }
 
     final sedeProvider = Provider.of<SedeProvider>(context, listen: false);
     final sede = sedeProvider.sedes.firstWhere(
@@ -1018,6 +1455,20 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                     margin: const EdgeInsets.all(12),
                     duration: const Duration(seconds: 4), // Mensaje más largo
+                  ),
+                );
+                return;
+              }
+
+              // Cerrado o fuera de horario de actividad: no permitir reservar
+              if (horario.estado == EstadoHorario.disponible && _noReservarPorHorario()) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: const Text('Cerrado o fuera del horario de atención. No se pueden realizar reservas.'),
+                    backgroundColor: Colors.orange.shade800,
+                    behavior: SnackBarBehavior.floating,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    margin: const EdgeInsets.all(12),
                   ),
                 );
                 return;
@@ -1092,13 +1543,18 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
                           fecha: _selectedDate,
                           horario: horario,
                           sede: sedeId,
+                          precioPromocional: tienePromocion && promocion != null ? promocion['precio_promocional'] as double? : null,
+                          promocionId: tienePromocion && promocion != null ? promocion['id'] as String? : null,
                         ),
                       );
                     },
                     transitionDuration: const Duration(milliseconds: 300),
                   ),
-                ).then((reservaRealizada) {
+                ).then((reservaRealizada) async {
                   if (reservaRealizada == true) {
+                    // ✅ ACTUALIZAR ESTADO LOCAL INMEDIATAMENTE
+                    await _actualizarEstadoLocalReservaCreada(horario);
+                    // También recargar para sincronizar con Firestore
                     _reservasSnapshots.clear();
                     _loadHorarios();
                   }
@@ -1120,17 +1576,34 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
-                  color: horario.estado == EstadoHorario.disponible
-                      ? const Color(0xFF4CAF50)
-                      : horario.estado == EstadoHorario.reservado
-                          ? const Color(0xFF1B5E20)
-                      : horario.estado == EstadoHorario.procesandoPago  // ✅ NUEVO CASO
-                          ? Colors.red.shade600
-                      : Colors.grey.shade400,
-                  width: 1.5,
+                  color: tienePromocion && horario.estado == EstadoHorario.disponible
+                      ? Colors.amber.shade600 // ✅ NUEVO: Borde dorado para promociones
+                      : horario.estado == EstadoHorario.disponible
+                          ? const Color(0xFF4CAF50)
+                          : horario.estado == EstadoHorario.reservado
+                              ? const Color(0xFF1B5E20)
+                          : horario.estado == EstadoHorario.procesandoPago
+                              ? Colors.red.shade600
+                          : Colors.grey.shade400,
+                  width: tienePromocion && horario.estado == EstadoHorario.disponible ? 2.5 : 1.5, // ✅ NUEVO: Borde más grueso para promociones
                 ),
                 boxShadow: [
-                  if (horario.estado == EstadoHorario.disponible) ...[
+                  // ✅ NUEVO: Sombra dorada para promociones
+                  if (tienePromocion && horario.estado == EstadoHorario.disponible) ...[
+                    BoxShadow(
+                      color: Colors.amber.withOpacity(0.5),
+                      blurRadius: 12,
+                      spreadRadius: 2,
+                      offset: const Offset(0, 4),
+                    ),
+                    BoxShadow(
+                      color: Colors.orange.withOpacity(0.3),
+                      blurRadius: 8,
+                      spreadRadius: 1,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                  if (horario.estado == EstadoHorario.disponible && !tienePromocion) ...[
                     BoxShadow(
                       color: const Color(0xFF4CAF50).withOpacity(0.15),
                       blurRadius: 6,
@@ -1167,16 +1640,26 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
                     // Fondo base mejorado
                     Container(
                       decoration: BoxDecoration(
-                        gradient: horario.estado == EstadoHorario.disponible
-                            ? LinearGradient(
+                        gradient: tienePromocion && horario.estado == EstadoHorario.disponible
+                            ? LinearGradient( // ✅ NUEVO: Gradiente dorado para promociones
                                 begin: Alignment.topLeft,
                                 end: Alignment.bottomRight,
                                 colors: [
-                                  Colors.white,
-                                  const Color(0xFFF1F8E9),
-                                  const Color(0xFFE8F5E8),
+                                  Colors.amber.shade50,
+                                  Colors.orange.shade50,
+                                  Colors.yellow.shade50,
                                 ],
                               )
+                            : horario.estado == EstadoHorario.disponible
+                                ? LinearGradient(
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                    colors: [
+                                      Colors.white,
+                                      const Color(0xFFF1F8E9),
+                                      const Color(0xFFE8F5E8),
+                                    ],
+                                  )
                             : horario.estado == EstadoHorario.reservado
                                 ? LinearGradient(
                                     begin: Alignment.topLeft,
@@ -1269,32 +1752,34 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
                             // Precio solo para disponibles
                             if (horario.estado == EstadoHorario.disponible) ...[
                               Flexible(
-                                child: Container(
-                                  padding: EdgeInsets.symmetric(
-                                    horizontal: constraints.maxWidth * 0.08,
-                                    vertical: 2,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF4CAF50).withOpacity(0.12),
-                                    borderRadius: BorderRadius.circular(6),
-                                    border: Border.all(
-                                      color: const Color(0xFF4CAF50).withOpacity(0.3),
-                                      width: 1,
-                                    ),
-                                  ),
-                                  child: FittedBox(
-                                    fit: BoxFit.scaleDown,
-                                    child: Text(
-                                      NumberFormat.currency(symbol: '\$', decimalDigits: 0).format(precio),
-                                      style: TextStyle(
-                                        fontSize: priceFontSize,
-                                        fontWeight: FontWeight.bold,
-                                        color: const Color(0xFF1B5E20),
+                                child: tienePromocion
+                                    ? _buildPrecioPromocional(precio, priceFontSize, constraints)
+                                    : Container(
+                                        padding: EdgeInsets.symmetric(
+                                          horizontal: constraints.maxWidth * 0.08,
+                                          vertical: 2,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF4CAF50).withOpacity(0.12),
+                                          borderRadius: BorderRadius.circular(6),
+                                          border: Border.all(
+                                            color: const Color(0xFF4CAF50).withOpacity(0.3),
+                                            width: 1,
+                                          ),
+                                        ),
+                                        child: FittedBox(
+                                          fit: BoxFit.scaleDown,
+                                          child: Text(
+                                            NumberFormat.currency(symbol: '\$', decimalDigits: 0).format(precio),
+                                            style: TextStyle(
+                                              fontSize: priceFontSize,
+                                              fontWeight: FontWeight.bold,
+                                              color: const Color(0xFF1B5E20),
+                                            ),
+                                            maxLines: 1,
+                                          ),
+                                        ),
                                       ),
-                                      maxLines: 1,
-                                    ),
-                                  ),
-                                ),
                               ),
                               SizedBox(height: constraints.maxHeight * 0.05),
                             ] else
@@ -1361,7 +1846,7 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
                                       const SizedBox(width: 3),
                                       Text(
                                         horario.estado == EstadoHorario.disponible
-                                            ? 'Disponible'
+                                            ? 'LIBRE'
                                             : horario.estado == EstadoHorario.reservado
                                                 ? 'Reservado'
                                             : horario.estado == EstadoHorario.procesandoPago  // ✅ TEXTO PARA PROCESANDO
@@ -1389,6 +1874,20 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
                       ),
                     ),
                     
+                    // ✅ NUEVO: Efecto dorado animado para promociones
+                    if (tienePromocion && horario.estado == EstadoHorario.disponible)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: AnimatedBuilder(
+                            animation: _goldShimmerController,
+                            builder: (context, child) {
+                              return CustomPaint(
+                                painter: GoldShimmerPainter(_goldShimmerController.value),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
                     // Efecto de brillo sutil para reservados y procesando
                     if (horario.estado == EstadoHorario.reservado || horario.estado == EstadoHorario.procesandoPago)
                       Positioned(
@@ -1421,5 +1920,155 @@ class _HorariosScreenState extends State<HorariosScreen> with RouteAware, Ticker
         },
       ),
     );
+  }
+  
+  // ✅ NUEVO: Widget para precio promocional con efecto dorado
+  Widget _buildPrecioPromocional(double precio, double fontSize, BoxConstraints constraints) {
+    return AnimatedBuilder(
+      animation: _goldShimmerController,
+      builder: (context, child) {
+        return Container(
+          padding: EdgeInsets.symmetric(
+            horizontal: constraints.maxWidth * 0.08,
+            vertical: 3,
+          ),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Colors.amber.shade400,
+                Colors.orange.shade400,
+                Colors.amber.shade500,
+              ],
+            ),
+            borderRadius: BorderRadius.circular(7),
+            border: Border.all(
+              color: Colors.amber.shade700,
+              width: 1.5,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.amber.withOpacity(0.5),
+                blurRadius: 6,
+                spreadRadius: 1,
+              ),
+            ],
+          ),
+          child: ShaderMask(
+            shaderCallback: (bounds) {
+              return LinearGradient(
+                begin: Alignment(-1.0 + (_goldShimmerController.value * 2), 0),
+                end: Alignment(1.0 + (_goldShimmerController.value * 2), 0),
+                colors: [
+                  Colors.white,
+                  Colors.yellow.shade200,
+                  Colors.white,
+                ],
+                stops: const [0.0, 0.5, 1.0],
+              ).createShader(bounds);
+            },
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.local_offer,
+                    size: fontSize * 0.85,
+                    color: Colors.white,
+                  ),
+                  const SizedBox(width: 2),
+                  Text(
+                    NumberFormat.currency(symbol: '\$', decimalDigits: 0).format(precio),
+                    style: TextStyle(
+                      fontSize: fontSize,
+                      fontWeight: FontWeight.w900,
+                      color: Colors.white,
+                      shadows: [
+                        Shadow(
+                          color: Colors.black.withOpacity(0.3),
+                          blurRadius: 2,
+                          offset: const Offset(0, 1),
+                        ),
+                      ],
+                    ),
+                    maxLines: 1,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ✅ NUEVO: CustomPainter para efecto dorado animado
+class GoldShimmerPainter extends CustomPainter {
+  final double animationValue;
+
+  GoldShimmerPainter(this.animationValue);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..style = PaintingStyle.fill
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2);
+
+    // Crear gradiente dorado que se mueve
+    final gradient = LinearGradient(
+      begin: Alignment(-1.0 + (animationValue * 2), 0),
+      end: Alignment(1.0 + (animationValue * 2), 0),
+      colors: [
+        Colors.transparent,
+        Colors.amber.withOpacity(0.3),
+        Colors.yellow.withOpacity(0.4),
+        Colors.amber.withOpacity(0.3),
+        Colors.transparent,
+      ],
+      stops: const [0.0, 0.3, 0.5, 0.7, 1.0],
+    ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
+
+    paint.shader = gradient;
+    
+    // Dibujar múltiples líneas de brillo
+    for (int i = 0; i < 3; i++) {
+      final y = (size.height / 4) * (i + 1);
+      final path = Path()
+        ..moveTo(0, y)
+        ..lineTo(size.width, y);
+      
+      paint.strokeWidth = 2 - (i * 0.5);
+      paint.style = PaintingStyle.stroke;
+      canvas.drawPath(path, paint);
+    }
+    
+    // Partículas doradas flotantes
+    for (int i = 0; i < 5; i++) {
+      final x = (size.width / 6) * (i + 1);
+      final y = size.height * (0.2 + (i % 3) * 0.3);
+      final offset = (animationValue * 2 * math.pi) + (i * 0.5);
+      
+      final particleY = y + math.sin(offset) * 5;
+      final opacity = 0.4 + (math.sin(offset) * 0.3);
+      
+      paint
+        ..style = PaintingStyle.fill
+        ..color = Colors.amber.withOpacity(opacity)
+        ..shader = null;
+      
+      canvas.drawCircle(
+        Offset(x, particleY),
+        2,
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(GoldShimmerPainter oldDelegate) {
+    return oldDelegate.animationValue != animationValue;
   }
 }

@@ -17,8 +17,8 @@ class Reserva {
   double montoPagado;
   String? nombre;
   String? telefono;
-  String? email;
   bool confirmada;
+  String? lugarId; // ✅ ID del lugar para filtrado
   
   // NUEVAS PROPIEDADES PARA RESERVAS GRUPALES Y PRECIOS PERSONALIZADOS
   String? grupoReservaId;          // ID del grupo de reservas
@@ -31,6 +31,12 @@ class Reserva {
   // ✅ NUEVA PROPIEDAD PARA RESERVAS RECURRENTES
   String? reservaRecurrenteId;     // ID de la reserva recurrente padre
   bool esReservaRecurrente;        // Si proviene de una reserva recurrente
+  
+  // ✅ NUEVA PROPIEDAD PARA DEVOLUCIONES
+  bool? abonoEntregado;             // Si el abono ya fue entregado al cliente (solo para devoluciones)
+  
+  // ✅ NUEVA PROPIEDAD PARA PROMOCIONES
+  String? promocionId;               // ID de la promoción aplicada (para auditoría y trazabilidad)
 
   Reserva({
     required this.id,
@@ -43,8 +49,8 @@ class Reserva {
     required this.montoPagado,
     this.nombre,
     this.telefono,
-    this.email,
     this.confirmada = false,
+    this.lugarId,
     // Propiedades existentes
     this.grupoReservaId,
     this.totalHorasGrupo,
@@ -55,6 +61,10 @@ class Reserva {
     // ✅ NUEVAS PROPIEDADES PARA RECURRENCIA
     this.reservaRecurrenteId,
     this.esReservaRecurrente = false,
+    // ✅ NUEVA PROPIEDAD PARA DEVOLUCIONES
+    this.abonoEntregado,
+    // ✅ NUEVA PROPIEDAD PARA PROMOCIONES
+    this.promocionId,
   });
 
   // GETTER PARA SABER SI ES RESERVA GRUPAL
@@ -148,8 +158,8 @@ class Reserva {
     final descuentoAplicado = (data['descuento_aplicado'] as num?)?.toDouble();
     final reservaRecurrenteId = data['reservaRecurrenteId'] as String?;
     final esReservaRecurrente = data['esReservaRecurrente'] as bool? ?? false;
-
-
+    final abonoEntregado = (data['abono_entregado'] as bool?);
+    final promocionId = (data['promocion_id'] as String?);
     
     // LEER LISTA DE HORARIOS SI EXISTE (para compatibilidad futura)
     List<String>? horarios;
@@ -174,8 +184,8 @@ class Reserva {
       montoPagado: montoPagado,
       nombre: data['nombre'],
       telefono: data['telefono'],
-      email: data['correo'],
       confirmada: data['confirmada'] ?? false,
+      lugarId: data['lugarId'] as String?, // ✅ Agregar lugarId
       grupoReservaId: grupoReservaId,
       totalHorasGrupo: totalHorasGrupo,
       precioPersonalizado: precioPersonalizado,
@@ -185,6 +195,10 @@ class Reserva {
       // ✅ NUEVOS CAMPOS PARA RECURRENCIA
       reservaRecurrenteId: reservaRecurrenteId,
       esReservaRecurrente: esReservaRecurrente,
+      // ✅ NUEVO CAMPO PARA DEVOLUCIONES
+      abonoEntregado: abonoEntregado,
+      // ✅ NUEVO CAMPO PARA PROMOCIONES
+      promocionId: promocionId,
     );
   }
 
@@ -235,6 +249,8 @@ class Reserva {
     // ✅ LEER NUEVAS PROPIEDADES PARA RECURRENCIA
     final reservaRecurrenteId = data['reserva_recurrente_id'] as String?;
     final esReservaRecurrente = data['es_reserva_recurrente'] as bool? ?? false;
+    final abonoEntregado = (data['abono_entregado'] as bool?);
+    final promocionId = (data['promocion_id'] as String?);
     
     List<String>? horarios;
     if (data['horarios'] is List) {
@@ -258,8 +274,8 @@ class Reserva {
       montoPagado: montoPagado,
       nombre: data['nombre'],
       telefono: data['telefono'],
-      email: data['correo'],
       confirmada: data['confirmada'] ?? false,
+      lugarId: data['lugarId'] as String?, // ✅ Agregar lugarId
       grupoReservaId: grupoReservaId,
       totalHorasGrupo: totalHorasGrupo,
       precioPersonalizado: precioPersonalizado,
@@ -269,6 +285,10 @@ class Reserva {
       // ✅ NUEVOS CAMPOS PARA RECURRENCIA
       reservaRecurrenteId: reservaRecurrenteId,
       esReservaRecurrente: esReservaRecurrente,
+      // ✅ NUEVO CAMPO PARA DEVOLUCIONES
+      abonoEntregado: abonoEntregado,
+      // ✅ NUEVO CAMPO PARA PROMOCIONES
+      promocionId: promocionId,
     );
   }
 
@@ -277,7 +297,6 @@ class Reserva {
     final data = {
       'nombre': nombre,
       'telefono': telefono,
-      'correo': email,
       'fecha': DateFormat('yyyy-MM-dd').format(fecha),
       'cancha_id': cancha.id,
       'horario': horario.horaFormateada,
@@ -286,6 +305,7 @@ class Reserva {
       'montoPagado': montoPagado,
       'sede': sede,
       'confirmada': confirmada,
+      'lugarId': lugarId, // ✅ Agregar lugarId
       'created_at': Timestamp.now(),
     };
 
@@ -320,6 +340,11 @@ class Reserva {
     if (esReservaRecurrente) {
       data['es_reserva_recurrente'] = true;
     }
+    
+    // ✅ AGREGAR PROMOCIÓN ID SI EXISTE
+    if (promocionId != null && promocionId!.isNotEmpty) {
+      data['promocion_id'] = promocionId!;
+    }
 
     return data;
   }
@@ -336,8 +361,8 @@ class Reserva {
     double? montoPagado,
     String? nombre,
     String? telefono,
-    String? email,
     bool? confirmada,
+    String? lugarId, // ✅ Agregar lugarId
     String? grupoReservaId,
     int? totalHorasGrupo,
     bool? precioPersonalizado,
@@ -347,6 +372,8 @@ class Reserva {
     // ✅ NUEVOS PARÁMETROS PARA RECURRENCIA
     String? reservaRecurrenteId,
     bool? esReservaRecurrente,
+    bool? abonoEntregado,
+    String? promocionId,
   }) {
     return Reserva(
       id: id ?? this.id,
@@ -359,8 +386,8 @@ class Reserva {
       montoPagado: montoPagado ?? this.montoPagado,
       nombre: nombre ?? this.nombre,
       telefono: telefono ?? this.telefono,
-      email: email ?? this.email,
       confirmada: confirmada ?? this.confirmada,
+      lugarId: lugarId ?? this.lugarId, // ✅ Agregar lugarId
       grupoReservaId: grupoReservaId ?? this.grupoReservaId,
       totalHorasGrupo: totalHorasGrupo ?? this.totalHorasGrupo,
       precioPersonalizado: precioPersonalizado ?? this.precioPersonalizado,
@@ -370,6 +397,8 @@ class Reserva {
       // ✅ NUEVOS CAMPOS PARA RECURRENCIA
       reservaRecurrenteId: reservaRecurrenteId ?? this.reservaRecurrenteId,
       esReservaRecurrente: esReservaRecurrente ?? this.esReservaRecurrente,
+      abonoEntregado: abonoEntregado ?? this.abonoEntregado,
+      promocionId: promocionId ?? this.promocionId,
     );
   }
 

@@ -9,6 +9,7 @@ import '../../../providers/cancha_provider.dart';
 import '../../../models/cancha.dart';
 import '../../../models/reserva.dart';
 import '../../../providers/reserva_recurrente_provider.dart';
+import '../../../services/lugar_helper.dart';
 import 'dart:async';
 
 class EstadisticasScreen extends StatefulWidget {
@@ -47,6 +48,10 @@ class EstadisticasScreenState extends State<EstadisticasScreen> {
       RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
       (Match match) => '${match[1]}.',
     );
+  }
+
+  String _subtitleFormateado(String subtitle) {
+    return subtitle;
   }
   
   // Estadísticas calculadas
@@ -111,21 +116,30 @@ class EstadisticasScreenState extends State<EstadisticasScreen> {
   void _configurarStreamReservas() {
     _reservasSubscription?.cancel();
     
-    Query query = _construirQuery();
-    
-    _reservasSubscription = query.snapshots().listen(
-      (snapshot) {
-        _procesarReservas(snapshot);
-        if (mounted) setState(() => _lastUpdate = DateTime.now());
-      },
-      onError: (error) => _mostrarError('Error en stream: $error'),
-    );
+    _construirQuery().then((query) {
+      _reservasSubscription = query.snapshots().listen(
+        (snapshot) {
+          _procesarReservas(snapshot);
+          if (mounted) setState(() => _lastUpdate = DateTime.now());
+        },
+        onError: (error) => _mostrarError('Error en stream: $error'),
+      );
+    }).catchError((error) {
+      _mostrarError('Error configurando consulta: $error');
+    });
   }
 
-  Query _construirQuery() {
+  Future<Query> _construirQuery() async {
+    // Obtener el lugarId del usuario autenticado
+    final lugarId = await LugarHelper.getLugarId();
+    if (lugarId == null) {
+      throw Exception('No se pudo obtener el lugar del usuario');
+    }
+
     Query query = FirebaseFirestore.instance.collection('reservas');
   
     query = query.where('confirmada', isEqualTo: true);
+    query = query.where('lugarId', isEqualTo: lugarId);
   
     if (_periodoSeleccionado == 'Diario' && _fechaSeleccionada != null) {
       DateTime fechaInicio = _fechaSeleccionada!.subtract(const Duration(days: 6));
@@ -304,6 +318,8 @@ class EstadisticasScreenState extends State<EstadisticasScreen> {
     
     double dineroTotalSinDescuentos = 0.0;
     double dineroRecaudado = 0.0;
+    double pendientePorCobrar = 0.0;
+    double valorTotalReservas = 0.0;
 
     for (var reserva in reservasParaTarjetas) {
       if (reserva.tipoAbono == TipoAbono.completo) {
@@ -312,9 +328,11 @@ class EstadisticasScreenState extends State<EstadisticasScreen> {
       } else {
         totalParcial++;
         montoParcial += reserva.montoPagado;
+        pendientePorCobrar += (reserva.montoTotal - reserva.montoPagado);
       }
       
       dineroRecaudado += reserva.montoPagado;
+      valorTotalReservas += reserva.montoTotal;
       
       if (reserva.precioPersonalizado && reserva.precioOriginal != null) {
         dineroTotalSinDescuentos += reserva.precioOriginal!;
@@ -323,8 +341,8 @@ class EstadisticasScreenState extends State<EstadisticasScreen> {
       }
     }
 
-    double eficiencia = dineroTotalSinDescuentos > 0 
-        ? (dineroRecaudado / dineroTotalSinDescuentos * 100) 
+    double eficienciaCobro = valorTotalReservas > 0
+        ? (dineroRecaudado / valorTotalReservas * 100)
         : 100.0;
 
     Map<String, int> canchasMasPedidas = {};
@@ -358,7 +376,9 @@ class EstadisticasScreenState extends State<EstadisticasScreen> {
           'montoTotal': montoCompleto + montoParcial,
           'dineroTotalSinDescuentos': dineroTotalSinDescuentos,
           'dineroRecaudado': dineroRecaudado,
-          'eficiencia': eficiencia,
+          'pendientePorCobrar': pendientePorCobrar,
+          'valorTotalReservas': valorTotalReservas,
+          'eficiencia': eficienciaCobro,
           'reservasCompletas': reservasParaTarjetas.where((r) => r.tipoAbono == TipoAbono.completo).toList(),
           'reservasParciales': reservasParaTarjetas.where((r) => r.tipoAbono == TipoAbono.parcial).toList(),
           'todasReservasPeriodo': reservasParaTarjetas,
@@ -464,9 +484,9 @@ class EstadisticasScreenState extends State<EstadisticasScreen> {
   int get _totalReservasPeriodo => _estadisticas['totalReservasPeriodo'] ?? 0;
   double get _montoCompleto => _estadisticas['montoCompleto'] ?? 0.0;
   double get _montoParcial => _estadisticas['montoParcial'] ?? 0.0;
-  double get _montoTotal => _estadisticas['montoTotal'] ?? 0.0;
-  double get _dineroTotalSinDescuentos => _estadisticas['dineroTotalSinDescuentos'] ?? 0.0;
   double get _dineroRecaudado => _estadisticas['dineroRecaudado'] ?? 0.0;
+  double get _pendientePorCobrar => _estadisticas['pendientePorCobrar'] ?? 0.0;
+  double get _valorTotalReservas => _estadisticas['valorTotalReservas'] ?? 0.0;
   double get _eficiencia => _estadisticas['eficiencia'] ?? 100.0;
   List<Reserva> get _reservasCompletas => _estadisticas['reservasCompletas'] ?? [];
   List<Reserva> get _reservasParciales => _estadisticas['reservasParciales'] ?? [];
@@ -1148,9 +1168,9 @@ class EstadisticasScreenState extends State<EstadisticasScreen> {
           child: Row(
             children: [
               _buildTarjeta(
-                title: 'Reservas Completas',
+                title: 'Pagos Completos',
                 value: '$_totalCompleto',
-                subtitle: '\$${_montoCompleto.toStringAsFixed(0)}',
+                subtitle: '\$${_formatearMonto(_montoCompleto)} recaudado',
                 color: Colors.green.shade400,
                 icon: Icons.check_circle,
                 delay: 100,
@@ -1158,9 +1178,9 @@ class EstadisticasScreenState extends State<EstadisticasScreen> {
               ),
               SizedBox(width: 6),
               _buildTarjeta(
-                title: 'Reservas Parciales',
+                title: 'Pagos Parciales',
                 value: '$_totalParcial',
-                subtitle: '\$${_montoParcial.toStringAsFixed(0)}',
+                subtitle: '\$${_formatearMonto(_montoParcial)} recaudado',
                 color: Colors.orange.shade400,
                 icon: Icons.hourglass_empty,
                 delay: 200,
@@ -1177,22 +1197,51 @@ class EstadisticasScreenState extends State<EstadisticasScreen> {
           child: Row(
             children: [
               _buildTarjeta(
-                title: 'Total Reservas',
-                value: '$_totalReservasPeriodo',
-                subtitle: '\$${_montoTotal.toStringAsFixed(0)}',
-                color: Colors.blue.shade400,
-                icon: Icons.sports_soccer,
+                title: 'Total Recaudado',
+                value: '\$${_formatearMonto(_dineroRecaudado)}',
+                subtitle: 'Dinero que entró en caja',
+                color: Colors.green.shade600,
+                icon: Icons.payments,
                 delay: 300,
                 onTap: () => _mostrarDetalleReservas('Todas', _todasReservasPeriodo),
               ),
               SizedBox(width: 6),
               _buildTarjeta(
-                title: 'Eficiencia de Cobro',
-                value: '${_eficiencia.toStringAsFixed(1)}%',
-                subtitle: '\$${_dineroTotalSinDescuentos.toStringAsFixed(0)}',
-                color: Colors.purple.shade400,
-                icon: Icons.trending_up,
+                title: 'Pendiente por Cobrar',
+                value: '\$${_formatearMonto(_pendientePorCobrar)}',
+                subtitle: 'Falta por pagar de parciales',
+                color: Colors.orange.shade600,
+                icon: Icons.pending_actions,
                 delay: 400,
+                onTap: () => _mostrarDetalleReservas('Parciales', _reservasParciales),
+              ),
+            ],
+          ),
+        ),
+        
+        const SizedBox(height: 8),
+        
+        Padding(
+          padding: EdgeInsets.symmetric(horizontal: 8),
+          child: Row(
+            children: [
+              _buildTarjeta(
+                title: 'Valor Total Reservas',
+                value: '\$${_formatearMonto(_valorTotalReservas)}',
+                subtitle: '$_totalReservasPeriodo reservas confirmadas',
+                color: Colors.blue.shade600,
+                icon: Icons.receipt_long,
+                delay: 500,
+                onTap: () => _mostrarDetalleReservas('Todas', _todasReservasPeriodo),
+              ),
+              SizedBox(width: 6),
+              _buildTarjeta(
+                title: 'Cobro Efectivo',
+                value: '${_eficiencia.toStringAsFixed(1)}%',
+                subtitle: 'Recaudado vs valor total',
+                color: Colors.purple.shade600,
+                icon: Icons.trending_up,
+                delay: 600,
                 onTap: () => _mostrarDetalleEficiencia(),
               ),
             ],
@@ -1278,7 +1327,7 @@ class EstadisticasScreenState extends State<EstadisticasScreen> {
                       borderRadius: BorderRadius.circular(6),
                     ),
                     child: Text(
-                      '\$${_formatearMonto(double.tryParse(subtitle.replaceAll('\$', '').replaceAll(',', '')) ?? 0)}',
+                      _subtitleFormateado(subtitle),
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
@@ -1920,9 +1969,6 @@ class EstadisticasScreenState extends State<EstadisticasScreen> {
     final reservasNormales = _todasReservasPeriodo
         .where((r) => !r.precioPersonalizado)
         .toList();
-    
-    double descuentoTotalOtorgado = reservasConDescuento.fold(0.0, 
-        (total, r) => total + (r.precioOriginal! - r.montoTotal));
 
     showModalBottomSheet(
       context: context,
@@ -1998,9 +2044,9 @@ class EstadisticasScreenState extends State<EstadisticasScreen> {
                           ),
                           child: Column(
                             children: [
-                              Text('Sin Descuentos', 
+                              Text('Valor Total Reservas',
                                   style: TextStyle(fontSize: 12, color: Colors.blue.shade700)),
-                              Text('\$${_formatearMonto(_dineroTotalSinDescuentos)}', 
+                              Text('\$${_formatearMonto(_valorTotalReservas)}',
                                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue.shade800)),
                             ],
                           ),
@@ -2011,15 +2057,15 @@ class EstadisticasScreenState extends State<EstadisticasScreen> {
                         child: Container(
                           padding: EdgeInsets.all(12),
                           decoration: BoxDecoration(
-                            color: Colors.red.shade100,
+                            color: Colors.orange.shade100,
                             borderRadius: BorderRadius.circular(8),
                           ),
                           child: Column(
                             children: [
-                              Text('Descuento', 
-                                  style: TextStyle(fontSize: 12, color: Colors.red.shade700)),
-                              Text('\$${_formatearMonto(descuentoTotalOtorgado)}', 
-                                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.red.shade800)),
+                              Text('Pendiente por Cobrar',
+                                  style: TextStyle(fontSize: 12, color: Colors.orange.shade700)),
+                              Text('\$${_formatearMonto(_pendientePorCobrar)}',
+                                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.orange.shade800)),
                             ],
                           ),
                         ),

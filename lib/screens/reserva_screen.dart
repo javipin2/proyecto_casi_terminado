@@ -5,11 +5,18 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/reserva.dart';
+import '../models/horario.dart';
+import '../services/config_lugar_service.dart';
 
 class ReservaScreen extends StatefulWidget {
   final Reserva reserva;
+  final String? promocionId; // ✅ NUEVO: ID de la promoción para desactivarla
 
-  const ReservaScreen({super.key, required this.reserva});
+  const ReservaScreen({
+    super.key, 
+    required this.reserva,
+    this.promocionId, // ✅ NUEVO: ID de promoción opcional
+  });
 
   @override
   State<ReservaScreen> createState() => _ReservaScreenState();
@@ -21,7 +28,6 @@ class _ReservaScreenState extends State<ReservaScreen> with SingleTickerProvider
   final _formKey = GlobalKey<FormState>();
   final _nombreController = TextEditingController();
   final _telefonoController = TextEditingController();
-  final _emailController = TextEditingController();
   final _abonoController = TextEditingController();
   bool _procesando = false;
   late AnimationController _animationController;
@@ -67,16 +73,12 @@ class _ReservaScreenState extends State<ReservaScreen> with SingleTickerProvider
 
     final nombre = _nombreController.text.trim();
     final telefono = _telefonoController.text.trim();
-    final email = _emailController.text.trim();
 
     if (nombre.isEmpty) {
       error = 'El nombre es requerido';
       validos = false;
-    } else if (telefono.length < 10) {
-      error = 'El whatsapp debe del titular para enviar la confirmacion de la reserva';
-      validos = false;
-    } else if (email.isEmpty || !email.contains('@') || !email.contains('.')) {
-      error = 'Ingresa un correo electrónico válido';
+    } else if (!_esTelefonoValido(telefono)) {
+      error = 'El WhatsApp debe tener al menos 10 dígitos para enviar la confirmación';
       validos = false;
     }
 
@@ -86,21 +88,45 @@ class _ReservaScreenState extends State<ReservaScreen> with SingleTickerProvider
     });
   }
 
+  // Validar formato de teléfono
+  bool _esTelefonoValido(String telefono) {
+    if (telefono.isEmpty) return false;
+    // Remover espacios, guiones y paréntesis
+    final telefonoLimpio = telefono.replaceAll(RegExp(r'[\s\-\(\)]'), '');
+    // Verificar que tenga al menos 10 dígitos y solo contenga números
+    return telefonoLimpio.length >= 10 && RegExp(r'^\d+$').hasMatch(telefonoLimpio);
+  }
+
   // Enviar mensaje de WhatsApp con los detalles de la reserva
   Future<void> _enviarMensajeWhatsApp(String referencia) async {
-  const String numeroTelefono = "+573013435434";
-  const String cuentaPago = "BANCOLOMBIA AHORROS⚽   *52400011088* ";
+  final lugarId = widget.reserva.cancha.lugarId ?? '';
+  final config = lugarId.isNotEmpty
+      ? await ConfigLugarService.getConfig(lugarId)
+      : null;
+  final String numeroTelefono = (config != null && config.whatsappReservas.trim().isNotEmpty)
+      ? config.whatsappReservas.trim()
+      : "+573013435434";
+  final String cuentaPago = (config != null && config.textoCuentasReservas.trim().isNotEmpty)
+      ? config.textoCuentasReservas.trim()
+      : "BANCOLOMBIA AHORROS⚽   *52400011088* ";
   final String canchaNombre = widget.reserva.cancha.nombre;
   final String fecha = DateFormat('EEEE, d \'de\' MMMM \'de\' yyyy', 'es').format(widget.reserva.fecha);
   final String horario = widget.reserva.horario.horaFormateada;
-  final double precioTotal = _calcularPrecioTotalCancha();
+  // ✅ USAR PRECIO PROMOCIONAL SI LA RESERVA TIENE PRECIO PERSONALIZADO
+  final double precioTotal = widget.reserva.precioPersonalizado && widget.reserva.precioOriginal != null
+      ? (widget.reserva.precioOriginal! - (widget.reserva.descuentoAplicado ?? 0.0))
+      : _calcularPrecioTotalCancha();
   final double abono = _montoPagado;
   final String nombre = _nombreController.text.trim();
   final String telefono = _telefonoController.text.trim();
-  final String email = _emailController.text.trim();
   
   final double saldoPendiente = precioTotal - abono;
   final bool esPagoCompleto = saldoPendiente <= 0;
+  
+  // ✅ AGREGAR INFORMACIÓN DE PROMOCIÓN AL MENSAJE SI EXISTE
+  final String infoPromocion = widget.reserva.precioPersonalizado && widget.reserva.descuentoAplicado != null && widget.reserva.descuentoAplicado! > 0
+      ? '\n🔥 *PROMOCIÓN APLICADA:*\n💎 Precio original: *\$${widget.reserva.precioOriginal!.toStringAsFixed(0)} COP*\n💰 Descuento: *\$${widget.reserva.descuentoAplicado!.toStringAsFixed(0)} COP*\n'
+      : '';
 
   final String mensaje = """
 🏆 *SOLICITUD DE RESERVA DE CANCHA*
@@ -111,14 +137,13 @@ class _ReservaScreenState extends State<ReservaScreen> with SingleTickerProvider
 ⏰ Horario: *$horario*
 
 💰 *INFORMACIÓN DE PAGO:*
-💵 Precio total: *\$${precioTotal.toStringAsFixed(0)} COP*
+$infoPromocion💵 Precio total: *\$${precioTotal.toStringAsFixed(0)} COP*
 💳 ${esPagoCompleto ? 'Pago completo' : 'Abono inicial'}: *\$${abono.toStringAsFixed(0)} COP*
 ${!esPagoCompleto ? '⚠️ Saldo pendiente: *\$${saldoPendiente.toStringAsFixed(0)} COP*' : ''}
 
 👤 *DATOS DEL CLIENTE:*
 📝 Nombre: *$nombre*
 📱 Teléfono: *$telefono*
-📧 Email: *$email*
 
 💳 *Datos para transferencia:*
 $cuentaPago
@@ -144,7 +169,11 @@ Por favor, confirme la disponibilidad y el proceso de pago.
           setState(() {
             _procesando = false;
           });
-          _mostrarDialogoReservaPendiente();
+          final resultado = await _mostrarDialogoReservaPendiente();
+          // ✅ Retornar true cuando se cierra el diálogo para actualizar el estado
+          if (resultado == true && mounted) {
+            Navigator.of(context).pop(true);
+          }
         }
       } else {
         throw 'No se pudo abrir WhatsApp';
@@ -166,8 +195,8 @@ Por favor, confirme la disponibilidad y el proceso de pago.
 
 
 
-void _mostrarDialogoReservaPendiente() {
-  showDialog(
+Future<bool?> _mostrarDialogoReservaPendiente() async {
+  return showDialog<bool>(
     context: context,
     barrierDismissible: false,
     builder: (BuildContext context) {
@@ -289,8 +318,7 @@ void _mostrarDialogoReservaPendiente() {
             width: double.infinity,
             child: ElevatedButton(
               onPressed: () {
-                Navigator.of(context).pop(); // Cerrar diálogo
-                Navigator.of(context).pop(); // Volver a la pantalla anterior
+                Navigator.of(context).pop(true); // Cerrar diálogo y retornar true
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.green.shade600,
@@ -484,21 +512,61 @@ Future<bool?> _mostrarDialogoInstruccionesWhatsApp() async {
   // Guardar reserva pendiente en Firestore
   Future<void> _guardarReservaPendiente(String referencia) async {
 
-  widget.reserva.montoTotal = _calcularPrecioTotalCancha();
-
+  // ✅ USAR PRECIO PROMOCIONAL SI LA RESERVA TIENE PRECIO PERSONALIZADO
+  if (widget.reserva.precioPersonalizado && widget.reserva.precioOriginal != null) {
+    // Si tiene precio personalizado (promoción), usar el precio promocional
+    widget.reserva.montoTotal = widget.reserva.precioOriginal! - (widget.reserva.descuentoAplicado ?? 0.0);
+  } else {
+    // Si no tiene promoción, calcular precio normal
+    widget.reserva.montoTotal = _calcularPrecioTotalCancha();
+  }
 
   widget.reserva.nombre = _nombreController.text;
   widget.reserva.telefono = _telefonoController.text;
-  widget.reserva.email = _emailController.text;
   widget.reserva.montoPagado = _montoPagado;
   widget.reserva.tipoAbono = _montoPagado >= widget.reserva.montoTotal
       ? TipoAbono.completo
       : TipoAbono.parcial;
   widget.reserva.confirmada = false;
   widget.reserva.sede = widget.reserva.cancha.sedeId;
+  widget.reserva.lugarId = widget.reserva.cancha.lugarId; // ✅ Asignar lugarId de la cancha
+  // ✅ Asegurar que promocionId esté en la reserva
+  if (widget.promocionId != null && widget.promocionId!.isNotEmpty) {
+    widget.reserva.promocionId = widget.promocionId;
+  }
 
   try {
     await FirebaseFirestore.instance.runTransaction((transaction) async {
+      // ✅ VALIDAR Y DESACTIVAR PROMOCIÓN DENTRO DE LA MISMA TRANSACCIÓN
+      if (widget.promocionId != null && widget.promocionId!.isNotEmpty) {
+        final promocionRef = FirebaseFirestore.instance
+            .collection('promociones')
+            .doc(widget.promocionId!);
+        
+        final promocionDoc = await promocionRef.get();
+        
+        if (!promocionDoc.exists) {
+          throw Exception('La promoción no existe');
+        }
+        
+        final promocionData = promocionDoc.data()!;
+        final activo = promocionData['activo'] as bool? ?? false;
+        
+        // ✅ VALIDAR QUE LA PROMOCIÓN SIGUE ACTIVA (evitar race condition)
+        if (!activo) {
+          throw Exception('La promoción ya no está disponible. Por favor, intenta con otro horario.');
+        }
+        
+        // ✅ DESACTIVAR PROMOCIÓN DENTRO DE LA TRANSACCIÓN
+        transaction.update(promocionRef, {
+          'activo': false,
+          'fecha_desactivacion': FieldValue.serverTimestamp(),
+          'motivo_desactivacion': 'Reserva creada en este horario',
+        });
+        
+        debugPrint('✅ Promoción ${widget.promocionId} validada y desactivada en transacción');
+      }
+      
       // Actualizar estado del bloqueo temporal a 'pendiente'
       final DocumentReference tempRef = FirebaseFirestore.instance
           .collection('reservas_temporales')
@@ -603,7 +671,6 @@ Future<bool?> _mostrarDialogoInstruccionesWhatsApp() async {
   void dispose() {
     _nombreController.dispose();
     _telefonoController.dispose();
-    _emailController.dispose();
     _abonoController.dispose();
     _animationController.dispose();
     super.dispose();
@@ -715,7 +782,6 @@ Future<bool?> _mostrarDialogoInstruccionesWhatsApp() async {
         'datos_cliente': {
           'nombre': _nombreController.text,
           'telefono': _telefonoController.text,
-          'email': _emailController.text,
         }
       });
     });
@@ -758,25 +824,26 @@ Future<bool?> _mostrarDialogoInstruccionesWhatsApp() async {
     
     if (llaveNormalizada == horaNormalizada) {
       final config = entry.value;
-      return (config['precio'] as num?)?.toDouble() ?? widget.reserva.cancha.precio;
+      // Intentar obtener el precio según el tipo de configuración
+      try {
+        // ignore: unnecessary_type_check
+        if (config is Map && config.containsKey('precio')) {
+          return (config['precio'] as num?)?.toDouble() ?? widget.reserva.cancha.precio;
+        } else {
           return (config as num?)?.toDouble() ?? widget.reserva.cancha.precio;
+        }
+      } catch (e) {
+        return widget.reserva.cancha.precio;
+      }
     }
   }
 
   return widget.reserva.cancha.precio;
 }
 
-// Agregar este método a ReservaScreen para normalizar horas
+// ✅ OPTIMIZADO: Usar método centralizado de Horario para normalizar horas
 String _normalizarHoraFormato(String horaStr) {
-  try {
-    final dateFormat = DateFormat('h:mm a');
-    final dateTime = dateFormat.parse(horaStr.toUpperCase());
-    return dateFormat.format(dateTime).toUpperCase();
-  } catch (e) {
-    debugPrint('Error normalizando hora "$horaStr": $e');
-    // Fallback: usar el método de Horario si existe
-    return horaStr;
-  }
+  return Horario.normalizarHora(horaStr);
 }
 
 
@@ -819,10 +886,14 @@ String _normalizarHoraFormato(String horaStr) {
   Widget build(BuildContext context) {
     final currencyFormat =
         NumberFormat.currency(symbol: "\$", decimalDigits: 0);
-    final double precioTotalCancha = _calcularPrecioTotalCancha();
+    // Mostrar precio promocional si la reserva tiene promoción; si no, precio normal de la cancha
+    final double precioTotalCancha = widget.reserva.precioPersonalizado && widget.reserva.montoTotal > 0
+        ? widget.reserva.montoTotal
+        : _calcularPrecioTotalCancha();
 
     return Scaffold(
       backgroundColor: Colors.grey[50],
+      resizeToAvoidBottomInset: true,
       appBar: AppBar(
         elevation: 0,
         backgroundColor: Colors.white,
@@ -840,21 +911,23 @@ String _normalizarHoraFormato(String horaStr) {
           onPressed: () => Navigator.pop(context),
         ),
       ),
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Colors.white, Colors.grey.shade100],
+      body: GestureDetector(
+        onTap: () => FocusScope.of(context).unfocus(),
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Colors.white, Colors.grey.shade100],
+            ),
           ),
-        ),
-        child: FadeTransition(
-          opacity: _fadeAnimation,
-          child: SlideTransition(
-            position: _slideAnimation,
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(20.0),
-              child: Column(
+          child: FadeTransition(
+            opacity: _fadeAnimation,
+            child: SlideTransition(
+              position: _slideAnimation,
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(20.0),
+                child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Card(
@@ -945,7 +1018,7 @@ String _normalizarHoraFormato(String horaStr) {
                                 icon: Icons.attach_money,
                               ),
                               _buildInfoItem(
-                                title: 'Abono Inicial',
+                                title: 'Abono minimo',
                                 value: currencyFormat
                                     .format(widget.reserva.montoPagado),
                                 icon: Icons.payment,
@@ -985,31 +1058,21 @@ String _normalizarHoraFormato(String horaStr) {
                           icon: Icons.phone_outlined,
                           keyboardType: TextInputType.phone,
                           validatorMsg: 'Por favor ingresa tu teléfono',
-                        ),
-                        const SizedBox(height: 20),
-                        _buildTextField(
-                          controller: _emailController,
-                          label: 'Correo Electrónico',
-                          icon: Icons.email_outlined,
-                          keyboardType: TextInputType.emailAddress,
-                          validatorMsg: 'Por favor ingresa tu correo',
                           extraValidation: (value) {
-                            if (value != null &&
-                                (value.isEmpty ||
-                                    !value.contains('@') ||
-                                    !value.contains('.'))) {
-                              return 'Ingresa un correo válido';
+                            if (value != null && !_esTelefonoValido(value)) {
+                              return 'El WhatsApp debe tener al menos 10 dígitos';
                             }
                             return null;
                           },
                         ),
+                        const SizedBox(height: 20),
                         if (widget.reserva.tipoAbono == TipoAbono.parcial) ...[
                           const SizedBox(height: 20),
                           _buildTextField(
                             controller: _abonoController,
                             label: 'Abono (mínimo 20000)',
                             icon: Icons.attach_money,
-                            keyboardType: TextInputType.number,
+                            keyboardType: const TextInputType.numberWithOptions(decimal: false),
                             validatorMsg: 'Por favor ingresa un abono',
                             extraValidation: (value) {
                               final abono = double.tryParse(value ?? '0') ?? 0;
@@ -1022,10 +1085,12 @@ String _normalizarHoraFormato(String horaStr) {
                               return null;
                             },
                             onChanged: (value) {
+                              final nuevoMonto = double.tryParse(value) ?? 0.0;
                               setState(() {
-                                _montoPagado = double.tryParse(value) ??
-                                    widget.reserva.montoPagado;
+                                _montoPagado = nuevoMonto;
                               });
+                              // Actualizar también el widget.reserva para mantener consistencia
+                              widget.reserva.montoPagado = nuevoMonto;
                             },
                           ),
                         ],
@@ -1044,7 +1109,7 @@ String _normalizarHoraFormato(String horaStr) {
                                       shape: BoxShape.circle,
                                       boxShadow: [
                                         BoxShadow(
-                                          color: Colors.grey.withValues(alpha: 0.1),
+                                          color: Colors.grey.withOpacity(0.1),
                                           spreadRadius: 1,
                                           blurRadius: 3,
                                           offset: const Offset(0, 2),
@@ -1067,7 +1132,7 @@ String _normalizarHoraFormato(String horaStr) {
                                       borderRadius: BorderRadius.circular(12),
                                     ),
                                     elevation: _datosValidos ? 4 : 1,
-                                    shadowColor: Colors.grey.withValues(alpha: 0.5),
+                                    shadowColor: Colors.grey.withOpacity(0.5),
                                   ),
                                   child: Text(
                                     _datosValidos ? 'CONFIRMAR RESERVA' : 'COMPLETA LOS DATOS',
@@ -1090,6 +1155,7 @@ String _normalizarHoraFormato(String horaStr) {
           ),
         ),
       ),
+        ),
     );
   }
 

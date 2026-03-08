@@ -11,13 +11,34 @@ class CanchaProvider with ChangeNotifier {
   final Map<String, Map<DateTime, List<TimeOfDay>>> _horasReservadas = {};
   bool _isLoading = false;
   String _errorMessage = '';
+  String? _lugarId; // Nuevo: ID del lugar para filtrar canchas
+  String? _lastLoadedLugarId;
+  bool _isFetching = false;
 
   List<Cancha> get canchas => _canchas;
   bool get isLoading => _isLoading;
   String get errorMessage => _errorMessage;
+  String? get lugarId => _lugarId;
 
   Map<DateTime, List<TimeOfDay>> horasReservadasPorCancha(String canchaId) {
     return _horasReservadas[canchaId] ?? {};
+  }
+
+  // Nuevo: Establecer lugar para filtrar canchas
+  void setLugar(String lugarId) {
+    if (_lugarId == lugarId) return;
+    _lugarId = lugarId;
+    developer.log('Lugar establecido en CanchaProvider: $lugarId', name: 'CanchaProvider');
+    // No dispara carga aquí para evitar duplicados; el llamador decide
+    notifyListeners();
+  }
+
+  // Nuevo: Limpiar lugar
+  void clearLugar() {
+    _lugarId = null;
+    _canchas = [];
+    developer.log('Lugar limpiado en CanchaProvider', name: 'CanchaProvider');
+    notifyListeners();
   }
 
   void limpiarCanchas() {
@@ -66,6 +87,7 @@ Future<Cancha> _procesarCancha(DocumentSnapshot doc) async {
       ubicacion: cancha.ubicacion,
       precio: cancha.precio,
       sedeId: cancha.sedeId,
+      lugarId: cancha.lugarId, // ✅ Agregar lugarId
       preciosPorHorario: cancha.preciosPorHorario, // ✅ Mantiene toda la lógica correcta
       disponible: cancha.disponible,
       motivoNoDisponible: cancha.motivoNoDisponible,
@@ -78,15 +100,39 @@ Future<Cancha> _procesarCancha(DocumentSnapshot doc) async {
 
 
   Future<void> _fetchCanchas({String? sede}) async {
+    if (_isFetching) {
+      developer.log('fetchCanchas evitado: ya hay una carga en curso', name: 'CanchaProvider');
+      return;
+    }
     _isLoading = true;
     _errorMessage = '';
     _canchas.clear();
 
     try {
-      developer.log('Consultando canchas${sede != null ? ' para sedeId: "$sede"' : ''}', name: 'CanchaProvider');
-      final query = sede != null
-          ? FirebaseFirestore.instance.collection('canchas').where('sedeId', isEqualTo: sede)
-          : FirebaseFirestore.instance.collection('canchas');
+      developer.log('Consultando canchas${sede != null ? ' para sedeId: "$sede"' : ''}${_lugarId != null ? ' para lugarId: "$_lugarId"' : ''}', name: 'CanchaProvider');
+      
+      Query query = FirebaseFirestore.instance
+          .collection('canchas')
+          .limit(100);
+      
+      // Si hay sede específica, filtrar por sede
+      if (sede != null) {
+        query = query.where('sedeId', isEqualTo: sede);
+      }
+      
+      // Si hay lugar específico, filtrar por lugar
+      if (_lugarId != null) {
+        query = query.where('lugarId', isEqualTo: _lugarId);
+      }
+      
+      if (sede == null && _lastLoadedLugarId == _lugarId && _canchas.isNotEmpty) {
+        developer.log('Canchas ya cargadas para lugar $_lugarId, omitiendo recarga', name: 'CanchaProvider');
+        _isLoading = false;
+        notifyListeners();
+        return;
+      }
+
+      _isFetching = true;
       final querySnapshot = await query.get();
 
       developer.log('Documentos encontrados: ${querySnapshot.docs.length}', name: 'CanchaProvider');
@@ -114,6 +160,8 @@ Future<Cancha> _procesarCancha(DocumentSnapshot doc) async {
       developer.log('Error en fetchCanchas: $error', name: 'CanchaProvider', error: error);
     } finally {
       _isLoading = false;
+      _isFetching = false;
+      _lastLoadedLugarId = _lugarId;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         developer.log('Notificando cambios en fetchCanchas', name: 'CanchaProvider');
         notifyListeners();

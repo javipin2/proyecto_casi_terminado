@@ -3,10 +3,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:provider/provider.dart';
+import 'package:reserva_canchas/providers/auth_provider.dart' as auth_provider;
+import 'package:reserva_canchas/widgets/payment_lock_overlay.dart';
 import 'package:reserva_canchas/screens/admin/registro/EncargadoRegistroReservasScreen.dart';
 import 'package:reserva_canchas/screens/admin/reservas%20a%20confirmar/reservas_pendientes.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import '../sede_screen.dart';
+import 'package:reserva_canchas/services/lugar_helper.dart';
+import 'package:reserva_canchas/services/push_notification_service.dart';
+import '../ciudad_screen.dart';
 
 class EncargadoDashboardScreen extends StatefulWidget {
   const EncargadoDashboardScreen({super.key});
@@ -20,7 +25,7 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
   late AnimationController _fadeController;
   late AnimationController _sidebarController;
   late AnimationController _badgeController;
-  late Stream<QuerySnapshot> _reservasPendientesStream;
+  Stream<QuerySnapshot>? _reservasPendientesStream;
 
   // Control del sidebar
   bool _isSidebarCollapsed = false;
@@ -71,14 +76,67 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
       duration: const Duration(milliseconds: 600),
     )..repeat(reverse: true);
 
-    _reservasPendientesStream = FirebaseFirestore.instance
-        .collection('reservas')
-        .where('confirmada', isEqualTo: false)
-        .snapshots();
+    _initPendingReservationsStream();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _fadeController.forward();
+      _registerAdminTokenForAuditNotifications();
+      // En web el AuthProvider puede cargar lugarId después; re-registrar token cuando ya esté disponible.
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) _registerAdminTokenForAuditNotifications();
+      });
     });
+  }
+
+  Future<void> _registerAdminTokenForAuditNotifications() async {
+    final auth = Provider.of<auth_provider.AuthProvider>(context, listen: false);
+    var ciudadId = auth.currentCiudadId;
+    final lugarId = auth.currentLugarId;
+    if ((ciudadId == null || ciudadId.isEmpty) && lugarId != null && lugarId.isNotEmpty) {
+      try {
+        final lugarDoc = await FirebaseFirestore.instance
+            .collection('lugares')
+            .doc(lugarId)
+            .get();
+        if (lugarDoc.exists && lugarDoc.data() != null) {
+          ciudadId = lugarDoc.data()!['ciudadId'] as String?;
+        }
+      } catch (e) {
+        debugPrint('PushNotificationService: no se pudo obtener ciudadId del lugar: $e');
+      }
+    }
+    if (ciudadId != null && ciudadId.isNotEmpty) {
+      await PushNotificationService().updateCiudadForNotifications(
+        ciudadId,
+        lugarId: lugarId,
+      );
+    }
+  }
+
+  Future<void> _initPendingReservationsStream() async {
+    try {
+      final lugarId = await LugarHelper.getLugarId();
+      setState(() {
+        _reservasPendientesStream = FirebaseFirestore.instance
+            .collection('reservas')
+            .where('confirmada', isEqualTo: false)
+            .where('lugarId', isEqualTo: lugarId)
+            .snapshots();
+      });
+    } catch (e) {
+      setState(() { _reservasPendientesStream = const Stream.empty(); });
+    }
+  }
+
+  Widget _buildPendingBadge({required Widget Function(int count) builder}) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: _reservasPendientesStream ?? const Stream.empty(),
+      builder: (context, snapshot) {
+        final count = snapshot.hasData ? snapshot.data!.docs.length : 0;
+        if (count <= 0) return const SizedBox.shrink();
+        return builder(count);
+      },
+    );
   }
 
   @override
@@ -93,10 +151,6 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
     return MediaQuery.of(context).size.width <= 768;
   }
 
-  bool _isTablet(BuildContext context) {
-    final width = MediaQuery.of(context).size.width;
-    return width > 768 && width <= 1024;
-  }
 
   void _toggleSidebar() {
     setState(() {
@@ -122,6 +176,139 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
         _isMobileMenuOpen = false;
       }
     });
+  }
+
+  Future<void> _showChangePasswordDialog(BuildContext context) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null || user.email == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No se puede cambiar la contraseña sin sesión activa'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+    final currentController = TextEditingController();
+    final newController = TextEditingController();
+    final confirmController = TextEditingController();
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cambiar mi contraseña'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: currentController,
+                decoration: const InputDecoration(
+                  labelText: 'Contraseña actual',
+                  border: OutlineInputBorder(),
+                ),
+                obscureText: true,
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: newController,
+                decoration: const InputDecoration(
+                  labelText: 'Nueva contraseña',
+                  border: OutlineInputBorder(),
+                ),
+                obscureText: true,
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: confirmController,
+                decoration: const InputDecoration(
+                  labelText: 'Confirmar nueva contraseña',
+                  border: OutlineInputBorder(),
+                ),
+                obscureText: true,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final current = currentController.text;
+              final newP = newController.text;
+              final confirm = confirmController.text;
+              if (current.isEmpty || newP.isEmpty || confirm.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Completa todos los campos'),
+                    backgroundColor: Colors.orange,
+                  ),
+                );
+                return;
+              }
+              if (newP != confirm) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('La nueva contraseña no coincide'),
+                    backgroundColor: Colors.orange,
+                  ),
+                );
+                return;
+              }
+              if (newP.length < 6) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('La contraseña debe tener al menos 6 caracteres'),
+                    backgroundColor: Colors.orange,
+                  ),
+                );
+                return;
+              }
+              try {
+                final cred = EmailAuthProvider.credential(
+                  email: user.email!,
+                  password: current,
+                );
+                await user.reauthenticateWithCredential(cred);
+                await user.updatePassword(newP);
+                if (!ctx.mounted) return;
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Contraseña actualizada correctamente'),
+                    backgroundColor: Colors.green,
+                  ),
+                );
+              } on FirebaseAuthException catch (e) {
+                if (!ctx.mounted) return;
+                String msg = 'Error al cambiar contraseña';
+                if (e.code == 'wrong-password' || e.code == 'invalid-credential') {
+                  msg = 'Contraseña actual incorrecta';
+                } else if (e.code == 'weak-password') {
+                  msg = 'La nueva contraseña es muy débil';
+                }
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(msg), backgroundColor: Colors.red),
+                );
+              } catch (e) {
+                if (!ctx.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _secondaryColor,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Cambiar contraseña'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _showLogoutConfirmation(BuildContext context) async {
@@ -241,11 +428,13 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
     );
 
     try {
-      await FirebaseAuth.instance.signOut();
+      final authProvider = Provider.of<auth_provider.AuthProvider>(context, listen: false);
+      await authProvider.signOut();
+      
       if (mounted) {
         Navigator.of(context).pop();
         navigator.pushAndRemoveUntil(
-          MaterialPageRoute(builder: (context) => const SedeScreen()),
+          MaterialPageRoute(builder: (context) => const CiudadScreen()),
           (route) => false,
         );
       }
@@ -282,15 +471,89 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
     final isMobile = _isMobile(context);
-    final isTablet = _isTablet(context);
     final isDesktop = screenSize.width > 1024;
     final user = FirebaseAuth.instance.currentUser;
 
     if (isMobile) {
-      return _buildMobileLayout(context, user);
+      return PaymentLockOverlay(
+        child: _buildMobileLayout(context, user),
+      );
     } else {
-      return _buildDesktopLayout(context, user, isDesktop);
+      return PaymentLockOverlay(
+        child: _buildDesktopLayout(context, user, isDesktop),
+      );
     }
+  }
+
+  Future<void> _showEditNameDialog(BuildContext context) async {
+    final authProvider = Provider.of<auth_provider.AuthProvider>(context, listen: false);
+    final user = FirebaseAuth.instance.currentUser;
+    final fallback = user?.email ?? 'Encargado';
+    final currentName = authProvider.userName ?? fallback;
+
+    final controller = TextEditingController(text: currentName);
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Editar nombre'),
+          content: TextField(
+            controller: controller,
+            decoration: const InputDecoration(
+              labelText: 'Nombre para mostrar',
+              border: OutlineInputBorder(),
+            ),
+            textInputAction: TextInputAction.done,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Cancelar'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final newName = controller.text.trim();
+                if (newName.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('El nombre no puede estar vacío'),
+                      backgroundColor: Colors.orange,
+                    ),
+                  );
+                  return;
+                }
+                final ok = await authProvider.updateUserName(newName);
+                if (!ctx.mounted) return;
+                Navigator.of(ctx).pop();
+                if (ok) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Nombre actualizado correctamente'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('No se pudo actualizar el nombre'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _secondaryColor,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Guardar'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Widget _buildMobileLayout(BuildContext context, User? user) {
@@ -337,15 +600,8 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
             ),
           ),
           // Badge de notificaciones para móvil
-          StreamBuilder<QuerySnapshot>(
-            stream: _reservasPendientesStream,
-            builder: (context, snapshot) {
-              if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                return const SizedBox.shrink();
-              }
-              
-              final notificationCount = snapshot.data!.docs.length;
-              return Container(
+          _buildPendingBadge(
+            builder: (notificationCount) => Container(
                 margin: const EdgeInsets.only(left: 8),
                 child: AnimatedBuilder(
                   animation: _badgeController,
@@ -379,8 +635,7 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
                     );
                   },
                 ),
-              );
-            },
+              ),
           ),
         ],
       ),
@@ -466,18 +721,14 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
                   
                   if (section['hasNotification'] == true) {
                     return StreamBuilder<QuerySnapshot>(
-                      stream: _reservasPendientesStream,
+                      stream: _reservasPendientesStream ?? const Stream.empty(),
                       builder: (context, snapshot) {
-                        int notificationCount = 0;
-                        if (snapshot.hasData) {
-                          notificationCount = snapshot.data!.docs.length;
-                        }
-                        
+                        final count = snapshot.hasData ? snapshot.data!.docs.length : 0;
                         return _buildMobileDrawerItem(
                           icon: section['icon'],
                           title: section['title'],
                           isSelected: isSelected,
-                          notificationCount: notificationCount,
+                          notificationCount: count > 0 ? count : null,
                           onTap: () {
                             _navigateToSection(section['title'], section['screen']);
                             Navigator.of(context).pop(); // Cerrar drawer
@@ -510,6 +761,26 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
                     color: Colors.white.withValues(alpha: 0.1),
                   ),
                   const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.of(context).pop();
+                        _showChangePasswordDialog(context);
+                      },
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white70,
+                        side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      icon: const Icon(Icons.lock_reset_rounded, size: 20),
+                      label: const Text('Cambiar contraseña'),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
@@ -736,13 +1007,43 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
           
           if (!_isSidebarCollapsed) ...[
             const SizedBox(height: 16),
-            Text(
-              'Administrador',
-              style: GoogleFonts.inter(
-                fontWeight: FontWeight.w700,
-                color: Colors.white,
-                fontSize: 18,
-              ),
+            Consumer<auth_provider.AuthProvider>(
+              builder: (context, authProvider, _) {
+                final name = authProvider.userName ?? 'Encargado';
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        name,
+                        style: GoogleFonts.inter(
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white,
+                          fontSize: 18,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    InkWell(
+                      onTap: () => _showEditNameDialog(context),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(
+                          Icons.edit_rounded,
+                          size: 14,
+                          color: Colors.white70,
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
             if (user?.email != null) ...[
               const SizedBox(height: 4),
@@ -772,18 +1073,14 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
         
         if (section['hasNotification'] == true) {
           return StreamBuilder<QuerySnapshot>(
-            stream: _reservasPendientesStream,
+            stream: _reservasPendientesStream ?? const Stream.empty(),
             builder: (context, snapshot) {
-              int notificationCount = 0;
-              if (snapshot.hasData) {
-                notificationCount = snapshot.data!.docs.length;
-              }
-              
+              final count = snapshot.hasData ? snapshot.data!.docs.length : 0;
               return _buildSidebarMenuItem(
                 icon: section['icon'],
                 title: section['title'],
                 isSelected: isSelected,
-                notificationCount: notificationCount,
+                notificationCount: count > 0 ? count : null,
                 onTap: () => _navigateToSection(section['title'], section['screen']),
               );
             },
@@ -1007,6 +1304,57 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
           Material(
             color: Colors.transparent,
             child: InkWell(
+              onTap: () => _showChangePasswordDialog(context),
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                padding: EdgeInsets.symmetric(
+                  horizontal: _isSidebarCollapsed ? 0 : 16,
+                  vertical: 12,
+                ),
+                decoration: BoxDecoration(
+                  color: _secondaryColor.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: _secondaryColor.withValues(alpha: 0.3),
+                    width: 1,
+                  ),
+                ),
+                child: _isSidebarCollapsed
+                    ? const SizedBox(
+                        width: 56,
+                        child: Center(
+                          child: Icon(
+                            Icons.lock_reset_rounded,
+                            color: Colors.white70,
+                            size: 18,
+                          ),
+                        ),
+                      )
+                    : Row(
+                        children: [
+                          Icon(
+                            Icons.lock_reset_rounded,
+                            color: Colors.white70,
+                            size: 18,
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            'Cambiar contraseña',
+                            style: GoogleFonts.inter(
+                              fontWeight: FontWeight.w500,
+                              color: Colors.white70,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ],
+                      ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
               onTap: () => _showLogoutConfirmation(context),
               borderRadius: BorderRadius.circular(12),
               child: Container(
@@ -1115,63 +1463,91 @@ class EncargadoDashboardScreenState extends State<EncargadoDashboardScreen>
             
             // Información del usuario (opcional)
             if (user?.email != null)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                decoration: BoxDecoration(
-                  color: _surfaceColor,
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: _borderColor,
-                    width: 1,
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 32,
-                      height: 32,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [_secondaryColor, _accentColor],
-                        ),
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Center(
-                        child: Text(
-                          user!.email!.substring(0, 1).toUpperCase(),
-                          style: GoogleFonts.inter(
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white,
-                            fontSize: 14,
-                          ),
-                        ),
+              Consumer<auth_provider.AuthProvider>(
+                builder: (context, authProvider, _) {
+                  final name = authProvider.userName ?? 'Encargado';
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: _surfaceColor,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: _borderColor,
+                        width: 1,
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Column(
+                    child: Row(
                       mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          'Administrador',
-                          style: GoogleFonts.inter(
-                            fontWeight: FontWeight.w600,
-                            color: _textPrimary,
-                            fontSize: 13,
+                        Container(
+                          width: 32,
+                          height: 32,
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [_secondaryColor, _accentColor],
+                            ),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Center(
+                            child: Text(
+                              user!.email!.substring(0, 1).toUpperCase(),
+                              style: GoogleFonts.inter(
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white,
+                                fontSize: 14,
+                              ),
+                            ),
                           ),
                         ),
-                        Text(
-                          user.email!,
-                          style: GoogleFonts.inter(
-                            color: _textSecondary,
-                            fontSize: 11,
-                          ),
+                        const SizedBox(width: 12),
+                        Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  name,
+                                  style: GoogleFonts.inter(
+                                    fontWeight: FontWeight.w600,
+                                    color: _textPrimary,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                InkWell(
+                                  onTap: () => _showEditNameDialog(context),
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(4),
+                                    decoration: BoxDecoration(
+                                      color: _surfaceColor,
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Icon(
+                                      Icons.edit_rounded,
+                                      size: 14,
+                                      color: _textSecondary,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              user.email!,
+                              style: GoogleFonts.inter(
+                                color: _textSecondary,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
-                  ],
-                ),
+                  );
+                },
               ),
           ],
         ),

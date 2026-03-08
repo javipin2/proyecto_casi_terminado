@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:provider/provider.dart';
+import 'package:reserva_canchas/providers/auth_provider.dart' as app_auth;
+import 'package:reserva_canchas/widgets/payment_lock_overlay.dart';
 import 'package:reserva_canchas/screens/admin/registro/Admin_registro.dart';
 import 'package:reserva_canchas/screens/admin/reservas%20a%20confirmar/reservas_pendientes.dart';
 import 'package:reserva_canchas/screens/admin/sedes/admin_sedes_screen.dart';
@@ -11,7 +14,11 @@ import 'canchas/canchas_screen.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'graficas/graficas_screen.dart';
 import 'reservas/admin_reservas_horarios_screen.dart';
-import '../sede_screen.dart';
+import 'configuracion_lugar_screen.dart';
+import '../ciudad_screen.dart';
+import 'package:reserva_canchas/services/lugar_helper.dart';
+import 'package:reserva_canchas/services/plan_feature_service.dart';
+import 'package:reserva_canchas/services/push_notification_service.dart';
 
 class AdminDashboardScreen extends StatefulWidget {
   const AdminDashboardScreen({super.key});
@@ -25,7 +32,7 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
   late AnimationController _fadeController;
   late AnimationController _sidebarController;
   late AnimationController _badgeController;
-  late Stream<QuerySnapshot> _reservasPendientesStream;
+  Stream<QuerySnapshot>? _reservasPendientesStream;
 
   // Control del sidebar
   bool _isSidebarCollapsed = false;
@@ -88,7 +95,40 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
       'screen': const AdminRegistroReservasScreen(),
       'hasNotification': false,
     },
+    {
+      'icon': Icons.settings_rounded,
+      'title': 'Configuración',
+      'screen': const ConfigLugarScreen(),
+      'hasNotification': false,
+    },
   ];
+
+  String _getRoleLabel(String? role) {
+    switch (role) {
+      case 'superadmin':
+        return 'Superadministrador';
+      case 'admin':
+        return 'Administrador';
+      case 'encargado':
+        return 'Encargado';
+      case 'programador':
+        return 'Programador';
+      default:
+        return 'Sin rol asignado';
+    }
+  }
+
+  String _getAccountName(User? user, {required String fallback}) {
+    if (user == null) return fallback;
+    final displayName = user.displayName;
+    if (displayName != null && displayName.trim().isNotEmpty) {
+      return displayName.trim();
+    }
+    final email = user.email;
+    if (email == null || email.isEmpty) return fallback;
+    final beforeAt = email.split('@').first;
+    return beforeAt.isNotEmpty ? beforeAt : fallback;
+  }
 
   @override
   void initState() {
@@ -106,14 +146,68 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
       duration: const Duration(milliseconds: 600),
     )..repeat(reverse: true);
 
-    _reservasPendientesStream = FirebaseFirestore.instance
-        .collection('reservas')
-        .where('confirmada', isEqualTo: false)
-        .snapshots();
+    _initPendingReservationsStream();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _fadeController.forward();
+      _registerAdminTokenForAuditNotifications();
+      // En web el AuthProvider puede cargar lugarId después; re-registrar token cuando ya esté disponible.
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) _registerAdminTokenForAuditNotifications();
+      });
     });
+  }
+
+  /// Registra el token FCM con la ciudad y lugar para recibir notificaciones de auditoría (superadmin) filtradas por lugar.
+  Future<void> _registerAdminTokenForAuditNotifications() async {
+    final auth = Provider.of<app_auth.AuthProvider>(context, listen: false);
+    var ciudadId = auth.currentCiudadId;
+    final lugarId = auth.currentLugarId;
+    if ((ciudadId == null || ciudadId.isEmpty) && lugarId != null && lugarId.isNotEmpty) {
+      try {
+        final lugarDoc = await FirebaseFirestore.instance
+            .collection('lugares')
+            .doc(lugarId)
+            .get();
+        if (lugarDoc.exists && lugarDoc.data() != null) {
+          ciudadId = lugarDoc.data()!['ciudadId'] as String?;
+        }
+      } catch (e) {
+        debugPrint('PushNotificationService: no se pudo obtener ciudadId del lugar: $e');
+      }
+    }
+    if (ciudadId != null && ciudadId.isNotEmpty) {
+      await PushNotificationService().updateCiudadForNotifications(
+        ciudadId,
+        lugarId: lugarId,
+      );
+    }
+  }
+
+  Future<void> _initPendingReservationsStream() async {
+    try {
+      final lugarId = await LugarHelper.getLugarId();
+      setState(() {
+        _reservasPendientesStream = FirebaseFirestore.instance
+            .collection('reservas')
+            .where('confirmada', isEqualTo: false)
+            .where('lugarId', isEqualTo: lugarId)
+            .snapshots();
+      });
+    } catch (e) {
+      setState(() { _reservasPendientesStream = const Stream.empty(); });
+    }
+  }
+
+  Widget _buildPendingBadge({required Widget Function(int count) builder}) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: _reservasPendientesStream ?? const Stream.empty(),
+      builder: (context, snapshot) {
+        final count = snapshot.hasData ? snapshot.data!.docs.length : 0;
+        if (count <= 0) return const SizedBox.shrink();
+        return builder(count);
+      },
+    );
   }
 
   @override
@@ -126,11 +220,6 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
 
   bool _isMobile(BuildContext context) {
     return MediaQuery.of(context).size.width <= 768;
-  }
-
-  bool _isTablet(BuildContext context) {
-    final width = MediaQuery.of(context).size.width;
-    return width > 768 && width <= 1024;
   }
 
   void _toggleSidebar() {
@@ -157,6 +246,366 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
         _isMobileMenuOpen = false;
       }
     });
+  }
+
+  Future<void> _showPlanModal() async {
+    final currentPlan = await PlanFeatureService.getCurrentPlan();
+    if (!mounted) return;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        bool isSaving = false;
+
+        Widget buildPlanCard({
+          required LugarPlan plan,
+          required String title,
+          required String subtitle,
+          required Color color,
+          required List<String> beneficios,
+        }) {
+          final bool isCurrent = plan == currentPlan;
+
+          return AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            margin: const EdgeInsets.symmetric(vertical: 6),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: isCurrent ? color.withValues(alpha: 0.08) : Colors.grey.shade50,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: isCurrent ? color : Colors.grey.shade300,
+                width: isCurrent ? 2 : 1,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.workspace_premium, color: color, size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      title,
+                      style: GoogleFonts.inter(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: color,
+                      ),
+                    ),
+                    const Spacer(),
+                    if (isCurrent)
+                      Container(
+                        padding:
+                            const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: color.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(
+                          'PLAN ACTUAL',
+                          style: GoogleFonts.inter(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: color,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: GoogleFonts.inter(
+                    fontSize: 12,
+                    color: Colors.grey.shade700,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                ...beneficios.map(
+                  (b) => Row(
+                    children: [
+                      const Icon(Icons.check_circle,
+                          size: 14, color: Colors.green),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          b,
+                          style: GoogleFonts.inter(
+                            fontSize: 11,
+                            color: Colors.grey.shade800,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: isCurrent || isSaving
+                        ? null
+                        : () async {
+                            if (isSaving) return;
+                            try {
+                              isSaving = true;
+                              await PlanFeatureService.updatePlan(plan);
+                              if (!mounted) return;
+                              Navigator.of(ctx).pop();
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    'Plan actualizado a $title',
+                                    style: GoogleFonts.inter(),
+                                  ),
+                                  backgroundColor: color,
+                                ),
+                              );
+                              setState(() {}); // refrescar chip de plan
+                            } catch (e) {
+                              isSaving = false;
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    'Error al actualizar el plan: $e',
+                                    style: GoogleFonts.inter(),
+                                  ),
+                                  backgroundColor: Colors.redAccent,
+                                ),
+                              );
+                            }
+                          },
+                    child: Text(
+                      isCurrent ? 'Plan actual' : 'Cambiar a este plan',
+                      style: GoogleFonts.inter(
+                        fontWeight: FontWeight.w600,
+                        color: isCurrent ? Colors.grey : color,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        return Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Container(
+            padding: const EdgeInsets.all(20),
+            width: 520,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Planes disponibles',
+                    style: GoogleFonts.inter(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Elige el plan que mejor se adapte al tamaño de tu negocio.',
+                    style: GoogleFonts.inter(
+                      fontSize: 12,
+                      color: Colors.grey.shade700,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  buildPlanCard(
+                    plan: LugarPlan.basico,
+                    title: 'Plan Básico',
+                    subtitle: 'Ideal para una sede pequeña con pocas canchas.',
+                    color: Colors.green.shade600,
+                    beneficios: const [
+                      '1 administrador',
+                      'Hasta 1 sede',
+                      'Hasta 2 canchas',
+                      'Reservas simples y control básico',
+                    ],
+                  ),
+                  buildPlanCard(
+                    plan: LugarPlan.premium,
+                    title: 'Plan Premium',
+                    subtitle: 'Perfecto para centros deportivos en crecimiento.',
+                    color: Colors.blue.shade600,
+                    beneficios: const [
+                      'Todo lo del Plan Básico',
+                      'Hasta 3 sedes y 6 canchas',
+                      'Gestión de clientes',
+                      'Reservas fijas (recurrentes)',
+                      'Promociones de horas',
+                    ],
+                  ),
+                  buildPlanCard(
+                    plan: LugarPlan.pro,
+                    title: 'Plan Pro',
+                    subtitle: 'Para operaciones grandes con control total.',
+                    color: Colors.purple.shade600,
+                    beneficios: const [
+                      'Todo lo del Plan Premium',
+                      'Sedes y canchas ilimitadas',
+                      'Roles ilimitados',
+                      'Auditoría completa y detección de acciones sospechosas',
+                      'Rol superusuario y control total',
+                    ],
+                  ),
+                  buildPlanCard(
+                    plan: LugarPlan.prueba,
+                    title: 'Plan Prueba',
+                    subtitle: 'Para probar el sistema en un solo lugar.',
+                    color: Colors.orange.shade600,
+                    beneficios: const [
+                      'Funciones limitadas del Plan Básico',
+                      'Ideal para pruebas internas',
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _showChangePasswordDialog(BuildContext context) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null || user.email == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No se puede cambiar la contraseña sin sesión activa'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+    final currentController = TextEditingController();
+    final newController = TextEditingController();
+    final confirmController = TextEditingController();
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cambiar mi contraseña'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: currentController,
+                decoration: const InputDecoration(
+                  labelText: 'Contraseña actual',
+                  border: OutlineInputBorder(),
+                ),
+                obscureText: true,
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: newController,
+                decoration: const InputDecoration(
+                  labelText: 'Nueva contraseña',
+                  border: OutlineInputBorder(),
+                ),
+                obscureText: true,
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: confirmController,
+                decoration: const InputDecoration(
+                  labelText: 'Confirmar nueva contraseña',
+                  border: OutlineInputBorder(),
+                ),
+                obscureText: true,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final current = currentController.text;
+              final newP = newController.text;
+              final confirm = confirmController.text;
+              if (current.isEmpty || newP.isEmpty || confirm.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Completa todos los campos'),
+                    backgroundColor: Colors.orange,
+                  ),
+                );
+                return;
+              }
+              if (newP != confirm) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('La nueva contraseña no coincide'),
+                    backgroundColor: Colors.orange,
+                  ),
+                );
+                return;
+              }
+              if (newP.length < 6) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('La contraseña debe tener al menos 6 caracteres'),
+                    backgroundColor: Colors.orange,
+                  ),
+                );
+                return;
+              }
+              try {
+                final cred = EmailAuthProvider.credential(
+                  email: user.email!,
+                  password: current,
+                );
+                await user.reauthenticateWithCredential(cred);
+                await user.updatePassword(newP);
+                if (!ctx.mounted) return;
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Contraseña actualizada correctamente'),
+                    backgroundColor: Colors.green,
+                  ),
+                );
+              } on FirebaseAuthException catch (e) {
+                if (!ctx.mounted) return;
+                String msg = 'Error al cambiar contraseña';
+                if (e.code == 'wrong-password' || e.code == 'invalid-credential') {
+                  msg = 'Contraseña actual incorrecta';
+                } else if (e.code == 'weak-password') {
+                  msg = 'La nueva contraseña es muy débil';
+                }
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(msg), backgroundColor: Colors.red),
+                );
+              } catch (e) {
+                if (!ctx.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _secondaryColor,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Cambiar contraseña'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _showLogoutConfirmation(BuildContext context) async {
@@ -280,7 +729,7 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
       if (mounted) {
         Navigator.of(context).pop();
         navigator.pushAndRemoveUntil(
-          MaterialPageRoute(builder: (context) => const SedeScreen()),
+          MaterialPageRoute(builder: (context) => const CiudadScreen()),
           (route) => false,
         );
       }
@@ -317,15 +766,89 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
     final isMobile = _isMobile(context);
-    final isTablet = _isTablet(context);
     final isDesktop = screenSize.width > 1024;
     final user = FirebaseAuth.instance.currentUser;
 
     if (isMobile) {
-      return _buildMobileLayout(context, user);
+      return PaymentLockOverlay(
+        child: _buildMobileLayout(context, user),
+      );
     } else {
-      return _buildDesktopLayout(context, user, isDesktop);
+      return PaymentLockOverlay(
+        child: _buildDesktopLayout(context, user, isDesktop),
+      );
     }
+  }
+
+  Future<void> _showEditNameDialog(BuildContext context) async {
+    final auth = Provider.of<app_auth.AuthProvider>(context, listen: false);
+    final user = FirebaseAuth.instance.currentUser;
+    final currentName =
+        auth.userName ?? _getAccountName(user, fallback: 'Administrador');
+
+    final controller = TextEditingController(text: currentName);
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Editar nombre'),
+          content: TextField(
+            controller: controller,
+            decoration: const InputDecoration(
+              labelText: 'Nombre para mostrar',
+              border: OutlineInputBorder(),
+            ),
+            textInputAction: TextInputAction.done,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Cancelar'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final newName = controller.text.trim();
+                if (newName.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('El nombre no puede estar vacío'),
+                      backgroundColor: Colors.orange,
+                    ),
+                  );
+                  return;
+                }
+                final ok = await auth.updateUserName(newName);
+                if (!ctx.mounted) return;
+                Navigator.of(ctx).pop();
+                if (ok) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Nombre actualizado correctamente'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('No se pudo actualizar el nombre'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _secondaryColor,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Guardar'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Widget _buildMobileLayout(BuildContext context, User? user) {
@@ -372,15 +895,8 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
             ),
           ),
           // Badge de notificaciones para móvil
-          StreamBuilder<QuerySnapshot>(
-            stream: _reservasPendientesStream,
-            builder: (context, snapshot) {
-              if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                return const SizedBox.shrink();
-              }
-              
-              final notificationCount = snapshot.data!.docs.length;
-              return Container(
+          _buildPendingBadge(
+            builder: (notificationCount) => Container(
                 margin: const EdgeInsets.only(left: 8),
                 child: AnimatedBuilder(
                   animation: _badgeController,
@@ -414,8 +930,7 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
                     );
                   },
                 ),
-              );
-            },
+              ),
           ),
         ],
       ),
@@ -501,18 +1016,14 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
                   
                   if (section['hasNotification'] == true) {
                     return StreamBuilder<QuerySnapshot>(
-                      stream: _reservasPendientesStream,
+                      stream: _reservasPendientesStream ?? const Stream.empty(),
                       builder: (context, snapshot) {
-                        int notificationCount = 0;
-                        if (snapshot.hasData) {
-                          notificationCount = snapshot.data!.docs.length;
-                        }
-                        
+                        final count = snapshot.hasData ? snapshot.data!.docs.length : 0;
                         return _buildMobileDrawerItem(
                           icon: section['icon'],
                           title: section['title'],
                           isSelected: isSelected,
-                          notificationCount: notificationCount,
+                          notificationCount: count > 0 ? count : null,
                           onTap: () {
                             _navigateToSection(section['title'], section['screen']);
                             Navigator.of(context).pop(); // Cerrar drawer
@@ -543,6 +1054,80 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
                   Container(
                     height: 1,
                     color: Colors.white.withValues(alpha: 0.1),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.of(context).pop();
+                        _showChangePasswordDialog(context);
+                      },
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white70,
+                        side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      icon: const Icon(Icons.lock_reset_rounded, size: 20),
+                      label: const Text('Cambiar contraseña'),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  // Plan actual en móvil
+                  FutureBuilder<LugarPlan>(
+                    future: PlanFeatureService.getCurrentPlan(),
+                    builder: (context, snapshot) {
+                      final plan = snapshot.data ?? LugarPlan.desconocido;
+                      final planName =
+                          PlanFeatureService.planDisplayName(plan);
+
+                      return GestureDetector(
+                        onTap: () {
+                          Navigator.of(context).pop();
+                          _showPlanModal();
+                        },
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: Colors.indigo.shade50,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: Colors.indigo.shade200,
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.workspace_premium,
+                                size: 18,
+                                color: Colors.indigo,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Plan $planName',
+                                  style: GoogleFonts.inter(
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.indigo.shade700,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
+                              const Icon(
+                                Icons.keyboard_arrow_up_rounded,
+                                size: 18,
+                                color: Colors.indigo,
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
                   ),
                   const SizedBox(height: 16),
                   SizedBox(
@@ -715,7 +1300,7 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
         child: Column(
           children: [
             // Header del sidebar
-            _buildSidebarHeader(user),
+            _buildSidebarHeader(context, user),
             
             // Divisor
             Container(
@@ -737,7 +1322,7 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
     ).animate().fadeIn(duration: 600.ms).slideX(begin: -1.0, duration: 600.ms);
   }
 
-  Widget _buildSidebarHeader(User? user) {
+  Widget _buildSidebarHeader(BuildContext context, User? user) {
     return Container(
       padding: const EdgeInsets.all(24),
       child: Column(
@@ -771,13 +1356,58 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
           
           if (!_isSidebarCollapsed) ...[
             const SizedBox(height: 16),
-            Text(
-              'Administrador',
-              style: GoogleFonts.inter(
-                fontWeight: FontWeight.w700,
-                color: Colors.white,
-                fontSize: 18,
-              ),
+            Consumer<app_auth.AuthProvider>(
+              builder: (context, auth, _) {
+                final displayName =
+                    auth.userName ?? _getAccountName(user, fallback: 'Usuario');
+                final roleLabel = _getRoleLabel(auth.userRole);
+                return Column(
+                  children: [
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            displayName,
+                            style: GoogleFonts.inter(
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white,
+                              fontSize: 18,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        InkWell(
+                          onTap: () => _showEditNameDialog(context),
+                          borderRadius: BorderRadius.circular(12),
+                          child: Container(
+                            padding: const EdgeInsets.all(4),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Icon(
+                              Icons.edit_rounded,
+                              size: 14,
+                              color: Colors.white70,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      roleLabel,
+                      style: GoogleFonts.inter(
+                        color: Colors.white.withValues(alpha: 0.8),
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
             if (user?.email != null) ...[
               const SizedBox(height: 4),
@@ -807,18 +1437,14 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
         
         if (section['hasNotification'] == true) {
           return StreamBuilder<QuerySnapshot>(
-            stream: _reservasPendientesStream,
+            stream: _reservasPendientesStream ?? const Stream.empty(),
             builder: (context, snapshot) {
-              int notificationCount = 0;
-              if (snapshot.hasData) {
-                notificationCount = snapshot.data!.docs.length;
-              }
-              
+              final count = snapshot.hasData ? snapshot.data!.docs.length : 0;
               return _buildSidebarMenuItem(
                 icon: section['icon'],
                 title: section['title'],
                 isSelected: isSelected,
-                notificationCount: notificationCount,
+                notificationCount: count > 0 ? count : null,
                 onTap: () => _navigateToSection(section['title'], section['screen']),
               );
             },
@@ -1044,6 +1670,57 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
           Material(
             color: Colors.transparent,
             child: InkWell(
+              onTap: () => _showChangePasswordDialog(context),
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                padding: EdgeInsets.symmetric(
+                  horizontal: _isSidebarCollapsed ? 0 : 16,
+                  vertical: 12,
+                ),
+                decoration: BoxDecoration(
+                  color: _secondaryColor.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: _secondaryColor.withValues(alpha: 0.3),
+                    width: 1,
+                  ),
+                ),
+                child: _isSidebarCollapsed
+                    ? const SizedBox(
+                        width: 56,
+                        child: Center(
+                          child: Icon(
+                            Icons.lock_reset_rounded,
+                            color: Colors.white70,
+                            size: 18,
+                          ),
+                        ),
+                      )
+                    : Row(
+                        children: [
+                          Icon(
+                            Icons.lock_reset_rounded,
+                            color: Colors.white70,
+                            size: 18,
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            'Cambiar contraseña',
+                            style: GoogleFonts.inter(
+                              fontWeight: FontWeight.w500,
+                              color: Colors.white70,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ],
+                      ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
               onTap: () => _showLogoutConfirmation(context),
               borderRadius: BorderRadius.circular(12),
               child: Container(
@@ -1150,66 +1827,143 @@ class AdminDashboardScreenState extends State<AdminDashboardScreen>
             
             const Spacer(),
             
-            // Información del usuario (opcional)
-            if (user?.email != null)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                decoration: BoxDecoration(
-                  color: _surfaceColor,
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: _borderColor,
-                    width: 1,
-                  ),
-                ),
-                child: Row(
+            // Chip de plan actual + información de usuario
+            FutureBuilder<LugarPlan>(
+              future: PlanFeatureService.getCurrentPlan(),
+              builder: (context, snapshot) {
+                final plan = snapshot.data ?? LugarPlan.desconocido;
+                final planName = PlanFeatureService.planDisplayName(plan);
+                final auth = Provider.of<app_auth.AuthProvider>(context);
+                final displayName =
+                    auth.userName ?? _getAccountName(user, fallback: 'Administrador');
+
+                return Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Container(
-                      width: 32,
-                      height: 32,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [_secondaryColor, _accentColor],
+                    if (user?.email != null)
+                      Container(
+                        padding:
+                            const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: _surfaceColor,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: _borderColor,
+                            width: 1,
+                          ),
                         ),
-                        borderRadius: BorderRadius.circular(16),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 32,
+                              height: 32,
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  colors: [_secondaryColor, _accentColor],
+                                ),
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: Center(
+                                child: Text(
+                                  (user!.displayName?.isNotEmpty == true
+                                          ? user.displayName![0]
+                                          : user.email![0])
+                                      .toUpperCase(),
+                                  style: GoogleFonts.inter(
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.white,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      displayName,
+                                      style: GoogleFonts.inter(
+                                        fontWeight: FontWeight.w600,
+                                        color: _textPrimary,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    InkWell(
+                                      onTap: () => _showEditNameDialog(context),
+                                      borderRadius: BorderRadius.circular(12),
+                                      child: Container(
+                                        padding: const EdgeInsets.all(4),
+                                        decoration: BoxDecoration(
+                                          color: _surfaceColor,
+                                          borderRadius: BorderRadius.circular(12),
+                                        ),
+                                        child: Icon(
+                                          Icons.edit_rounded,
+                                          size: 14,
+                                          color: _textSecondary,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  user.email!,
+                                  style: GoogleFonts.inter(
+                                    color: _textSecondary,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
-                      child: Center(
-                        child: Text(
-                          user!.email!.substring(0, 1).toUpperCase(),
-                          style: GoogleFonts.inter(
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white,
-                            fontSize: 14,
+                    const SizedBox(width: 16),
+                    GestureDetector(
+                      onTap: () => _showPlanModal(),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.indigo.shade50,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: Colors.indigo.shade200,
                           ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.workspace_premium,
+                              size: 18,
+                              color: Colors.indigo,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Plan $planName',
+                              style: GoogleFonts.inter(
+                                fontWeight: FontWeight.w600,
+                                color: Colors.indigo.shade700,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Administrador',
-                          style: GoogleFonts.inter(
-                            fontWeight: FontWeight.w600,
-                            color: _textPrimary,
-                            fontSize: 13,
-                          ),
-                        ),
-                        Text(
-                          user.email!,
-                          style: GoogleFonts.inter(
-                            color: _textSecondary,
-                            fontSize: 11,
-                          ),
-                        ),
-                      ],
                     ),
                   ],
-                ),
-              ),
+                );
+              },
+            ),
           ],
         ),
       ),

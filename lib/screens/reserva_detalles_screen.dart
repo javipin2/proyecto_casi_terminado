@@ -39,7 +39,6 @@ class ReservaDetallesScreen extends StatelessWidget {
         montoPagado: data['montoPagado'] as double,
         nombre: horario.clienteNombre,
         telefono: data['clienteTelefono'] as String,
-        email: data['clienteEmail'] as String?,
         confirmada: true,
         reservaRecurrenteId: data['id'] as String,
         esReservaRecurrente: true,
@@ -97,16 +96,6 @@ class ReservaDetallesScreen extends StatelessWidget {
     if (telefono == null || telefono.length < 4) return '****';
     final lastFour = telefono.substring(telefono.length - 4);
     return '*****$lastFour';
-  }
-
-  String _maskEmail(String? email) {
-    if (email == null || !email.contains('@')) return '****@****';
-    final parts = email.split('@');
-    final prefix = parts[0];
-    final domain = parts[1];
-    final visiblePrefix =
-        prefix.length <= 4 ? prefix : prefix.substring(0, 4);
-    return '$visiblePrefix****@$domain';
   }
 
   @override
@@ -410,12 +399,6 @@ class ReservaDetallesScreen extends StatelessWidget {
                         icon: Icons.phone,
                         label: 'Teléfono',
                         value: _maskPhoneNumber(reserva.telefono),
-                      ),
-                      const SizedBox(height: 12),
-                      _buildInfoRow(
-                        icon: Icons.email,
-                        label: 'Correo',
-                        value: _maskEmail(reserva.email),
                       ),
                     ],
                   ),

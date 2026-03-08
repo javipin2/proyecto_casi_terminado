@@ -18,20 +18,128 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="Tu Cancha Facil Soft">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="app">
-  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+  <meta name="apple-mobile-web-app-title" content="Tu Cancha Facil">
+  <link rel="apple-touch-icon" href="assets/demo.png">
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;700&display=swap" rel="stylesheet">
 
   <!-- Favicon -->
-  <link rel="icon" type="image/png" href="img1.png"/>
+  <link rel="icon" type="image/png" href="demo.png"/>
 
-  <title>app</title>
+  <title>Reserva de Canchas</title>
   <link rel="manifest" href="manifest.json">
+  
+  <!-- Google Maps API -->
+  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAWlN1nPfwbvaKk4epvcV0kAa1aPFssypg&libraries=places"></script>
+  <script>
+    // Variables globales para comunicación con Dart
+    window.placesSearchResult = null;
+    window.placesSearchStatus = null;
+    window.placesSearchCallbackId = 0;
+    
+    window.placeDetailsResult = null;
+    window.placeDetailsStatus = null;
+    window.placeDetailsCallbackId = 0;
+    
+    // Funciones helper para búsqueda de lugares
+    window.searchPlaces = function(query) {
+      window.placesSearchResult = null;
+      window.placesSearchStatus = null;
+      window.placesSearchCallbackId++;
+      const currentId = window.placesSearchCallbackId;
+      
+      if (typeof google === 'undefined' || !google.maps || !google.maps.places) {
+        window.placesSearchStatus = 'API_NOT_LOADED';
+        window.placesSearchResult = [];
+        return currentId;
+      }
+      
+      const service = new google.maps.places.AutocompleteService();
+      const request = {
+        input: query,
+        componentRestrictions: { country: 'co' },
+        language: 'es'
+      };
+      
+      service.getPlacePredictions(request, function(predictions, status) {
+        if (currentId === window.placesSearchCallbackId) {
+          if (status === 'OK' && predictions) {
+            window.placesSearchResult = predictions.map(function(p) {
+              return {
+                description: p.description,
+                place_id: p.place_id
+              };
+            });
+          } else {
+            window.placesSearchResult = [];
+          }
+          window.placesSearchStatus = status;
+        }
+      });
+      
+      return currentId;
+    };
+    
+    window.getPlaceDetails = function(placeId) {
+      window.placeDetailsResult = null;
+      window.placeDetailsStatus = null;
+      window.placeDetailsCallbackId++;
+      const currentId = window.placeDetailsCallbackId;
+      
+      if (typeof google === 'undefined' || !google.maps || !google.maps.places) {
+        window.placeDetailsStatus = 'API_NOT_LOADED';
+        return currentId;
+      }
+      
+      const service = new google.maps.places.PlacesService(document.createElement('div'));
+      const request = {
+        placeId: placeId,
+        fields: ['geometry', 'formatted_address']
+      };
+      
+      service.getDetails(request, function(place, status) {
+        if (currentId === window.placeDetailsCallbackId) {
+          if (status === 'OK' && place) {
+            window.placeDetailsResult = {
+              lat: place.geometry.location.lat(),
+              lng: place.geometry.location.lng(),
+              address: place.formatted_address || ''
+            };
+          } else {
+            window.placeDetailsResult = null;
+          }
+          window.placeDetailsStatus = status;
+        }
+      });
+      
+      return currentId;
+    };
+    
+    // Función para verificar si hay resultados disponibles
+    window.checkPlacesSearch = function(callbackId) {
+      if (window.placesSearchCallbackId === callbackId && window.placesSearchStatus !== null) {
+        return {
+          results: window.placesSearchResult,
+          status: window.placesSearchStatus
+        };
+      }
+      return null;
+    };
+    
+    window.checkPlaceDetails = function(callbackId) {
+      if (window.placeDetailsCallbackId === callbackId && window.placeDetailsStatus !== null) {
+        return {
+          result: window.placeDetailsResult,
+          status: window.placeDetailsStatus
+        };
+      }
+      return null;
+    };
+  </script>
 </head>
 <body>
   <script src="flutter_bootstrap.js" async></script>

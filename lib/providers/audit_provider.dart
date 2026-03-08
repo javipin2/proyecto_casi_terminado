@@ -6,6 +6,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:reserva_canchas/models/audit_log.dart';
+import '../services/lugar_helper.dart';
+import '../utils/reserva_audit_utils.dart'; // Para acceder a UmbralesRiesgo
 
 class AuditProvider with ChangeNotifier {
   List<AuditEntry> _auditEntries = [];
@@ -20,6 +22,16 @@ class AuditProvider with ChangeNotifier {
   // Cache para optimización
   Map<String, dynamic>? _estadisticasCache;
   DateTime? _ultimaActualizacionCache;
+  
+  // ✅ CORRECCIÓN: Timer para debounce en filtros automáticos
+  Timer? _debounceTimer;
+  
+  // ✅ CORRECCIÓN: Completer para evitar consultas concurrentes
+  Completer<void>? _cargaCompleter;
+
+  // ✅ NUEVO: Soporte de paginación
+  DocumentSnapshot? _ultimoDocumento; // Último documento cargado para paginación
+  bool _tieneMasResultados = true; // Indica si hay más resultados en Firestore
 
   // Getters
   List<AuditEntry> get auditEntries => _auditEntries;
@@ -30,6 +42,7 @@ class AuditProvider with ChangeNotifier {
   String get filtroAccion => _filtroAccion;
   String get filtroRiesgo => _filtroRiesgo;
   String get filtroUsuario => _filtroUsuario;
+  bool get tieneMasResultados => _tieneMasResultados;
 
   // Filtros aplicados con mejor rendimiento
   List<AuditEntry> get entriesFiltradas {
@@ -90,62 +103,249 @@ class AuditProvider with ChangeNotifier {
     return estadisticasCalculadas;
   }
 
-  /// Cargar auditoría con filtros mejorados
+  /// Cargar auditoría con filtros mejorados y optimizaciones
   Future<void> cargarAuditoria({
-    int limite = 200,
+    int limite = 100, // Página inicial más pequeña para mejor rendimiento
     bool forzarRecarga = false,
   }) async {
-    if (_isLoading && !forzarRecarga) return;
+    // ✅ CORRECCIÓN: Si ya hay una carga en progreso, esperar a que termine
+    if (_cargaCompleter != null && !forzarRecarga) {
+      return _cargaCompleter!.future;
+    }
+    
+    if (_isLoading && !forzarRecarga) {
+      // Si hay una carga en progreso y no es forzada, esperar a que termine
+      if (_cargaCompleter != null) {
+        return _cargaCompleter!.future;
+      }
+      return;
+    }
 
+    // ✅ CORRECCIÓN: Crear nuevo completer para esta carga
+    _cargaCompleter = Completer<void>();
+    
     _isLoading = true;
     _errorMessage = '';
     notifyListeners();
 
     try {
-      Query query = FirebaseFirestore.instance
-          .collection('auditoria')
-          .orderBy('timestamp', descending: true);
-
-      // Aplicar filtros en la consulta para mejor rendimiento
-      if (_filtroRiesgo != 'todos') {
-        query = query.where('nivel_riesgo', isEqualTo: _filtroRiesgo);
+      // Obtener el lugarId del usuario autenticado
+      final lugarId = await LugarHelper.getLugarId();
+      if (lugarId == null) {
+        _errorMessage = 'No se pudo obtener el lugar del usuario';
+        debugPrint('AuditProvider: No se pudo obtener lugarId');
+        _isLoading = false;
+        // Completar el completer incluso en caso de error temprano
+        _cargaCompleter?.completeError('No se pudo obtener lugarId');
+        _cargaCompleter = null;
+        notifyListeners();
+        return;
       }
 
+      // Construir consulta base optimizada
+      Query query = FirebaseFirestore.instance
+          .collection('auditoria')
+          .where('lugarId', isEqualTo: lugarId);
+
+      // OPTIMIZACIÓN: Aplicar filtros de fecha PRIMERO (más selectivo)
+      // Esto reduce significativamente el número de documentos a procesar
       if (_fechaInicio != null && _fechaFin != null) {
         final inicio = DateTime(_fechaInicio!.year, _fechaInicio!.month, _fechaInicio!.day, 0, 0, 0);
         final fin = DateTime(_fechaFin!.year, _fechaFin!.month, _fechaFin!.day, 23, 59, 59, 999);
+        
+        // Validar que las fechas sean válidas
+        if (inicio.isAfter(fin)) {
+          _errorMessage = 'Rango de fechas inválido';
+          debugPrint('AuditProvider: Fechas inválidas - inicio: $inicio, fin: $fin');
+          _isLoading = false;
+          notifyListeners();
+          return;
+        }
+
         query = query
             .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(inicio))
             .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(fin));
       }
 
-      query = query.limit(limite);
+      // Aplicar filtro de riesgo si está activo (después de fecha para mejor índice)
+      if (_filtroRiesgo != 'todos') {
+        query = query.where('nivel_riesgo', isEqualTo: _filtroRiesgo);
+      }
 
-      final querySnapshot = await query.get();
+      // Ordenar y limitar (después de todos los filtros)
+      query = query.orderBy('timestamp', descending: true).limit(limite);
+
+      // Ejecutar consulta con timeout
+      final querySnapshot = await query.get().timeout(
+        Duration(seconds: 10),
+        onTimeout: () {
+          throw TimeoutException('La consulta tardó demasiado tiempo');
+        },
+      );
+
+      // Procesar resultados
       _auditEntries = querySnapshot.docs
-          .map((doc) => AuditEntry.fromFirestore(doc))
+          .map((doc) {
+            try {
+              return AuditEntry.fromFirestore(doc);
+            } catch (e) {
+              debugPrint('Error al parsear documento ${doc.id}: $e');
+              return null;
+            }
+          })
+          .whereType<AuditEntry>()
           .toList();
+
+      // Debug: Log de resultados
+      debugPrint('AuditProvider: Cargadas ${_auditEntries.length} entradas. Filtros: fecha=${_fechaInicio != null && _fechaFin != null}, riesgo=${_filtroRiesgo}');
 
       // Invalidar cache de estadísticas
       _estadisticasCache = null;
+      _ultimaActualizacionCache = DateTime.now();
+      
+      // Reiniciar estado de paginación
+      if (querySnapshot.docs.isNotEmpty) {
+        _ultimoDocumento = querySnapshot.docs.last;
+        // Si se reciben menos documentos que el límite, asumimos que no hay más
+        _tieneMasResultados = querySnapshot.docs.length >= limite;
+      } else {
+        _ultimoDocumento = null;
+        _tieneMasResultados = false;
+      }
+      
+      // ✅ CORRECCIÓN: Completar el completer cuando termine la carga exitosamente
+      _cargaCompleter?.complete();
+      _cargaCompleter = null;
 
+    } on TimeoutException catch (e) {
+      _errorMessage = 'La consulta tardó demasiado tiempo. Intenta con un rango de fechas más pequeño.';
+      debugPrint('AuditProvider Timeout: $e');
+      // ✅ CORRECCIÓN: Completar el completer incluso en caso de error
+      _cargaCompleter?.completeError(e);
+      _cargaCompleter = null;
     } catch (e) {
       _errorMessage = 'Error al cargar auditoría: $e';
-      debugPrint(_errorMessage);
+      debugPrint('AuditProvider Error: $_errorMessage');
+      debugPrint('Stack trace: ${StackTrace.current}');
+      // ✅ CORRECCIÓN: Completar el completer incluso en caso de error
+      _cargaCompleter?.completeError(e);
+      _cargaCompleter = null;
     } finally {
       _isLoading = false;
       notifyListeners();
     }
   }
 
-  /// Aplicar filtros con validación
-  void aplicarFiltros({
+  /// ✅ NUEVO: Cargar más auditoría (paginación)
+  Future<void> cargarMasAuditoria({
+    int limite = 100,
+  }) async {
+    // Si ya estamos cargando, o no hay más resultados, salir
+    if (_isLoading || !_tieneMasResultados || _ultimoDocumento == null) return;
+
+    _isLoading = true;
+    _errorMessage = '';
+    notifyListeners();
+
+    try {
+      final lugarId = await LugarHelper.getLugarId();
+      if (lugarId == null) {
+        _errorMessage = 'No se pudo obtener el lugar del usuario';
+        debugPrint('AuditProvider: No se pudo obtener lugarId (paginación)');
+        _isLoading = false;
+        notifyListeners();
+        return;
+      }
+
+      // Construir la misma consulta base que en cargarAuditoria
+      Query query = FirebaseFirestore.instance
+          .collection('auditoria')
+          .where('lugarId', isEqualTo: lugarId);
+
+      // Aplicar filtros de fecha
+      if (_fechaInicio != null && _fechaFin != null) {
+        final inicio = DateTime(_fechaInicio!.year, _fechaInicio!.month, _fechaInicio!.day, 0, 0, 0);
+        final fin = DateTime(_fechaFin!.year, _fechaFin!.month, _fechaFin!.day, 23, 59, 59, 999);
+
+        if (inicio.isAfter(fin)) {
+          _errorMessage = 'Rango de fechas inválido';
+          debugPrint('AuditProvider (paginación): Fechas inválidas - inicio: $inicio, fin: $fin');
+          _isLoading = false;
+          notifyListeners();
+          return;
+        }
+
+        query = query
+            .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(inicio))
+            .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(fin));
+      }
+
+      // Filtro de riesgo
+      if (_filtroRiesgo != 'todos') {
+        query = query.where('nivel_riesgo', isEqualTo: _filtroRiesgo);
+      }
+
+      // Orden, paginación y límite
+      query = query
+          .orderBy('timestamp', descending: true)
+          .startAfterDocument(_ultimoDocumento!)
+          .limit(limite);
+
+      final querySnapshot = await query.get().timeout(
+        Duration(seconds: 10),
+        onTimeout: () {
+          throw TimeoutException('La consulta de paginación tardó demasiado tiempo');
+        },
+      );
+
+      final nuevos = querySnapshot.docs
+          .map((doc) {
+            try {
+              return AuditEntry.fromFirestore(doc);
+            } catch (e) {
+              debugPrint('Error al parsear documento (paginación) ${doc.id}: $e');
+              return null;
+            }
+          })
+          .whereType<AuditEntry>()
+          .toList();
+
+      _auditEntries.addAll(nuevos);
+
+      // Actualizar estado de paginación
+      if (querySnapshot.docs.isNotEmpty) {
+        _ultimoDocumento = querySnapshot.docs.last;
+        _tieneMasResultados = querySnapshot.docs.length >= limite;
+      } else {
+        _tieneMasResultados = false;
+      }
+
+      // Invalidar cache de estadísticas
+      _estadisticasCache = null;
+      _ultimaActualizacionCache = DateTime.now();
+
+      debugPrint('AuditProvider: Cargadas ${nuevos.length} entradas adicionales. Total: ${_auditEntries.length}');
+    } on TimeoutException catch (e) {
+      _errorMessage = 'La consulta de paginación tardó demasiado tiempo. Intenta más tarde.';
+      debugPrint('AuditProvider Paginación Timeout: $e');
+    } catch (e) {
+      _errorMessage = 'Error al cargar más auditoría: $e';
+      debugPrint('AuditProvider Paginación Error: $_errorMessage');
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Aplicar filtros con validación y recarga automática con debounce
+  Future<void> aplicarFiltros({
     DateTime? fechaInicio,
     DateTime? fechaFin,
     String? accion,
     String? nivelRiesgo,
     String? usuario,
-  }) {
+    bool usarDebounce = true, // ✅ CORRECCIÓN: Permitir desactivar debounce si es necesario
+  }) async {
     // Validar fechas
     if (fechaInicio != null && fechaFin != null && fechaInicio.isAfter(fechaFin)) {
       _errorMessage = 'La fecha de inicio no puede ser posterior a la fecha fin';
@@ -153,6 +353,10 @@ class AuditProvider with ChangeNotifier {
       return;
     }
 
+    // Detectar si cambiaron los filtros que requieren recarga de Firestore
+    final fechaCambio = _fechaInicio != fechaInicio || _fechaFin != fechaFin;
+    final riesgoCambio = _filtroRiesgo != (nivelRiesgo ?? 'todos');
+    
     _fechaInicio = fechaInicio;
     _fechaFin = fechaFin;
     _filtroAccion = accion ?? 'todas';
@@ -162,18 +366,34 @@ class AuditProvider with ChangeNotifier {
     // Invalidar cache
     _estadisticasCache = null;
 
-    notifyListeners();
+    // ✅ CORRECCIÓN: Si cambiaron filtros que afectan Firestore, usar debounce para evitar múltiples consultas
+    if (fechaCambio || riesgoCambio) {
+      if (usarDebounce) {
+        // Cancelar timer anterior si existe
+        _debounceTimer?.cancel();
+        
+        // Crear nuevo timer con debounce de 400ms
+        _debounceTimer = Timer(Duration(milliseconds: 400), () async {
+          await cargarAuditoria(forzarRecarga: true);
+        });
+      } else {
+        // Si no se usa debounce, cargar inmediatamente
+        await cargarAuditoria(forzarRecarga: true);
+      }
+    } else {
+      notifyListeners();
+    }
   }
 
-  /// Limpiar filtros
-  void limpiarFiltros() {
+  /// Limpiar filtros y recargar datos
+  Future<void> limpiarFiltros() async {
     _fechaInicio = null;
     _fechaFin = null;
     _filtroAccion = 'todas';
     _filtroRiesgo = 'todos';
     _filtroUsuario = 'todos';
     _estadisticasCache = null;
-    notifyListeners();
+    await cargarAuditoria(forzarRecarga: true);
   }
 
   /// MÉTODO PRINCIPAL CORREGIDO - Registrar acción sin duplicar análisis
@@ -193,6 +413,9 @@ class AuditProvider with ChangeNotifier {
 
       // Obtener datos del usuario con cache
       final userData = await _obtenerDatosUsuario(user.uid);
+
+      // Obtener lugarId del usuario autenticado para etiquetar auditoría y alertas
+      final lugarId = await LugarHelper.getLugarId();
 
       // DECISIÓN CLAVE: Detectar si viene de ReservaAuditUtils
       final esDesdeReservaUtils = metadatos?.containsKey('nivel_riesgo_calculado') == true ||
@@ -244,6 +467,7 @@ class AuditProvider with ChangeNotifier {
         'usuario_nombre': userData['nombre'],
         'usuario_rol': userData['rol'],
         'timestamp': Timestamp.now(),
+        'lugarId': lugarId,
         'datos_antiguos': datosAntiguos ?? {},
         'datos_nuevos': datosNuevos ?? {},
         'metadatos': {
@@ -330,7 +554,8 @@ static Map<String, dynamic> _extraerAnalisisDeReservaUtils(Map<String, dynamic> 
 
 
 
-  /// Análisis de riesgo mejorado - SOLO para entidades que NO son reservas
+  /// ✅ Análisis de riesgo mejorado - SOLO para entidades que NO son reservas
+  /// Usa umbrales unificados importados de ReservaAuditUtils
   static Map<String, dynamic> _analizarRiesgoMejorado({
     required String accion,
     required String entidad,
@@ -372,21 +597,26 @@ static Map<String, dynamic> _extraerAnalisisDeReservaUtils(Map<String, dynamic> 
     // 5. Análisis de impacto financiero (peso: 10 puntos)
     puntuacionRiesgo += _analizarImpactoFinanciero(datosAntiguos, datosNuevos, alertas);
 
-    // Determinar nivel de riesgo basado en puntuación
+    // ✅ Determinar nivel de riesgo con UMBRALES UNIFICADOS
     String nivelRiesgo;
-    if (puntuacionRiesgo >= 80) {
+    final puntuacionInt = puntuacionRiesgo.toInt();
+    if (puntuacionInt >= UmbralesRiesgo.critico) {
       nivelRiesgo = 'critico';
-    } else if (puntuacionRiesgo >= 60) nivelRiesgo = 'alto';
-    else if (puntuacionRiesgo >= 35) nivelRiesgo = 'medio';
-    else nivelRiesgo = 'bajo';
+    } else if (puntuacionInt >= UmbralesRiesgo.alto) {
+      nivelRiesgo = 'alto';
+    } else if (puntuacionInt >= UmbralesRiesgo.medio) {
+      nivelRiesgo = 'medio';
+    } else {
+      nivelRiesgo = 'bajo';
+    }
 
-    debugPrint('🔍 Análisis de riesgo para $entidad: Nivel $nivelRiesgo ($puntuacionRiesgo puntos)');
+    debugPrint('🔍 Análisis de riesgo para $entidad: Nivel $nivelRiesgo ($puntuacionInt puntos)');
 
     return {
       'nivel': nivelRiesgo,
       'alertas': alertas,
       'cambios': cambios,
-      'puntuacion_riesgo': puntuacionRiesgo,
+      'puntuacion_riesgo': puntuacionInt,
       'factores_analizados': {
         'accion': true,
         'cambios_datos': datosAntiguos != null && datosNuevos != null,
@@ -497,22 +727,20 @@ static Map<String, dynamic> _extraerAnalisisDeReservaUtils(Map<String, dynamic> 
     };
   }
 
-  /// Análisis de contexto temporal
+  /// ✅ Análisis de contexto temporal - CORREGIDO horario laboral (5am-11pm)
   static int _analizarContextoTemporal(Map<String, dynamic>? metadatos, List<String> alertas) {
     int puntuacion = 0;
     final ahora = DateTime.now();
     
-    // Operaciones fuera de horario laboral
-    if (ahora.hour < 6 || ahora.hour > 23) {
-      alertas.add('Operación fuera de horario laboral');
-      puntuacion += 10;
+    // ✅ CORREGIDO: Horario laboral es 5am-11pm (no 6am-11pm)
+    // Solo alertar si es fuera de horario laboral (11pm-5am)
+    if (ahora.hour < 5 || ahora.hour >= 23) {
+      alertas.add('Operación fuera de horario laboral (11pm-5am)');
+      puntuacion += 15;
     }
     
-    // Operaciones en días festivos o fines de semana
-    if (ahora.weekday == DateTime.saturday || ahora.weekday == DateTime.sunday) {
-      alertas.add('Operación en fin de semana');
-      puntuacion += 5;
-    }
+    // ✅ ELIMINADO: Fines de semana NO son sospechosos (se trabaja igual)
+    // Los fines de semana son horario laboral normal
     
     // Verificar proximidad de fecha de reserva si está disponible
     if (metadatos != null && metadatos.containsKey('fecha_reserva')) {
@@ -535,13 +763,26 @@ static Map<String, dynamic> _extraerAnalisisDeReservaUtils(Map<String, dynamic> 
     return puntuacion;
   }
 
-  /// Análisis de patrones de usuario
+  /// ✅ Análisis de patrones de usuario - MEJORADO (implementación básica)
   static int _analizarPatronesUsuario(String accion, List<String> alertas) {
-    // Este sería un análisis más complejo en producción
-    // Por ahora, implementación básica
+    // TODO: Implementación completa requeriría consultar historial de auditoría
+    // Por ahora, análisis básico basado en el tipo de acción
     
-    // Verificar si son muchas operaciones del mismo tipo en poco tiempo
-    // (Esto requeriría consultar el historial, implementación simplificada)
+    // Acciones que indican patrones sospechosos si se repiten
+    final accionesSospechosas = [
+      'eliminar_reserva',
+      'eliminar_reserva_impacto_alto',
+      'editar_reserva_precio_critico',
+      'crear_reserva_sospechosa',
+    ];
+    
+    if (accionesSospechosas.contains(accion)) {
+      // Estas acciones ya tienen puntuación alta por sí solas
+      // El análisis de patrones agregaría puntos adicionales si se repiten
+      // Por ahora retornamos 0, pero la estructura está lista para mejoras futuras
+      return 0;
+    }
+    
     return 0;
   }
 
@@ -887,8 +1128,11 @@ static Map<String, dynamic> _extraerAnalisisDeReservaUtils(Map<String, dynamic> 
   /// Obtener alertas no leídas con mejor rendimiento
   Future<List<Map<String, dynamic>>> obtenerAlertasNoLeidas() async {
     try {
+      // Filtrar por lugarId del usuario autenticado
+      final lugarId = await LugarHelper.getLugarId();
       final query = await FirebaseFirestore.instance
           .collection('alertas_criticas')
+          .where('lugarId', isEqualTo: lugarId)
           .where('leida', isEqualTo: false)
           .orderBy('prioridad')
           .orderBy('timestamp', descending: true)
@@ -926,9 +1170,11 @@ static Map<String, dynamic> _extraerAnalisisDeReservaUtils(Map<String, dynamic> 
       final hoy = DateTime.now();
       final inicioHoy = DateTime(hoy.year, hoy.month, hoy.day);
       final finHoy = inicioHoy.add(Duration(days: 1));
+      final lugarId = await LugarHelper.getLugarId();
       
       final query = await FirebaseFirestore.instance
           .collection('alertas_criticas')
+          .where('lugarId', isEqualTo: lugarId)
           .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(inicioHoy))
           .where('timestamp', isLessThan: Timestamp.fromDate(finHoy))
           .get();
@@ -948,5 +1194,21 @@ static Map<String, dynamic> _extraerAnalisisDeReservaUtils(Map<String, dynamic> 
       debugPrint('Error obteniendo resumen de alertas: $e');
       return {};
     }
+  }
+  
+  // ✅ CORRECCIÓN: Método dispose para limpiar recursos cuando el provider se destruye
+  @override
+  void dispose() {
+    // Cancelar timer de debounce si existe
+    _debounceTimer?.cancel();
+    _debounceTimer = null;
+    
+    // Cancelar completer si hay una carga en progreso
+    if (_cargaCompleter != null && !_cargaCompleter!.isCompleted) {
+      _cargaCompleter!.completeError('Provider disposed');
+      _cargaCompleter = null;
+    }
+    
+    super.dispose();
   }
 }

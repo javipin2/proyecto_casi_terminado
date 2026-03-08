@@ -1,0 +1,16 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Imágenes de sedes: sede/{nombre}_{timestamp}.jpg
+    match /sede/{fileName} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+    
+    // Imágenes de canchas: canchas/{timestamp}.jpg o canchas/{canchaId}_{timestamp}.jpg
+    match /canchas/{fileName} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+  }
+}

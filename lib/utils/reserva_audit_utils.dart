@@ -5,6 +5,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import '../providers/audit_provider.dart';
 
+/// ✅ UMBRALES UNIFICADOS DE RIESGO - Usar en TODO el sistema
+class UmbralesRiesgo {
+  static const int critico = 80;   // ≥80 puntos
+  static const int alto = 60;      // 60-79 puntos
+  static const int medio = 35;     // 35-59 puntos
+  static const int bajo = 0;       // 0-34 puntos
+}
+
 class ReservaAuditUtils {
   
   /// Auditar edición de reservas con análisis mejorado
@@ -145,32 +153,11 @@ class ReservaAuditUtils {
       alertasGeneradas,
     );
 
-    // 7.1 Endurecer riesgo cuando hay DESCUENTO (no común)
-    final porcentajeCambioPrecio = (analisisPrecios['porcentaje_cambio'] ?? 0.0) as double;
-    final esDescuento = (analisisPrecios['metricas'] as Map<String, dynamic>?)?['es_descuento'] == true;
-    if (esDescuento) {
-      if (porcentajeCambioPrecio >= 50) {
-        nivelRiesgo = 'critico';
-      } else if (porcentajeCambioPrecio >= 30) {
-        // garantizar al menos ALTO para descuentos >=30%
-        if (nivelRiesgo == 'bajo' || nivelRiesgo == 'medio') nivelRiesgo = 'alto';
-      } else if (porcentajeCambioPrecio > 0) {
-        // cualquier descuento pequeño eleva al menos a MEDIO
-        if (nivelRiesgo == 'bajo') nivelRiesgo = 'medio';
-      }
-    }
-
-    // 7.2 Riesgo mínimo MEDIO cuando hay precio personalizado activo
-    final tienePrecioPersonalizado = datosNuevos['precio_personalizado'] == true;
-    if (tienePrecioPersonalizado && (nivelRiesgo == 'bajo')) {
-      nivelRiesgo = 'medio';
-    }
-
-    // 7.3 Riesgo mínimo MEDIO cuando solo se cambia fecha/hora (precios varían naturalmente)
-    final soloCambioFechaHora = _esSoloCambioFechaHora(datosAntiguos, datosNuevos, cambiosDetectados);
-    if (soloCambioFechaHora && (nivelRiesgo == 'bajo')) {
-      nivelRiesgo = 'medio';
-    }
+    // ✅ MEJORA: Los descuentos ya están considerados en el cálculo de puntuación
+    // No forzar niveles manualmente, confiar en la puntuación calculada
+    // Si un descuento es significativo, la puntuación ya lo reflejará
+    
+    // Nota: Los ajustes manuales se eliminaron para confiar en el sistema de puntuación unificado
 
     return {
       'cambios_detectados': cambiosDetectados,
@@ -367,10 +354,6 @@ class ReservaAuditUtils {
       cambios.add('Teléfono: ${datosAntiguos['telefono']} → ${datosNuevos['telefono']}');
     }
     
-    if (datosAntiguos['correo'] != datosNuevos['correo']) {
-      cambios.add('Email: ${datosAntiguos['correo'] ?? 'Sin email'} → ${datosNuevos['correo'] ?? 'Sin email'}');
-    }
-    
     return {'cambios': cambios};
   }
 
@@ -493,7 +476,7 @@ class ReservaAuditUtils {
     return alertas;
   }
 
-  /// Calcular nivel de riesgo mejorado
+  /// ✅ CALCULAR NIVEL DE RIESGO MEJORADO - Sistema unificado
   static String _calcularNivelRiesgoMejorado(
     Map<String, dynamic> analisisPrecios,
     Map<String, dynamic> analisisFechas,
@@ -502,40 +485,68 @@ class ReservaAuditUtils {
   ) {
     int puntuacionRiesgo = 0;
     
-    // Factores de precio (peso: 40%)
+    // 1. FACTOR PRECIO (máximo 45 puntos)
+    // Considera tanto porcentaje como monto absoluto
     if (analisisPrecios['es_cambio_critico'] == true) {
-      final porcentaje = analisisPrecios['porcentaje_cambio'] ?? 0.0;
+      final porcentaje = (analisisPrecios['porcentaje_cambio'] ?? 0.0) as double;
+      final diferenciaAbsoluta = (analisisPrecios['diferencia_precio'] ?? 0.0) as double;
+      
+      // Puntos por porcentaje (máximo 30 puntos)
       if (porcentaje >= 70) {
-        puntuacionRiesgo += 40;
-      } else if (porcentaje >= 50) puntuacionRiesgo += 35;
-      else if (porcentaje >= 30) puntuacionRiesgo += 25;
-      else if (porcentaje >= 15) puntuacionRiesgo += 15;
+        puntuacionRiesgo += 30;
+      } else if (porcentaje >= 50) {
+        puntuacionRiesgo += 25;
+      } else if (porcentaje >= 30) {
+        puntuacionRiesgo += 20;
+      } else if (porcentaje >= 15) {
+        puntuacionRiesgo += 12;
+      }
+      
+      // Puntos por monto absoluto (máximo 15 puntos)
+      final diferenciaAbs = diferenciaAbsoluta.abs();
+      if (diferenciaAbs >= 100000) {
+        puntuacionRiesgo += 15;
+      } else if (diferenciaAbs >= 50000) {
+        puntuacionRiesgo += 10;
+      } else if (diferenciaAbs >= 20000) {
+        puntuacionRiesgo += 5;
+      }
     }
     
-    // Factores de fecha/horario (peso: 20%)
+    // 2. FACTOR FECHA/HORARIO (máximo 20 puntos)
     final alertasFechas = analisisFechas['alertas'] as List<String>;
     if (alertasFechas.any((a) => a.contains('🚨'))) {
       puntuacionRiesgo += 20;
-    } else if (alertasFechas.any((a) => a.contains('⚠️'))) puntuacionRiesgo += 15;
-    else if (alertasFechas.isNotEmpty) puntuacionRiesgo += 10;
+    } else if (alertasFechas.any((a) => a.contains('⚠️'))) {
+      puntuacionRiesgo += 15;
+    } else if (alertasFechas.isNotEmpty) {
+      puntuacionRiesgo += 10;
+    }
     
-    // Factores de pagos (peso: 20%)
+    // 3. FACTOR PAGOS (máximo 20 puntos)
     final alertasPagos = analisisPagos['alertas'] as List<String>;
     if (alertasPagos.any((a) => a.contains('💸'))) {
-      puntuacionRiesgo += 15;
-    } else if (alertasPagos.any((a) => a.contains('💰'))) puntuacionRiesgo += 10;
+      puntuacionRiesgo += 20;
+    } else if (alertasPagos.any((a) => a.contains('💰'))) {
+      puntuacionRiesgo += 12;
+    } else if (alertasPagos.isNotEmpty) {
+      puntuacionRiesgo += 5;
+    }
     
-    // Patrones sospechosos (peso: 20%)
+    // 4. FACTOR PATRONES SOSPECHOSOS (máximo 15 puntos)
     final cantidadAlertas = alertasGeneradas.length;
     if (cantidadAlertas >= 5) {
-      puntuacionRiesgo += 20;
-    } else if (cantidadAlertas >= 3) puntuacionRiesgo += 15;
-    else if (cantidadAlertas >= 1) puntuacionRiesgo += 10;
+      puntuacionRiesgo += 15;
+    } else if (cantidadAlertas >= 3) {
+      puntuacionRiesgo += 10;
+    } else if (cantidadAlertas >= 1) {
+      puntuacionRiesgo += 5;
+    }
     
-    // Clasificación final
-    if (puntuacionRiesgo >= 70) return 'critico';
-    if (puntuacionRiesgo >= 45) return 'alto';
-    if (puntuacionRiesgo >= 25) return 'medio';
+    // ✅ CLASIFICACIÓN FINAL CON UMBRALES UNIFICADOS
+    if (puntuacionRiesgo >= UmbralesRiesgo.critico) return 'critico';
+    if (puntuacionRiesgo >= UmbralesRiesgo.alto) return 'alto';
+    if (puntuacionRiesgo >= UmbralesRiesgo.medio) return 'medio';
     return 'bajo';
   }
 
@@ -669,17 +680,6 @@ class ReservaAuditUtils {
     datosLimpios.remove('password');
     datosLimpios.remove('token');
     datosLimpios.remove('session_id');
-    
-    // Enmascarar email parcialmente
-    if (datosLimpios.containsKey('correo') && datosLimpios['correo'] != null) {
-      final email = datosLimpios['correo'].toString();
-      if (email.contains('@') && email.length > 4) {
-        final partes = email.split('@');
-        if (partes[0].length > 2) {
-          datosLimpios['correo'] = '${partes[0].substring(0, 2)}***@${partes[1]}';
-        }
-      }
-    }
     
     return datosLimpios;
   }
@@ -1051,5 +1051,576 @@ class ReservaAuditUtils {
     } catch (e) {
       return fecha.toString();
     }
+  }
+
+  /// ✅ Auditar procesamiento de devolución
+  static Future<void> auditarProcesarDevolucion({
+    required String reservaId,
+    required Map<String, dynamic> datosReserva,
+    String? motivo,
+  }) async {
+    try {
+      // Calcular nivel de riesgo y análisis
+      final analisisDevolucion = _analizarDevolucion(datosReserva);
+      
+      await AuditProvider.registrarAccion(
+        accion: 'procesar_devolucion',
+        entidad: 'reserva',
+        entidadId: reservaId,
+        datosAntiguos: _limpiarDatosSensibles(datosReserva),
+        datosNuevos: {
+          ..._limpiarDatosSensibles(datosReserva),
+          'estado': 'devolucion',
+          'confirmada': null, // Campo eliminado
+          'abono_entregado': false,
+        },
+        metadatos: {
+          '_audit_processed': true,
+          'fuente_original': 'ReservaAuditUtils',
+          'metodo_auditoria': 'auditarProcesarDevolucion',
+          
+          // Información básica
+          'cancha_nombre': datosReserva['cancha_nombre'] ?? 'No especificada',
+          'sede': datosReserva['sede'] ?? 'No especificada',
+          'cliente': datosReserva['nombre'] ?? 'No especificado',
+          'fecha_reserva': datosReserva['fecha'] ?? 'No especificada',
+          'horario': datosReserva['horario'] ?? 'No especificado',
+          
+          // Información financiera
+          'monto_abono_devolver': datosReserva['montoPagado'] ?? 0,
+          'monto_total_reserva': datosReserva['montoTotal'] ?? datosReserva['valor'] ?? 0,
+          'porcentaje_pagado': analisisDevolucion['porcentaje_pagado'],
+          'estado_anterior': analisisDevolucion['estado_anterior'],
+          'reserva_completada': analisisDevolucion['reserva_completada'],
+          
+          // Contexto temporal
+          'fecha_reserva_original': datosReserva['fecha'],
+          'dias_desde_reserva': analisisDevolucion['dias_desde_reserva'],
+          'horario_procesamiento': DateTime.now().toIso8601String(),
+          'es_fuera_horario_laboral': analisisDevolucion['es_fuera_horario_laboral'],
+          
+          // Análisis de riesgo
+          'nivel_riesgo_calculado': analisisDevolucion['nivel_riesgo'],
+          'puntuacion_riesgo': analisisDevolucion['puntuacion_riesgo'],
+          'alertas_generadas': analisisDevolucion['alertas'],
+          'cambios_detectados': <String>['procesar_devolucion'],
+          
+          // Motivo si está disponible
+          'motivo_devolucion': motivo ?? 'No especificado',
+        },
+        descripcion: _generarDescripcionProcesarDevolucion(datosReserva, analisisDevolucion),
+      );
+    } catch (e) {
+      debugPrint('Error auditando procesamiento de devolución: $e');
+    }
+  }
+
+  /// ✅ Auditar confirmación de devolución (entrega del abono)
+  static Future<void> auditarConfirmarDevolucion({
+    required String reservaId,
+    required Map<String, dynamic> datosReserva,
+  }) async {
+    try {
+      await AuditProvider.registrarAccion(
+        accion: 'confirmar_devolucion',
+        entidad: 'reserva',
+        entidadId: reservaId,
+        datosAntiguos: {
+          ..._limpiarDatosSensibles(datosReserva),
+          'abono_entregado': false,
+        },
+        datosNuevos: {
+          ..._limpiarDatosSensibles(datosReserva),
+          'abono_entregado': true,
+        },
+        metadatos: {
+          '_audit_processed': true,
+          'fuente_original': 'ReservaAuditUtils',
+          'metodo_auditoria': 'auditarConfirmarDevolucion',
+          
+          'cancha_nombre': datosReserva['cancha_nombre'] ?? 'No especificada',
+          'sede': datosReserva['sede'] ?? 'No especificada',
+          'cliente': datosReserva['nombre'] ?? 'No especificado',
+          'monto_abono_devuelto': datosReserva['montoPagado'] ?? 0,
+          'fecha_confirmacion': DateTime.now().toIso8601String(),
+          
+          'nivel_riesgo_calculado': 'bajo', // Confirmación administrativa
+          'puntuacion_riesgo': 5, // Muy bajo riesgo
+          'alertas_generadas': <String>[],
+          'cambios_detectados': <String>['confirmar_devolucion'],
+        },
+        descripcion: _generarDescripcionConfirmarDevolucion(datosReserva),
+        nivelRiesgoForzado: 'bajo', // Siempre bajo para confirmaciones
+      );
+    } catch (e) {
+      debugPrint('Error auditando confirmación de devolución: $e');
+    }
+  }
+
+  /// Analizar devolución y calcular nivel de riesgo
+  static Map<String, dynamic> _analizarDevolucion(Map<String, dynamic> datosReserva) {
+    final alertas = <String>[];
+    int puntuacionRiesgo = 15; // Base por ser devolución
+    
+    final montoAbono = (datosReserva['montoPagado'] ?? 0) as num;
+    final montoTotal = (datosReserva['montoTotal'] ?? datosReserva['valor'] ?? 0) as num;
+    final porcentajePagado = montoTotal > 0 ? (montoAbono / montoTotal * 100) : 0.0;
+    final reservaCompletada = porcentajePagado >= 100;
+    
+    // 1. FACTOR MONTO DEL ABONO (máximo 45 puntos)
+    final montoAbonoDouble = montoAbono.toDouble();
+    final formatter = NumberFormat('#,##0', 'es_CO');
+    if (montoAbonoDouble >= 100000) {
+      puntuacionRiesgo += 45;
+      alertas.add('DEVOLUCIÓN DE ALTO VALOR: \$${formatter.format(montoAbonoDouble.toInt())} a devolver');
+    } else if (montoAbonoDouble >= 50000) {
+      puntuacionRiesgo += 30;
+      alertas.add('Devolución de valor significativo: \$${formatter.format(montoAbonoDouble.toInt())}');
+    } else if (montoAbonoDouble >= 20000) {
+      puntuacionRiesgo += 15;
+    } else {
+      puntuacionRiesgo += 5;
+    }
+    
+    // 2. FACTOR ESTADO DE LA RESERVA (máximo 25 puntos)
+    if (reservaCompletada) {
+      puntuacionRiesgo += 25;
+      alertas.add('DEVOLUCIÓN DE RESERVA COMPLETADA: Cliente ya había pagado el total');
+    } else if (porcentajePagado > 70) {
+      puntuacionRiesgo += 15;
+      alertas.add('Devolución de reserva con más del 70% pagado');
+    } else if (porcentajePagado > 30) {
+      puntuacionRiesgo += 8;
+    } else {
+      puntuacionRiesgo += 3;
+    }
+    
+    // 3. FACTOR CONTEXTO TEMPORAL (máximo 15 puntos)
+    final ahora = DateTime.now();
+    if (ahora.hour < 5 || ahora.hour >= 23) {
+      puntuacionRiesgo += 15;
+      alertas.add('DEVOLUCIÓN PROCESADA FUERA DE HORARIO: Entre 11pm-5am');
+    }
+    
+    // 4. FACTOR PATRONES (máximo 15 puntos)
+    // TODO: Implementar consulta de historial de devoluciones del cliente
+    // Por ahora, estructura lista para mejoras futuras
+    
+    // Calcular nivel de riesgo
+    String nivelRiesgo;
+    if (puntuacionRiesgo >= UmbralesRiesgo.critico) {
+      nivelRiesgo = 'critico';
+    } else if (puntuacionRiesgo >= UmbralesRiesgo.alto) {
+      nivelRiesgo = 'alto';
+    } else if (puntuacionRiesgo >= UmbralesRiesgo.medio) {
+      nivelRiesgo = 'medio';
+    } else {
+      nivelRiesgo = 'bajo';
+    }
+    
+    // Calcular días desde la reserva
+    int diasDesdeReserva = 0;
+    try {
+      final fechaReserva = DateTime.parse(datosReserva['fecha'].toString());
+      diasDesdeReserva = DateTime.now().difference(fechaReserva).inDays;
+    } catch (e) {
+      // Ignorar errores
+    }
+    
+    return {
+      'nivel_riesgo': nivelRiesgo,
+      'puntuacion_riesgo': puntuacionRiesgo,
+      'alertas': alertas,
+      'monto_abono': montoAbonoDouble,
+      'monto_total': montoTotal.toDouble(),
+      'porcentaje_pagado': porcentajePagado,
+      'reserva_completada': reservaCompletada,
+      'estado_anterior': reservaCompletada ? 'completo' : (porcentajePagado > 50 ? 'parcial_alto' : 'parcial_bajo'),
+      'dias_desde_reserva': diasDesdeReserva,
+      'es_fuera_horario_laboral': ahora.hour < 5 || ahora.hour >= 23,
+    };
+  }
+
+  /// Generar descripción para procesar devolución
+  static String _generarDescripcionProcesarDevolucion(
+    Map<String, dynamic> datosReserva,
+    Map<String, dynamic> analisis,
+  ) {
+    final cliente = datosReserva['nombre'] ?? 'Cliente';
+    final montoAbono = analisis['monto_abono'] as double;
+    final nivelRiesgo = analisis['nivel_riesgo'] as String;
+    final formatter = NumberFormat('#,##0', 'es_CO');
+    
+    String prefijo = '';
+    if (nivelRiesgo == 'critico') {
+      prefijo = '🚨 ';
+    } else if (nivelRiesgo == 'alto') {
+      prefijo = '🔴 ';
+    } else if (nivelRiesgo == 'medio') {
+      prefijo = '🟡 ';
+    }
+    
+    String descripcion = '${prefijo}Devolución procesada para $cliente';
+    descripcion += ' - Abono a devolver: \$${formatter.format(montoAbono.toInt())}';
+    
+    if (analisis['reserva_completada'] == true) {
+      descripcion += ' (Reserva completada)';
+    }
+    
+    final alertas = analisis['alertas'] as List<String>;
+    if (alertas.isNotEmpty) {
+      descripcion += ' [${alertas.first}]';
+    }
+    
+    return descripcion;
+  }
+
+  /// Generar descripción para confirmar devolución
+  static String _generarDescripcionConfirmarDevolucion(Map<String, dynamic> datosReserva) {
+    final cliente = datosReserva['nombre'] ?? 'Cliente';
+    final montoAbono = (datosReserva['montoPagado'] ?? 0) as num;
+    final formatter = NumberFormat('#,##0', 'es_CO');
+    
+    return '✅ Devolución confirmada para $cliente - Abono entregado: \$${formatter.format(montoAbono.toInt())}';
+  }
+
+  /// ✅ Auditar creación de promoción
+  static Future<void> auditarCreacionPromocion({
+    required String promocionId,
+    required Map<String, dynamic> datosPromocion,
+    double? precioNormal,
+  }) async {
+    try {
+      final analisisPromocion = _analizarPromocion(datosPromocion, precioNormal, null);
+      
+      await AuditProvider.registrarAccion(
+        accion: 'crear_promocion',
+        entidad: 'promocion',
+        entidadId: promocionId,
+        datosNuevos: _limpiarDatosSensibles(datosPromocion),
+        metadatos: {
+          '_audit_processed': true,
+          'fuente_original': 'ReservaAuditUtils',
+          'metodo_auditoria': 'auditarCreacionPromocion',
+          
+          'cancha_nombre': datosPromocion['cancha_nombre'] ?? 'No especificada',
+          'sede': datosPromocion['sede'] ?? 'No especificada',
+          'fecha': datosPromocion['fecha'] ?? 'No especificada',
+          'horario': datosPromocion['horario'] ?? 'No especificado',
+          'precio_promocional': datosPromocion['precio_promocional'] ?? 0,
+          'precio_normal': precioNormal ?? 0,
+          'descuento_aplicado': analisisPromocion['descuento_aplicado'],
+          'porcentaje_descuento': analisisPromocion['porcentaje_descuento'],
+          
+          'nivel_riesgo_calculado': analisisPromocion['nivel_riesgo'],
+          'puntuacion_riesgo': analisisPromocion['puntuacion_riesgo'],
+          'alertas_generadas': analisisPromocion['alertas'],
+          'cambios_detectados': <String>['creacion_promocion'],
+        },
+        descripcion: _generarDescripcionCreacionPromocion(datosPromocion, analisisPromocion),
+      );
+    } catch (e) {
+      debugPrint('Error auditando creación de promoción: $e');
+    }
+  }
+
+  /// ✅ Auditar edición de promoción
+  static Future<void> auditarEdicionPromocion({
+    required String promocionId,
+    required Map<String, dynamic> datosAntiguos,
+    required Map<String, dynamic> datosNuevos,
+    double? precioNormal,
+  }) async {
+    try {
+      final analisisPromocion = _analizarPromocion(datosNuevos, precioNormal, datosAntiguos);
+      
+      await AuditProvider.registrarAccion(
+        accion: 'editar_promocion',
+        entidad: 'promocion',
+        entidadId: promocionId,
+        datosAntiguos: _limpiarDatosSensibles(datosAntiguos),
+        datosNuevos: _limpiarDatosSensibles(datosNuevos),
+        metadatos: {
+          '_audit_processed': true,
+          'fuente_original': 'ReservaAuditUtils',
+          'metodo_auditoria': 'auditarEdicionPromocion',
+          
+          'cancha_nombre': datosNuevos['cancha_nombre'] ?? datosAntiguos['cancha_nombre'] ?? 'No especificada',
+          'sede': datosNuevos['sede'] ?? datosAntiguos['sede'] ?? 'No especificada',
+          'fecha': datosNuevos['fecha'] ?? datosAntiguos['fecha'] ?? 'No especificada',
+          'horario': datosNuevos['horario'] ?? datosAntiguos['horario'] ?? 'No especificado',
+          'precio_promocional_anterior': datosAntiguos['precio_promocional'] ?? 0,
+          'precio_promocional_nuevo': datosNuevos['precio_promocional'] ?? 0,
+          'precio_normal': precioNormal ?? 0,
+          'descuento_aplicado': analisisPromocion['descuento_aplicado'],
+          'porcentaje_descuento': analisisPromocion['porcentaje_descuento'],
+          'cambio_precio': analisisPromocion['cambio_precio'],
+          'porcentaje_cambio_precio': analisisPromocion['porcentaje_cambio_precio'],
+          
+          'nivel_riesgo_calculado': analisisPromocion['nivel_riesgo'],
+          'puntuacion_riesgo': analisisPromocion['puntuacion_riesgo'],
+          'alertas_generadas': analisisPromocion['alertas'],
+          'cambios_detectados': analisisPromocion['cambios'],
+        },
+        descripcion: _generarDescripcionEdicionPromocion(datosAntiguos, datosNuevos, analisisPromocion),
+      );
+    } catch (e) {
+      debugPrint('Error auditando edición de promoción: $e');
+    }
+  }
+
+  /// ✅ Auditar eliminación de promoción
+  static Future<void> auditarEliminacionPromocion({
+    required String promocionId,
+    required Map<String, dynamic> datosPromocion,
+  }) async {
+    try {
+      await AuditProvider.registrarAccion(
+        accion: 'eliminar_promocion',
+        entidad: 'promocion',
+        entidadId: promocionId,
+        datosAntiguos: _limpiarDatosSensibles(datosPromocion),
+        metadatos: {
+          '_audit_processed': true,
+          'fuente_original': 'ReservaAuditUtils',
+          'metodo_auditoria': 'auditarEliminacionPromocion',
+          
+          'cancha_nombre': datosPromocion['cancha_nombre'] ?? 'No especificada',
+          'sede': datosPromocion['sede'] ?? 'No especificada',
+          'fecha': datosPromocion['fecha'] ?? 'No especificada',
+          'horario': datosPromocion['horario'] ?? 'No especificado',
+          'precio_promocional': datosPromocion['precio_promocional'] ?? 0,
+          
+          'nivel_riesgo_calculado': 'medio', // Eliminación siempre medio
+          'puntuacion_riesgo': 20,
+          'alertas_generadas': <String>[],
+          'cambios_detectados': <String>['eliminacion_promocion'],
+        },
+        descripcion: _generarDescripcionEliminacionPromocion(datosPromocion),
+        nivelRiesgoForzado: 'medio',
+      );
+    } catch (e) {
+      debugPrint('Error auditando eliminación de promoción: $e');
+    }
+  }
+
+  /// Analizar promoción y calcular nivel de riesgo
+  static Map<String, dynamic> _analizarPromocion(
+    Map<String, dynamic> datosPromocion,
+    double? precioNormal,
+    Map<String, dynamic>? datosAntiguos,
+  ) {
+    final alertas = <String>[];
+    final cambios = <String>[];
+    int puntuacionRiesgo = 10; // Base por ser operación de promoción
+    
+    final precioPromocional = (datosPromocion['precio_promocional'] as num?)?.toDouble() ?? 0.0;
+    final precioNormalDouble = precioNormal ?? 0.0;
+    final descuento = precioNormalDouble > 0 ? precioNormalDouble - precioPromocional : 0.0;
+    final porcentajeDescuento = precioNormalDouble > 0 ? (descuento / precioNormalDouble * 100) : 0.0;
+    
+    final formatter = NumberFormat('#,##0', 'es_CO');
+    
+    // 1. FACTOR DESCUENTO APLICADO (máximo 50 puntos)
+    if (precioNormalDouble > 0) {
+      if (porcentajeDescuento >= 70) {
+        puntuacionRiesgo += 50;
+        alertas.add('🚨 DESCUENTO EXTREMO: ${porcentajeDescuento.toStringAsFixed(1)}% (\$${formatter.format(descuento.toInt())})');
+      } else if (porcentajeDescuento >= 50) {
+        puntuacionRiesgo += 40;
+        alertas.add('🔴 DESCUENTO CRÍTICO: ${porcentajeDescuento.toStringAsFixed(1)}% (\$${formatter.format(descuento.toInt())})');
+      } else if (porcentajeDescuento >= 30) {
+        puntuacionRiesgo += 25;
+        alertas.add('🟡 Descuento significativo: ${porcentajeDescuento.toStringAsFixed(1)}% (\$${formatter.format(descuento.toInt())})');
+      } else if (porcentajeDescuento >= 15) {
+        puntuacionRiesgo += 12;
+        alertas.add('Descuento moderado: ${porcentajeDescuento.toStringAsFixed(1)}%');
+      } else if (porcentajeDescuento > 0) {
+        puntuacionRiesgo += 5;
+      }
+    }
+    
+    // 2. FACTOR MONTO ABSOLUTO DEL DESCUENTO (máximo 20 puntos)
+    if (descuento >= 100000) {
+      puntuacionRiesgo += 20;
+      alertas.add('💰 Descuento de alto valor: \$${formatter.format(descuento.toInt())}');
+    } else if (descuento >= 50000) {
+      puntuacionRiesgo += 12;
+      alertas.add('Descuento de valor significativo: \$${formatter.format(descuento.toInt())}');
+    } else if (descuento >= 20000) {
+      puntuacionRiesgo += 6;
+    }
+    
+    // 3. FACTOR CAMBIO DE PRECIO (solo para ediciones)
+      if (datosAntiguos != null) {
+        final precioAnteriorRaw = datosAntiguos['precio_promocional'];
+        final precioAnterior = precioAnteriorRaw is num ? precioAnteriorRaw.toDouble() : 0.0;
+        if ((precioPromocional - precioAnterior).abs() > 0.01) {
+          final cambioPrecio = precioPromocional - precioAnterior;
+          final porcentajeCambio = precioAnterior > 0 ? (cambioPrecio.abs() / precioAnterior * 100) : 0.0;
+          
+          cambios.add('Precio promocional: \$${formatter.format(precioAnterior.toInt())} → \$${formatter.format(precioPromocional.toInt())}');
+          
+          if (porcentajeCambio >= 50) {
+            puntuacionRiesgo += 20;
+            alertas.add('🔄 Cambio extremo de precio promocional: ${porcentajeCambio.toStringAsFixed(1)}%');
+          } else if (porcentajeCambio >= 30) {
+            puntuacionRiesgo += 12;
+            alertas.add('Cambio significativo de precio promocional: ${porcentajeCambio.toStringAsFixed(1)}%');
+          } else if (porcentajeCambio >= 15) {
+            puntuacionRiesgo += 6;
+          }
+        }
+      }
+    
+    // 4. FACTOR CONTEXTO TEMPORAL (máximo 10 puntos)
+    try {
+      final fecha = DateTime.parse(datosPromocion['fecha'].toString());
+      final ahora = DateTime.now();
+      final diasHastaFecha = fecha.difference(ahora).inDays;
+      
+      if (diasHastaFecha <= 0) {
+        puntuacionRiesgo += 10;
+        alertas.add('⚠️ Promoción para fecha pasada o hoy');
+      } else if (diasHastaFecha <= 1) {
+        puntuacionRiesgo += 5;
+        alertas.add('Promoción para mañana');
+      }
+      
+      // Verificar si es fin de semana
+      if (_esFechaFinDeSemana(fecha)) {
+        if (porcentajeDescuento >= 30) {
+          puntuacionRiesgo += 8;
+          alertas.add('🎪 Descuento alto en fin de semana');
+        }
+      }
+    } catch (e) {
+      // Ignorar errores de parsing
+    }
+    
+    // Calcular nivel de riesgo
+    String nivelRiesgo;
+    if (puntuacionRiesgo >= UmbralesRiesgo.critico) {
+      nivelRiesgo = 'critico';
+    } else if (puntuacionRiesgo >= UmbralesRiesgo.alto) {
+      nivelRiesgo = 'alto';
+    } else if (puntuacionRiesgo >= UmbralesRiesgo.medio) {
+      nivelRiesgo = 'medio';
+    } else {
+      nivelRiesgo = 'bajo';
+    }
+    
+    final resultado = <String, dynamic>{
+      'nivel_riesgo': nivelRiesgo,
+      'puntuacion_riesgo': puntuacionRiesgo,
+      'alertas': alertas,
+      'cambios': cambios,
+      'descuento_aplicado': descuento,
+      'porcentaje_descuento': porcentajeDescuento,
+      'precio_promocional': precioPromocional,
+      'precio_normal': precioNormalDouble,
+    };
+    
+    if (datosAntiguos != null) {
+      final precioAnteriorRaw = datosAntiguos['precio_promocional'];
+      final precioAnterior = precioAnteriorRaw is num ? precioAnteriorRaw.toDouble() : 0.0;
+      resultado['cambio_precio'] = precioPromocional - precioAnterior;
+      resultado['porcentaje_cambio_precio'] = precioAnterior > 0
+          ? ((precioPromocional - precioAnterior).abs() / precioAnterior * 100)
+          : 0.0;
+    }
+    
+    return resultado;
+  }
+
+  /// Generar descripción para creación de promoción
+  static String _generarDescripcionCreacionPromocion(
+    Map<String, dynamic> datosPromocion,
+    Map<String, dynamic> analisis,
+  ) {
+    final cancha = datosPromocion['cancha_nombre'] ?? 'Cancha';
+    final horario = datosPromocion['horario'] ?? 'Horario';
+    final fecha = datosPromocion['fecha'] ?? 'Fecha';
+    final nivelRiesgo = analisis['nivel_riesgo'] as String;
+    final formatter = NumberFormat('#,##0', 'es_CO');
+    final precioPromo = analisis['precio_promocional'] as double;
+    final porcentajeDesc = analisis['porcentaje_descuento'] as double;
+    
+    String prefijo = '';
+    if (nivelRiesgo == 'critico') {
+      prefijo = '🚨 ';
+    } else if (nivelRiesgo == 'alto') {
+      prefijo = '🔴 ';
+    } else if (nivelRiesgo == 'medio') {
+      prefijo = '🟡 ';
+    }
+    
+    String descripcion = '${prefijo}Promoción creada: $cancha - $horario ($fecha)';
+    descripcion += ' - Precio: \$${formatter.format(precioPromo.toInt())}';
+    
+    if (porcentajeDesc > 0) {
+      descripcion += ' (${porcentajeDesc.toStringAsFixed(1)}% descuento)';
+    }
+    
+    final alertas = analisis['alertas'] as List<String>;
+    if (alertas.isNotEmpty) {
+      descripcion += ' [${alertas.first}]';
+    }
+    
+    return descripcion;
+  }
+
+  /// Generar descripción para edición de promoción
+  static String _generarDescripcionEdicionPromocion(
+    Map<String, dynamic> datosAntiguos,
+    Map<String, dynamic> datosNuevos,
+    Map<String, dynamic> analisis,
+  ) {
+    final cancha = datosNuevos['cancha_nombre'] ?? datosAntiguos['cancha_nombre'] ?? 'Cancha';
+    final horario = datosNuevos['horario'] ?? datosAntiguos['horario'] ?? 'Horario';
+    final nivelRiesgo = analisis['nivel_riesgo'] as String;
+    final formatter = NumberFormat('#,##0', 'es_CO');
+    final precioAnterior = (datosAntiguos['precio_promocional'] as num?)?.toDouble() ?? 0.0;
+    final precioNuevo = analisis['precio_promocional'] as double;
+    final porcentajeDesc = analisis['porcentaje_descuento'] as double;
+    
+    String prefijo = '';
+    if (nivelRiesgo == 'critico') {
+      prefijo = '🚨 ';
+    } else if (nivelRiesgo == 'alto') {
+      prefijo = '🔴 ';
+    } else if (nivelRiesgo == 'medio') {
+      prefijo = '🟡 ';
+    }
+    
+    String descripcion = '${prefijo}Promoción editada: $cancha - $horario';
+    descripcion += ' - Precio: \$${formatter.format(precioAnterior.toInt())} → \$${formatter.format(precioNuevo.toInt())}';
+    
+    if (porcentajeDesc > 0) {
+      descripcion += ' (${porcentajeDesc.toStringAsFixed(1)}% descuento)';
+    }
+    
+    final cambios = analisis['cambios'] as List<String>;
+    if (cambios.isNotEmpty) {
+      descripcion += ' | ${cambios.first}';
+    }
+    
+    final alertas = analisis['alertas'] as List<String>;
+    if (alertas.isNotEmpty) {
+      descripcion += ' [${alertas.first}]';
+    }
+    
+    return descripcion;
+  }
+
+  /// Generar descripción para eliminación de promoción
+  static String _generarDescripcionEliminacionPromocion(Map<String, dynamic> datosPromocion) {
+    final cancha = datosPromocion['cancha_nombre'] ?? 'Cancha';
+    final horario = datosPromocion['horario'] ?? 'Horario';
+    final fecha = datosPromocion['fecha'] ?? 'Fecha';
+    final formatter = NumberFormat('#,##0', 'es_CO');
+    final precioPromo = (datosPromocion['precio_promocional'] as num?)?.toDouble() ?? 0.0;
+    
+    return '🟡 Promoción eliminada: $cancha - $horario ($fecha) - Precio: \$${formatter.format(precioPromo.toInt())}';
   }
 }

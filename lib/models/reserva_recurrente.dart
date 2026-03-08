@@ -10,7 +10,6 @@ class ReservaRecurrente {
   final String clienteId;
   final String clienteNombre;
   final String clienteTelefono;
-  final String? clienteEmail;
   final String canchaId;
   final String sede;
   final String horario; // Formato "8:00 PM"
@@ -25,6 +24,7 @@ class ReservaRecurrente {
   final DateTime fechaCreacion;
   final DateTime fechaActualizacion;
   final String? notas;
+  final String? lugarId; // ✅ ID del lugar para filtrado
   
   // ✅ NUEVAS PROPIEDADES PARA PRECIO PERSONALIZADO
   final bool precioPersonalizado;
@@ -36,7 +36,6 @@ class ReservaRecurrente {
     required this.clienteId,
     required this.clienteNombre,
     required this.clienteTelefono,
-    this.clienteEmail,
     required this.canchaId,
     required this.sede,
     required this.horario,
@@ -51,6 +50,7 @@ class ReservaRecurrente {
     required this.fechaCreacion,
     required this.fechaActualizacion,
     this.notas,
+    this.lugarId, // ✅ Agregar lugarId
     // ✅ NUEVOS PARÁMETROS
     this.precioPersonalizado = false,
     this.precioOriginal,
@@ -122,7 +122,6 @@ class ReservaRecurrente {
       clienteId: data['clienteId'] ?? '',
       clienteNombre: data['clienteNombre'] ?? '',
       clienteTelefono: data['clienteTelefono'] ?? '',
-      clienteEmail: data['clienteEmail'],
       canchaId: data['canchaId'] ?? '',
       sede: data['sede'] ?? '',
       horario: data['horario'] ?? '',
@@ -143,6 +142,7 @@ class ReservaRecurrente {
       fechaCreacion: (data['fechaCreacion'] as Timestamp).toDate(),
       fechaActualizacion: (data['fechaActualizacion'] as Timestamp).toDate(),
       notas: data['notas'],
+      lugarId: data['lugarId'] as String?, // ✅ Agregar lugarId
       // ✅ NUEVOS CAMPOS
       precioPersonalizado: data['precioPersonalizado'] as bool? ?? false,
       precioOriginal: (data['precioOriginal'] as num?)?.toDouble(),
@@ -156,7 +156,6 @@ class ReservaRecurrente {
       'clienteId': clienteId,
       'clienteNombre': clienteNombre,
       'clienteTelefono': clienteTelefono,
-      'clienteEmail': clienteEmail,
       'canchaId': canchaId,
       'sede': sede,
       'horario': horario,
@@ -171,6 +170,7 @@ class ReservaRecurrente {
       'fechaCreacion': Timestamp.fromDate(fechaCreacion),
       'fechaActualizacion': Timestamp.fromDate(fechaActualizacion),
       'notas': notas,
+      'lugarId': lugarId, // ✅ Agregar lugarId
       // ✅ NUEVOS CAMPOS
       'precioPersonalizado': precioPersonalizado,
     };
@@ -193,7 +193,6 @@ class ReservaRecurrente {
     String? clienteId,
     String? clienteNombre,
     String? clienteTelefono,
-    String? clienteEmail,
     String? canchaId,
     String? sede,
     String? horario,
@@ -208,6 +207,7 @@ class ReservaRecurrente {
     DateTime? fechaCreacion,
     DateTime? fechaActualizacion,
     String? notas,
+    String? lugarId, // ✅ Agregar lugarId
     // ✅ NUEVOS PARÁMETROS
     bool? precioPersonalizado,
     double? precioOriginal,
@@ -218,7 +218,6 @@ class ReservaRecurrente {
       clienteId: clienteId ?? this.clienteId,
       clienteNombre: clienteNombre ?? this.clienteNombre,
       clienteTelefono: clienteTelefono ?? this.clienteTelefono,
-      clienteEmail: clienteEmail ?? this.clienteEmail,
       canchaId: canchaId ?? this.canchaId,
       sede: sede ?? this.sede,
       horario: horario ?? this.horario,
@@ -233,6 +232,7 @@ class ReservaRecurrente {
       fechaCreacion: fechaCreacion ?? this.fechaCreacion,
       fechaActualizacion: fechaActualizacion ?? this.fechaActualizacion,
       notas: notas ?? this.notas,
+      lugarId: lugarId ?? this.lugarId, // ✅ Agregar lugarId
       // ✅ NUEVOS CAMPOS
       precioPersonalizado: precioPersonalizado ?? this.precioPersonalizado,
       precioOriginal: precioOriginal ?? this.precioOriginal,

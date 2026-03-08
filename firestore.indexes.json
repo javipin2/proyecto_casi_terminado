@@ -1,0 +1,23 @@
+{
+  "indexes": [
+    {"collectionGroup":"reservas","queryScope":"COLLECTION","fields":[{"fieldPath":"confirmada","order":"ASCENDING"},{"fieldPath":"fecha","order":"ASCENDING"},{"fieldPath":"horario","order":"ASCENDING"}]},
+    {"collectionGroup":"reservas","queryScope":"COLLECTION","fields":[{"fieldPath":"confirmada","order":"ASCENDING"},{"fieldPath":"fecha","order":"ASCENDING"},{"fieldPath":"sede","order":"ASCENDING"},{"fieldPath":"horario","order":"ASCENDING"}]},
+    {"collectionGroup":"reservas","queryScope":"COLLECTION","fields":[{"fieldPath":"confirmada","order":"ASCENDING"},{"fieldPath":"fecha","order":"ASCENDING"},{"fieldPath":"sede","order":"ASCENDING"},{"fieldPath":"cancha_id","order":"ASCENDING"},{"fieldPath":"horario","order":"ASCENDING"}]},
+    {"collectionGroup":"reservas","queryScope":"COLLECTION","fields":[{"fieldPath":"confirmada","order":"ASCENDING"},{"fieldPath":"fecha","order":"ASCENDING"},{"fieldPath":"cancha_id","order":"ASCENDING"},{"fieldPath":"horario","order":"ASCENDING"}]},
+    {"collectionGroup":"reservas","queryScope":"COLLECTION","fields":[{"fieldPath":"confirmada","order":"ASCENDING"},{"fieldPath":"fecha","order":"ASCENDING"},{"fieldPath":"sede","order":"ASCENDING"},{"fieldPath":"cancha_id","order":"ASCENDING"}]},
+    {"collectionGroup":"reservas","queryScope":"COLLECTION","fields":[{"fieldPath":"confirmada","order":"ASCENDING"},{"fieldPath":"fecha","order":"ASCENDING"}]},
+    {"collectionGroup":"reservas","queryScope":"COLLECTION","fields":[{"fieldPath":"confirmada","order":"ASCENDING"},{"fieldPath":"lugarId","order":"ASCENDING"},{"fieldPath":"fecha","order":"ASCENDING"}]},
+    {"collectionGroup":"reservas","queryScope":"COLLECTION","fields":[{"fieldPath":"fecha","order":"ASCENDING"},{"fieldPath":"cancha_id","order":"ASCENDING"},{"fieldPath":"horario","order":"ASCENDING"}]},
+    {"collectionGroup":"reservas","queryScope":"COLLECTION","fields":[{"fieldPath":"fecha","order":"ASCENDING"},{"fieldPath":"sede","order":"ASCENDING"},{"fieldPath":"cancha_id","order":"ASCENDING"}]},
+    {"collectionGroup":"reservas_temporales","queryScope":"COLLECTION","fields":[{"fieldPath":"reserva_key","order":"ASCENDING"},{"fieldPath":"expira_en","order":"ASCENDING"}]},
+    {"collectionGroup":"reservas_pendientes","queryScope":"COLLECTION","fields":[{"fieldPath":"estado","order":"ASCENDING"},{"fieldPath":"expira_en","order":"ASCENDING"}]},
+    {"collectionGroup":"sede","queryScope":"COLLECTION","fields":[{"fieldPath":"activa","order":"ASCENDING"},{"fieldPath":"nombre","order":"ASCENDING"}]},
+    {"collectionGroup":"auditoria","queryScope":"COLLECTION","fields":[{"fieldPath":"nivel_riesgo","order":"ASCENDING"},{"fieldPath":"timestamp","order":"DESCENDING"}]},
+    {"collectionGroup":"promociones","queryScope":"COLLECTION","fields":[{"fieldPath":"lugarId","order":"ASCENDING"},{"fieldPath":"activo","order":"ASCENDING"},{"fieldPath":"fecha","order":"ASCENDING"}]},
+    {"collectionGroup":"promociones","queryScope":"COLLECTION","fields":[{"fieldPath":"lugarId","order":"ASCENDING"},{"fieldPath":"fecha","order":"ASCENDING"},{"fieldPath":"activo","order":"ASCENDING"}]},
+    {"collectionGroup":"promociones","queryScope":"COLLECTION","fields":[{"fieldPath":"lugarId","order":"ASCENDING"},{"fieldPath":"cancha_id","order":"ASCENDING"},{"fieldPath":"fecha","order":"ASCENDING"},{"fieldPath":"activo","order":"ASCENDING"}]},
+    {"collectionGroup":"reservas","queryScope":"COLLECTION","fields":[{"fieldPath":"lugarId","order":"ASCENDING"},{"fieldPath":"fecha","order":"ASCENDING"},{"fieldPath":"cancha_id","order":"ASCENDING"}]},
+    {"collectionGroup":"fcm_tokens","queryScope":"COLLECTION","fields":[{"fieldPath":"lugarId","order":"ASCENDING"},{"fieldPath":"rol","order":"ASCENDING"}]}
+  ],
+  "fieldOverrides": []
+}

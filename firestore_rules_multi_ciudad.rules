@@ -1,0 +1,83 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Reglas para ciudades
+    match /ciudades/{ciudadId} {
+      allow read: if true;
+      allow write: if request.auth != null && 
+        get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol == 'programador';
+    }
+    
+    // Reglas para lugares
+    match /lugares/{lugarId} {
+      allow read: if true;
+      allow write: if request.auth != null && 
+        get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol == 'programador';
+    }
+    
+    // Reglas para usuarios
+    match /usuarios/{usuarioId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && 
+        get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol in ['programador', 'superadmin'];
+    }
+    
+    // Reglas para sedes (modificadas para incluir lugarId)
+    match /sedes/{sedeId} {
+      allow read: if true;
+      allow write: if request.auth != null && 
+        (get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol in ['programador', 'superadmin'] ||
+         (get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol in ['admin', 'encargado'] &&
+          resource.data.lugarId == get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.lugarId));
+    }
+    
+    // Reglas para canchas (sin cambios)
+    match /canchas/{canchaId} {
+      allow read: if true;
+      allow write: if request.auth != null && 
+        get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol in ['admin', 'encargado', 'superadmin', 'programador'];
+    }
+    
+    // Reglas para horarios (sin cambios)
+    match /horarios/{horarioId} {
+      allow read: if true;
+      allow write: if request.auth != null && 
+        get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol in ['admin', 'encargado', 'superadmin', 'programador'];
+    }
+    
+    // Reglas para reservas (sin cambios)
+    match /reservas/{reservaId} {
+      allow read: if true;
+      allow write: if request.auth != null && 
+        get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol in ['admin', 'encargado', 'superadmin', 'programador'];
+    }
+    
+    // Reglas para reservas temporales (sin cambios)
+    match /reservas_temporales/{reservaId} {
+      allow read: if true;
+      allow write: if true;
+    }
+    
+    // Reglas para reservas recurrentes (sin cambios)
+    match /reservas_recurrentes/{reservaId} {
+      allow read: if true;
+      allow write: if request.auth != null && 
+        get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol in ['admin', 'encargado', 'superadmin', 'programador'];
+    }
+    
+    // Reglas para audit_logs (sin cambios)
+    match /audit_logs/{logId} {
+      allow read: if request.auth != null && 
+        get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol in ['admin', 'encargado', 'superadmin', 'programador'];
+      allow write: if request.auth != null && 
+        get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol in ['admin', 'encargado', 'superadmin', 'programador'];
+    }
+    
+    // Reglas para app_version (sin cambios)
+    match /app_version/{versionId} {
+      allow read: if true;
+      allow write: if request.auth != null && 
+        get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol in ['superadmin', 'programador'];
+    }
+  }
+}

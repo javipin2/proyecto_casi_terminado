@@ -10,6 +10,7 @@ class Cancha {
   final String ubicacion;
   final double precio;
   final String sedeId;
+  final String? lugarId; // ✅ ID del lugar para filtrado
   final Map<String, Map<String, Map<String, dynamic>>> preciosPorHorario;
   final bool disponible;
   final String? motivoNoDisponible;
@@ -23,6 +24,7 @@ class Cancha {
     required this.ubicacion,
     required this.precio,
     required this.sedeId,
+    this.lugarId,
     this.preciosPorHorario = const {},
     this.disponible = true,
     this.motivoNoDisponible,
@@ -64,6 +66,7 @@ class Cancha {
       ubicacion: data['ubicacion'] as String? ?? '',
       precio: (data['precio'] is num) ? data['precio'].toDouble() : 0.0,
       sedeId: data['sedeId'] as String? ?? '',
+      lugarId: data['lugarId'] as String?, // ✅ Agregar lugarId
       preciosPorHorario: preciosPorHorario,
       disponible: data['disponible'] as bool? ?? true,
       motivoNoDisponible: data['motivoNoDisponible'] as String?,
@@ -85,6 +88,7 @@ class Cancha {
         'ubicacion': ubicacion,
         'precio': precio,
         'sedeId': sedeId,
+        'lugarId': lugarId,
         'preciosPorHorario': preciosPorHorario,
         'disponible': disponible,
         'motivoNoDisponible': motivoNoDisponible,
@@ -105,6 +109,7 @@ class Cancha {
     if (ubicacion != currentCancha.ubicacion) updates['ubicacion'] = ubicacion;
     if (precio != currentCancha.precio) updates['precio'] = precio;
     if (sedeId != currentCancha.sedeId) updates['sedeId'] = sedeId;
+    if (lugarId != currentCancha.lugarId) updates['lugarId'] = lugarId; // ✅ Agregar lugarId
     if (disponible != currentCancha.disponible) updates['disponible'] = disponible;
     if (motivoNoDisponible != currentCancha.motivoNoDisponible) {
       updates['motivoNoDisponible'] = motivoNoDisponible;
@@ -125,6 +130,7 @@ class Cancha {
         ubicacion != other.ubicacion ||
         precio != other.precio ||
         sedeId != other.sedeId ||
+        lugarId != other.lugarId || // ✅ Agregar lugarId
         disponible != other.disponible ||
         motivoNoDisponible != other.motivoNoDisponible) {
       return true;

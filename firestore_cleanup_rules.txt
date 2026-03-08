@@ -1,0 +1,15 @@
+# REGLAS SIMPLIFICADAS PARA LIMPIEZA AUTOMÁTICA
+# Agregar estas reglas al final del archivo firestore.rules
+
+# Reglas específicas para limpieza automática
+match /audit_logs/{document} {
+  // Permitir eliminación para usuarios autenticados con rol de staff
+  allow delete: if request.auth != null && isStaff();
+}
+
+# Colección para logs de limpieza
+match /cleanup_logs/{document} {
+  allow read: if isStaff();
+  allow create: if true; // Permitir creación automática
+  allow update, delete: if tienePermisosCompletos();
+}

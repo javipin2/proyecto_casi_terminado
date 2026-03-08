@@ -1,8 +1,10 @@
 // agregar_reserva_screen.dart
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:reserva_canchas/services/plan_feature_service.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'package:reserva_canchas/utils/reserva_audit_utils.dart';
@@ -13,7 +15,7 @@ import '../../../models/reserva.dart';
 import '../../../models/cliente.dart';
 import '../../../models/reserva_recurrente.dart';
 import '../../../providers/reserva_recurrente_provider.dart';
-import '../../../providers/peticion_provider.dart';
+import '../../../services/lugar_helper.dart';
 
 
 class AgregarReservaScreen extends StatefulWidget {
@@ -39,7 +41,6 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
   final _formKey = GlobalKey<FormState>();
   late TextEditingController _nombreController;
   late TextEditingController _telefonoController;
-  late TextEditingController _emailController;
   late TextEditingController _abonoController;
   late TextEditingController _precioTotalController;
   late TextEditingController _notasController;
@@ -54,9 +55,13 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
   DateTime? _fechaFinRecurrencia;
   List<Map<String, dynamic>> _conflictosDetectados = [];
   bool _verificandoConflictos = false; // Nueva variable para loading state
-  bool _controlTotalActivado = false;
-  bool _esSuperAdmin = false;
-  bool _esAdmin = false;
+  // bool _esAdmin = false; // Reservado para uso futuro si es necesario
+  
+  // 🚀 Optimizaciones para verificación de conflictos
+  Timer? _debounceTimer;
+  String? _cachedLugarId; // Cache del lugarId para evitar consultas repetidas
+  Map<String, List<Map<String, dynamic>>> _cacheConflictos = {}; // Cache de conflictos por combinación de días
+  int _verificacionId = 0; // ID para cancelar verificaciones obsoletas
 
   final List<String> _diasSemana = [
     'lunes',
@@ -79,7 +84,6 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
     super.initState();
     _nombreController = TextEditingController();
     _telefonoController = TextEditingController();
-    _emailController = TextEditingController();
     _abonoController = TextEditingController(text: '0');
     _precioTotalController = TextEditingController();
     _notasController = TextEditingController();
@@ -91,17 +95,15 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _inicializarPrecioTotal();
-      _cargarEstadoControlTotal();
-      _verificarRolUsuario();
       _fadeController.forward();
     });
   }
 
   @override
   void dispose() {
+    _debounceTimer?.cancel(); // Cancelar timer pendiente
     _nombreController.dispose();
     _telefonoController.dispose();
-    _emailController.dispose();
     _abonoController.dispose();
     _precioTotalController.dispose();
     _notasController.dispose();
@@ -133,6 +135,17 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
     }
   }
 
+  /// 🚀 Versión optimizada con debounce, cache y paralelización
+  void _verificarConflictosReservasDebounced() {
+    // Cancelar timer anterior si existe
+    _debounceTimer?.cancel();
+    
+    // Crear nuevo timer con debounce de 500ms
+    _debounceTimer = Timer(const Duration(milliseconds: 500), () {
+      _verificarConflictosReservas();
+    });
+  }
+
   Future<void> _verificarConflictosReservas() async {
     if (!_esReservaRecurrente || widget.horarios.isEmpty || _diasSeleccionados.isEmpty) {
       setState(() {
@@ -142,16 +155,47 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
       return;
     }
 
+    // 🚀 Generar clave de cache basada en días seleccionados y fecha
+    final cacheKey = '${_diasSeleccionados.join(",")}_${widget.fecha.toIso8601String()}_${widget.cancha.id}';
+    
+    // 🚀 Verificar cache primero
+    if (_cacheConflictos.containsKey(cacheKey)) {
+      setState(() {
+        _conflictosDetectados = _cacheConflictos[cacheKey]!;
+        _verificandoConflictos = false;
+      });
+      debugPrint('✅ Conflictos obtenidos del cache');
+      return;
+    }
+
+    // 🚀 Incrementar ID de verificación para cancelar verificaciones obsoletas
+    final currentVerificacionId = ++_verificacionId;
+
     setState(() {
       _verificandoConflictos = true;
     });
 
     try {
       final horario = widget.horarios.first;
-      final conflictos = <Map<String, dynamic>>[];
       
-      // Optimización: Crear una sola consulta compuesta con múltiples fechas
+      // 🚀 Obtener lugarId una sola vez (con cache)
+      if (_cachedLugarId == null) {
+        _cachedLugarId = await LugarHelper.getLugarId();
+      }
+      
+      final lugarId = _cachedLugarId;
+      if (lugarId == null) {
+        debugPrint('⚠️ AgregarReservaScreen: No se pudo obtener lugarId');
+        setState(() {
+          _conflictosDetectados = [];
+          _verificandoConflictos = false;
+        });
+        return;
+      }
+
+      // 🚀 Pre-calcular todas las fechas a verificar
       final fechasAVerificar = <String>[];
+      final fechaInicioMap = <String, DateTime>{}; // Map para evitar recalcular
       
       for (String dia in _diasSeleccionados) {
         DateTime fechaActual = widget.fecha;
@@ -160,6 +204,8 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
         while (DateFormat('EEEE', 'es').format(fechaActual).toLowerCase() != dia) {
           fechaActual = fechaActual.add(const Duration(days: 1));
         }
+        
+        fechaInicioMap[dia] = fechaActual;
 
         // Agregar las próximas 8 ocurrencias
         for (int i = 0; i < 8; i++) {
@@ -168,48 +214,129 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
         }
       }
 
-      // OPTIMIZACIÓN: Una sola consulta con whereIn para múltiples fechas
+      // 🚀 OPTIMIZACIÓN: Paralelizar consultas en lugar de secuenciales
       if (fechasAVerificar.isNotEmpty) {
-        // Firebase permite máximo 10 elementos en whereIn, así que dividimos si es necesario
-        final batchSize = 10;
+        final batchSize = 10; // Firebase permite máximo 10 elementos en whereIn
+        final batches = <List<String>>[];
+        
+        // Dividir fechas en batches
         for (int i = 0; i < fechasAVerificar.length; i += batchSize) {
-          final batch = fechasAVerificar.skip(i).take(batchSize).toList();
-          
-          final querySnapshot = await FirebaseFirestore.instance
-              .collection('reservas')
-              .where('fecha', whereIn: batch)
-              .where('cancha_id', isEqualTo: widget.cancha.id)
-              .where('horario', isEqualTo: horario.horaFormateada)
-              .get();
+          batches.add(fechasAVerificar.skip(i).take(batchSize).toList());
+        }
 
-          for (final doc in querySnapshot.docs) {
-            final data = doc.data();
-            final fechaStr = data['fecha'] as String;
-            final fecha = DateTime.parse(fechaStr);
+        // 🚀 Ejecutar todas las consultas en paralelo
+        final futures = batches.map((batch) async {
+          // Verificar si esta verificación sigue siendo válida
+          if (currentVerificacionId != _verificacionId) {
+            return <Map<String, dynamic>>[];
+          }
+
+          try {
+            final querySnapshot = await FirebaseFirestore.instance
+                .collection('reservas')
+                .where('fecha', whereIn: batch)
+                .where('cancha_id', isEqualTo: widget.cancha.id)
+                .where('horario', isEqualTo: horario.horaFormateada)
+                .where('lugarId', isEqualTo: lugarId)
+                .get();
+
+            final conflictosBatch = <Map<String, dynamic>>[];
             
-            conflictos.add({
-              'fecha': fecha,
-              'fechaStr': DateFormat('dd/MM/yyyy').format(fecha),
-              'dia': DateFormat('EEEE', 'es').format(fecha).toLowerCase(),
-              'horario': horario.horaFormateada,
-              'nombre': data['nombre'] ?? 'Sin nombre',
-              'telefono': data['telefono'] ?? 'Sin teléfono',
-              'precio': data['valor']?.toDouble() ?? 0.0,
-              'reservaId': doc.id,
-            });
+            for (final doc in querySnapshot.docs) {
+              final data = doc.data();
+              
+              // 🚫 FILTRAR RESERVAS CON ESTADO "devolucion" - NO SON CONFLICTOS
+              final estado = data['estado'] as String?;
+              if (estado == 'devolucion') {
+                debugPrint('🚫 Reserva ${doc.id} excluida por tener estado "devolucion"');
+                continue; // Saltar esta reserva - no es un conflicto
+              }
+              
+              // 🚫 TAMBIÉN FILTRAR RESERVAS SIN CAMPO "confirmada" (pueden ser devoluciones antiguas)
+              // Las devoluciones eliminan el campo confirmada, así que si no existe, podría ser devolución
+              // Pero mejor confiar en el campo 'estado' que es más explícito
+              
+              final fechaStr = data['fecha'] as String;
+              final fecha = DateTime.parse(fechaStr);
+              
+              conflictosBatch.add({
+                'fecha': fecha,
+                'fechaStr': DateFormat('dd/MM/yyyy').format(fecha),
+                'dia': DateFormat('EEEE', 'es').format(fecha).toLowerCase(),
+                'horario': horario.horaFormateada,
+                'nombre': data['nombre'] ?? 'Sin nombre',
+                'telefono': data['telefono'] ?? 'Sin teléfono',
+                'precio': data['valor']?.toDouble() ?? 0.0,
+                'reservaId': doc.id,
+              });
+            }
+            
+            return conflictosBatch;
+          } catch (e) {
+            debugPrint('⚠️ Error en batch de consulta: $e');
+            return <Map<String, dynamic>>[];
+          }
+        }).toList();
+
+        // 🚀 Esperar todas las consultas en paralelo
+        final resultados = await Future.wait(futures);
+        
+        // Verificar si esta verificación sigue siendo válida después de las consultas
+        if (currentVerificacionId != _verificacionId) {
+          debugPrint('⏭️ Verificación cancelada (nueva verificación iniciada)');
+          return;
+        }
+
+        // Combinar todos los resultados
+        final conflictos = <Map<String, dynamic>>[];
+        for (final resultado in resultados) {
+          conflictos.addAll(resultado);
+        }
+
+        // 🚀 Eliminar duplicados (por si acaso)
+        final conflictosUnicos = <String, Map<String, dynamic>>{};
+        for (final conflicto in conflictos) {
+          final key = '${conflicto['fechaStr']}_${conflicto['horario']}';
+          conflictosUnicos[key] = conflicto;
+        }
+
+        final conflictosFinales = conflictosUnicos.values.toList();
+        
+        // 🚀 Guardar en cache
+        _cacheConflictos[cacheKey] = conflictosFinales;
+        
+        // 🚀 Limpiar cache antiguo (mantener solo últimas 10 entradas)
+        if (_cacheConflictos.length > 10) {
+          final keysToRemove = _cacheConflictos.keys.take(_cacheConflictos.length - 10).toList();
+          for (final key in keysToRemove) {
+            _cacheConflictos.remove(key);
           }
         }
-      }
 
-      setState(() {
-        _conflictosDetectados = conflictos;
-        _verificandoConflictos = false;
-      });
+        if (mounted && currentVerificacionId == _verificacionId) {
+          setState(() {
+            _conflictosDetectados = conflictosFinales;
+            _verificandoConflictos = false;
+          });
+          
+          debugPrint('✅ Conflictos verificados: ${conflictosFinales.length} encontrados');
+        }
+      } else {
+        if (mounted && currentVerificacionId == _verificacionId) {
+          setState(() {
+            _conflictosDetectados = [];
+            _verificandoConflictos = false;
+          });
+        }
+      }
     } catch (e) {
-      debugPrint('Error al verificar conflictos: $e');
-      setState(() {
-        _verificandoConflictos = false;
-      });
+      debugPrint('❌ Error al verificar conflictos: $e');
+      if (mounted && currentVerificacionId == _verificacionId) {
+        setState(() {
+          _conflictosDetectados = [];
+          _verificandoConflictos = false;
+        });
+      }
     }
   }
 
@@ -224,48 +351,19 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
 
   try {
     if (_esReservaRecurrente) {
-      // Reservas recurrentes
-      if (_precioEditableActivado && !_esSuperAdmin && !_controlTotalActivado) {
-        // Admin normal sin control total: crear petición
-        await _crearPeticionReservaRecurrente(
-          horario: widget.horarios.first,
-          montoTotal: _calcularMontoTotal(),
-          montoPagado: _selectedTipo == TipoAbono.completo
-              ? _calcularMontoTotal()
-              : double.parse(_abonoController.text),
-          precioOriginal: Reserva.calcularMontoTotal(widget.cancha, widget.fecha, widget.horarios.first),
-          descuentoAplicado: Reserva.calcularMontoTotal(widget.cancha, widget.fecha, widget.horarios.first) - _calcularMontoTotal(),
-        );
-      } else {
-        // SuperAdmin, precio normal, o control total activado: crear directamente
-        await _crearReservaRecurrente();
-      }
+      await _crearReservaRecurrente();
     } else {
-      // Reservas normales
-      if (_precioEditableActivado && !_esSuperAdmin && !_controlTotalActivado) {
-        // Admin normal sin control total: crear petición
-        await _crearPeticionReserva();
-      } else {
-        // SuperAdmin, precio normal, o control total activado: crear directamente
-        await _crearReservaNormal();
-      }
+      await _crearReservaNormal();
     }
   } catch (e) {
     if (!mounted) return;
 
     String tipoReserva = _esReservaRecurrente ? ' reserva recurrente' : widget.horarios.length > 1 ? 's reservas' : ' reserva';
     
-    String mensajeError = e.toString();
-    if (mensajeError.contains('control total') && !_controlTotalActivado) {
-      mensajeError = _esReservaRecurrente 
-          ? 'La reserva recurrente con descuento requiere aprobación del superadministrador.'
-          : 'Las reservas con descuento requieren aprobación del superadministrador.';
-    }
-
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          'Error al crear la$tipoReserva: $mensajeError',
+          'Error al crear la$tipoReserva: ${e.toString()}',
           style: GoogleFonts.montserrat(),
         ),
         backgroundColor: Colors.redAccent,
@@ -308,6 +406,12 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
     final precioHora = distribucionPrecios[horario]!;
     final abonoHora = distribucionAbono[horario]!;
 
+    // Obtener lugarId del usuario autenticado
+    final lugarId = await LugarHelper.getLugarId();
+    if (lugarId == null) {
+      throw Exception('No se pudo obtener el lugarId del usuario autenticado');
+    }
+
     final reserva = Reserva(
       id: '',
       cancha: widget.cancha,
@@ -319,8 +423,8 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
       montoPagado: abonoHora,
       nombre: _nombreController.text,
       telefono: _telefonoController.text,
-      email: _emailController.text.isEmpty ? null : _emailController.text,
       confirmada: true,
+      lugarId: lugarId, // ✅ Agregar lugarId
     );
 
     final docRef = FirebaseFirestore.instance.collection('reservas').doc();
@@ -362,7 +466,6 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
       final datosReserva = {
         'nombre': _nombreController.text,
         'telefono': _telefonoController.text,
-        'correo': _emailController.text.isEmpty ? null : _emailController.text,
         'fecha': DateFormat('yyyy-MM-dd').format(widget.fecha),
         'horario': horario.horaFormateada,
         'cancha_nombre': widget.cancha.nombre,
@@ -467,12 +570,17 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
     diasExcluidos.add(fechaConflicto);
   }
 
+  // Obtener lugarId del usuario autenticado
+  final lugarId = await LugarHelper.getLugarId();
+  if (lugarId == null) {
+    throw Exception('No se pudo obtener el lugarId del usuario autenticado');
+  }
+
   final reservaRecurrente = ReservaRecurrente(
     id: '',
     clienteId: _selectedClienteId ?? '',
     clienteNombre: _nombreController.text,
     clienteTelefono: _telefonoController.text,
-    clienteEmail: _emailController.text.isEmpty ? null : _emailController.text,
     canchaId: widget.cancha.id,
     sede: widget.sede,
     horario: horario.horaFormateada,
@@ -490,22 +598,19 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
     precioPersonalizado: precioPersonalizado,
     precioOriginal: precioOriginal,
     descuentoAplicado: descuentoAplicado,
+    lugarId: lugarId, // ✅ Agregar lugarId
   );
 
   final reservaRecurrenteProvider =
       Provider.of<ReservaRecurrenteProvider>(context, listen: false);
   
   // 🔑 DESHABILITAR TEMPORALMENTE CUALQUIER AUDITORÍA AUTOMÁTICA
-  // Crear un flag temporal para evitar auditorías duplicadas
-  final auditoriaTemporal = DateTime.now().millisecondsSinceEpoch.toString();
-  
-  // Agregar marcador temporal para evitar auditorías automáticas
+  // La auditoría se maneja manualmente después de crear la reserva recurrente
   final reservaConMarcador = ReservaRecurrente(
     id: reservaRecurrente.id,
     clienteId: reservaRecurrente.clienteId,
     clienteNombre: reservaRecurrente.clienteNombre,
     clienteTelefono: reservaRecurrente.clienteTelefono,
-    clienteEmail: reservaRecurrente.clienteEmail,
     canchaId: reservaRecurrente.canchaId,
     sede: reservaRecurrente.sede,
     horario: reservaRecurrente.horario,
@@ -523,18 +628,17 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
     precioPersonalizado: reservaRecurrente.precioPersonalizado,
     precioOriginal: reservaRecurrente.precioOriginal,
     descuentoAplicado: reservaRecurrente.descuentoAplicado,
+    lugarId: reservaRecurrente.lugarId, // ✅ Agregar lugarId
     // Agregar marcador para evitar auditoría automática
   );
 
-  final reservaCreadaId = await reservaRecurrenteProvider.crearReservaRecurrente(reservaConMarcador);
-  final reservaRecurrenteId = reservaCreadaId ?? 'id_temporal_${DateTime.now().millisecondsSinceEpoch}';
+  final reservaRecurrenteId = await reservaRecurrenteProvider.crearReservaRecurrente(reservaConMarcador);
 
   // 🔥 REGISTRAR AUDITORÍA MANUAL - SOLO UNA VEZ
   try {
     final datosReservaRecurrente = {
       'nombre': _nombreController.text,
       'telefono': _telefonoController.text,
-      'correo': _emailController.text.isEmpty ? null : _emailController.text,
       'fecha': DateFormat('yyyy-MM-dd').format(widget.fecha),
       'fecha_fin': _fechaFinRecurrencia != null ? DateFormat('yyyy-MM-dd').format(_fechaFinRecurrencia!) : null,
       'horario': horario.horaFormateada,
@@ -586,209 +690,28 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
       : '';
 
   final mensajeConflictos = _conflictosDetectados.isNotEmpty
-      ? ' Se excluyeron ${_conflictosDetectados.length} fecha(s) con reservas existentes.'
+      ? '\n\n⚠️ IMPORTANTE: Se excluyeron automáticamente ${_conflictosDetectados.length} fecha(s) con conflictos. La reserva recurrente se creó solo para los días sin conflictos.'
       : '';
 
   ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(
       content: Text(
-        'Reserva recurrente creada exitosamente. Los horarios se aplicarán automáticamente según la programación.$mensajeDescuento$mensajeConflictos',
+        '✅ Reserva recurrente creada exitosamente. Los horarios se aplicarán automáticamente según la programación.$mensajeDescuento$mensajeConflictos',
         style: GoogleFonts.montserrat(),
       ),
-      backgroundColor: _secondaryColor,
+      backgroundColor: _conflictosDetectados.isNotEmpty 
+          ? Colors.orange.shade600 
+          : _secondaryColor,
       behavior: SnackBarBehavior.floating,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       margin: const EdgeInsets.all(12),
-      duration: const Duration(seconds: 5),
+      duration: Duration(seconds: _conflictosDetectados.isNotEmpty ? 7 : 5),
     ),
   );
 
   await Future.delayed(const Duration(milliseconds: 100));
   if (mounted) {
     Navigator.of(context).pop(true);
-  }
-}
-
-
-  Future<void> _crearPeticionReservaRecurrente({
-  required Horario horario,
-  required double montoTotal,
-  required double montoPagado,
-  required double precioOriginal,
-  required double descuentoAplicado,
-}) async {
-  try {
-    final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-
-    // Crear lista de días excluidos basada en conflictos
-    final List<String> diasExcluidos = [];
-    for (var conflicto in _conflictosDetectados) {
-      final fechaConflicto = DateFormat('yyyy-MM-dd').format(conflicto['fecha']);
-      diasExcluidos.add(fechaConflicto);
-    }
-
-    final valoresAntiguos = <String, dynamic>{};
-
-    final valoresNuevos = <String, dynamic>{
-      'tipo': 'nueva_reserva_recurrente_precio_personalizado',
-      'datos_reserva_recurrente': {
-        'cliente_id': _selectedClienteId ?? '',
-        'cliente_nombre': _nombreController.text,
-        'cliente_telefono': _telefonoController.text,
-        'cliente_email': _emailController.text.isEmpty ? null : _emailController.text,
-        'cancha_id': widget.cancha.id,
-        'cancha_nombre': widget.cancha.nombre,
-        'sede': widget.sede,
-        'horario': horario.horaFormateada,
-        'dias_semana': _diasSeleccionados,
-        'fecha_inicio': DateFormat('yyyy-MM-dd').format(widget.fecha),
-        'fecha_fin': _fechaFinRecurrencia != null ? DateFormat('yyyy-MM-dd').format(_fechaFinRecurrencia!) : null,
-        'dias_excluidos': diasExcluidos,
-        'notas': _notasController.text.isEmpty ? null : _notasController.text,
-        'monto_total': montoTotal,
-        'monto_pagado': montoPagado,
-      },
-      'precio_original': precioOriginal,
-      'precio_aplicado': montoTotal,
-      'descuento_aplicado': descuentoAplicado,
-      'precioPersonalizado': true,
-      'precioOriginal': precioOriginal,
-      'descuentoAplicado': descuentoAplicado,
-      'cantidad_dias_semana': _diasSeleccionados.length,
-    };
-
-    final peticionId = 'nueva_reserva_recurrente_${DateTime.now().millisecondsSinceEpoch}';
-    await peticionProvider.crearPeticion(
-      reservaId: peticionId,
-      valoresAntiguos: valoresAntiguos,
-      valoresNuevos: valoresNuevos,
-    );
-
-    // 🔥 AGREGAR AUDITORÍA AQUÍ - Después de crear la petición
-    try {
-      final datosParaAuditoria = {
-        'nombre': _nombreController.text,
-        'telefono': _telefonoController.text,
-        'correo': _emailController.text.isEmpty ? null : _emailController.text,
-        'fecha': DateFormat('yyyy-MM-dd').format(widget.fecha),
-        'fecha_fin': _fechaFinRecurrencia != null ? DateFormat('yyyy-MM-dd').format(_fechaFinRecurrencia!) : null,
-        'horario': horario.horaFormateada,
-        'cancha_nombre': widget.cancha.nombre,
-        'cancha_id': widget.cancha.id,
-        'sede': widget.sede,
-        'montoTotal': montoTotal,
-        'montoPagado': montoPagado,
-        'estado': montoPagado >= montoTotal ? 'completo' : 'parcial',
-        'dias_semana': _diasSeleccionados,
-        'precio_personalizado': true,
-        'tipo_recurrencia': 'semanal',
-      };
-
-      await ReservaAuditUtils.auditarCreacionReserva(
-        reservaId: peticionId,
-        datosReserva: datosParaAuditoria,
-        tieneDescuento: true,
-        descuentoAplicado: descuentoAplicado,
-        esReservaGrupal: false,
-        cantidadHoras: 1,
-        contextoPrecio: {
-          'precio_original': precioOriginal,
-          'precio_aplicado': montoTotal,
-          'metodo_creacion': 'peticion_reserva_recurrente',
-          'requiere_aprobacion': true,
-          'tipo_peticion': 'nueva_reserva_recurrente_precio_personalizado',
-          'estado_peticion': 'pendiente',
-          'dias_semana': _diasSeleccionados.length,
-          'fecha_inicio': DateFormat('yyyy-MM-dd').format(widget.fecha),
-          'fecha_fin': _fechaFinRecurrencia != null ? DateFormat('yyyy-MM-dd').format(_fechaFinRecurrencia!) : null,
-          'conflictos_excluidos': _conflictosDetectados.length,
-          'es_reserva_recurrente': true,
-        },
-      );
-    } catch (e) {
-      debugPrint('⚠️ Error en auditoría de petición de reserva recurrente: $e');
-      // No interrumpir el flujo si la auditoría falla
-    }
-
-    if (!mounted) return;
-
-    final formatter = NumberFormat('#,##0', 'es_CO');
-    
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          '📋 Petición creada exitosamente.\n\n'
-          '• Reserva recurrente con descuento de COP ${formatter.format(descuentoAplicado)}\n'
-          '• Días: ${_diasSeleccionados.map((d) => StringCapitalize(d).capitalize()).join(', ')}\n'
-          '• Esperando aprobación del superadministrador\n',
-          style: GoogleFonts.montserrat(),
-        ),
-        backgroundColor: Colors.orange.shade600,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        margin: const EdgeInsets.all(12),
-        duration: const Duration(seconds: 6),
-      ),
-    );
-
-    await Future.delayed(const Duration(milliseconds: 100));
-    if (mounted) {
-      Navigator.of(context).pop(true);
-    }
-
-  } catch (e) {
-    debugPrint('❌ Error al crear petición de reserva recurrente: $e');
-    throw Exception('Error al crear la petición: $e');
-  }
-}
-
-
-
-  Future<void> _cargarEstadoControlTotal() async {
-    try {
-      final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-      await peticionProvider.cargarConfiguracionControl();
-      
-      if (mounted) {
-        setState(() {
-          _controlTotalActivado = peticionProvider.controlTotalActivado;
-        });
-      }
-    } catch (e) {
-      debugPrint('Error cargando estado control total: $e');
-      // En caso de error, asumir que está desactivado (más seguro)
-      if (mounted) {
-        setState(() {
-          _controlTotalActivado = false;
-        });
-      }
-    }
-  }
-
-
-  Future<void> _verificarRolUsuario() async {
-  try {
-    final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-    
-    final results = await Future.wait([
-      peticionProvider.esSuperAdmin(),
-      peticionProvider.esAdmin(),
-    ]).timeout(const Duration(seconds: 5));
-    
-    if (mounted) {
-      setState(() {
-        _esSuperAdmin = results[0];
-        _esAdmin = results[1];
-      });
-    }
-  } catch (e) {
-    debugPrint('Error verificando rol: $e');
-    if (mounted) {
-      setState(() {
-        _esSuperAdmin = false;
-        _esAdmin = false;
-      });
-    }
   }
 }
 
@@ -898,14 +821,12 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
         _selectedClienteId = cliente.id;
         _nombreController.text = cliente.nombre;
         _telefonoController.text = cliente.telefono;
-        _emailController.text = cliente.correo ?? '';
       });
     } else {
       setState(() {
         _selectedClienteId = null;
         _nombreController.clear();
         _telefonoController.clear();
-        _emailController.clear();
         _abonoController.text = '0';
       });
     }
@@ -971,21 +892,41 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
               ),
               Switch.adaptive(
                 value: _esReservaRecurrente,
-                onChanged: puedeActivarRecurrencia ? (value) {
-                  setState(() {
-                    _esReservaRecurrente = value;
-                    if (value) {
-                      final diaSemanaActual =
-                          DateFormat('EEEE', 'es').format(widget.fecha).toLowerCase();
-                      _diasSeleccionados = [diaSemanaActual];
-                      // Verificar conflictos inmediatamente
-                      _verificarConflictosReservas();
-                    } else {
-                      _diasSeleccionados.clear();
-                      _conflictosDetectados.clear();
-                    }
-                  });
-                } : null,
+                onChanged: puedeActivarRecurrencia
+                    ? (value) async {
+                        // 🔐 Validar plan: reservas recurrentes solo para Plan Premium o Pro
+                        final allowed = await PlanFeatureService.ensureFeatureAvailable(
+                          context,
+                          PlanFeature.reservasRecurrentes,
+                        );
+                        if (!allowed) {
+                          // Asegurar que el switch vuelva a apagado
+                          if (mounted) {
+                            setState(() {
+                              _esReservaRecurrente = false;
+                            });
+                          }
+                          return;
+                        }
+
+                        if (!mounted) return;
+
+                        setState(() {
+                          _esReservaRecurrente = value;
+                          if (value) {
+                            final diaSemanaActual =
+                                DateFormat('EEEE', 'es').format(widget.fecha).toLowerCase();
+                            _diasSeleccionados = [diaSemanaActual];
+                            // 🚀 Verificar conflictos con debounce
+                            _verificarConflictosReservasDebounced();
+                          } else {
+                            _diasSeleccionados.clear();
+                            _conflictosDetectados.clear();
+                            _cacheConflictos.clear(); // Limpiar cache al desactivar recurrencia
+                          }
+                        });
+                      }
+                    : null,
                 activeColor: _secondaryColor,
               ),
             ],
@@ -1071,8 +1012,8 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                       } else {
                         _diasSeleccionados.remove(dia);
                       }
-                      // Verificar conflictos inmediatamente al cambiar días
-                      _verificarConflictosReservas();
+                      // 🚀 Verificar conflictos con debounce al cambiar días
+                      _verificarConflictosReservasDebounced();
                     });
                   },
                   selectedColor: _secondaryColor,
@@ -1115,6 +1056,8 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
               const SizedBox(height: 16),
             ],
             if (_conflictosDetectados.isNotEmpty && !_verificandoConflictos) ...[
+              _buildAvisoExclusionAutomatica(),
+              const SizedBox(height: 12),
               _buildConflictosWidget(),
               const SizedBox(height: 16),
             ],
@@ -1259,40 +1202,28 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
             Container(
   padding: const EdgeInsets.all(8),
   decoration: BoxDecoration(
-    color: _esSuperAdmin || _controlTotalActivado
-        ? Color.fromRGBO(0, 128, 0, 0.1)
-        : Color.fromRGBO(255, 152, 0, 0.1),
+    color: Color.fromRGBO(0, 128, 0, 0.1),
     borderRadius: BorderRadius.circular(6),
     border: Border.all(
-      color: _esSuperAdmin || _controlTotalActivado
-          ? Color.fromRGBO(0, 128, 0, 0.3)
-          : Color.fromRGBO(255, 152, 0, 0.3),
+      color: Color.fromRGBO(0, 128, 0, 0.3),
     ),
   ),
   child: Row(
     children: [
       Icon(
-        _esSuperAdmin || _controlTotalActivado ? Icons.check_circle : Icons.pending_actions,
+        Icons.check_circle,
         size: 16,
-        color: _esSuperAdmin || _controlTotalActivado 
-            ? Colors.green.shade600 
-            : Colors.orange.shade600,
+        color: Colors.green.shade600,
       ),
       const SizedBox(width: 6),
       Expanded(
         child: Text(
-          _esSuperAdmin || _controlTotalActivado
-              ? (_esReservaRecurrente 
-                  ? 'La reserva recurrente se creará inmediatamente'
-                  : 'Los cambios se aplicarán inmediatamente')
-              : (_esReservaRecurrente
-                  ? 'Se creará petición para la reserva recurrente'
-                  : 'Se creará una petición para aprobación'),
+          _esReservaRecurrente
+              ? 'La reserva recurrente se creará inmediatamente'
+              : 'Los cambios se aplicarán inmediatamente',
           style: GoogleFonts.montserrat(
             fontSize: 11,
-            color: _esSuperAdmin || _controlTotalActivado 
-                ? Colors.green.shade700 
-                : Colors.orange.shade700,
+            color: Colors.green.shade700,
             fontWeight: FontWeight.w500,
           ),
         ),
@@ -1303,7 +1234,7 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
 
             
             // Información adicional para reservas recurrentes
-            if (_esReservaRecurrente && !_esSuperAdmin && !_controlTotalActivado) ...[
+            if (_esReservaRecurrente) ...[
   const SizedBox(height: 8),
   Container(
     padding: const EdgeInsets.all(6),
@@ -1324,7 +1255,7 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
         const SizedBox(width: 6),
         Expanded(
           child: Text(
-            'Las reservas recurrentes con descuento requieren aprobación especial',
+            'Las reservas recurrentes con precio personalizado se crearán con el descuento indicado.',
             style: GoogleFonts.montserrat(
               fontSize: 10,
               color: Colors.blue.shade700,
@@ -1517,6 +1448,54 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
     );
   }
 
+  Widget _buildAvisoExclusionAutomatica() {
+    // Obtener días únicos con conflictos
+    final diasConConflictos = <String>{};
+    for (final conflicto in _conflictosDetectados) {
+      diasConConflictos.add(conflicto['dia'] as String);
+    }
+    
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Color.fromRGBO(66, 133, 244, 0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Color.fromRGBO(66, 133, 244, 0.3)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline, color: _secondaryColor, size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '⚠️ Exclusión automática de conflictos',
+                  style: GoogleFonts.montserrat(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: _secondaryColor,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Los días con conflictos (${_conflictosDetectados.length} fecha${_conflictosDetectados.length > 1 ? 's' : ''}) se excluirán automáticamente de la reserva recurrente. La reserva se creará solo para los días sin conflictos.',
+                  style: GoogleFonts.montserrat(
+                    fontSize: 12,
+                    color: _primaryColor,
+                    height: 1.4,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildConflictosWidget() {
     return Container(
       padding: const EdgeInsets.all(12),
@@ -1545,9 +1524,20 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
           const SizedBox(height: 8),
           ..._conflictosDetectados.map((conflicto) => Padding(
                 padding: const EdgeInsets.symmetric(vertical: 4),
-                child: Text(
-                  '${conflicto['fechaStr']} - ${conflicto['horario']} - ${conflicto['nombre']}',
-                  style: GoogleFonts.montserrat(fontSize: 14),
+                child: Row(
+                  children: [
+                    Icon(Icons.block, color: Colors.red.shade300, size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${conflicto['fechaStr']} - ${conflicto['horario']} - ${conflicto['nombre']}',
+                        style: GoogleFonts.montserrat(
+                          fontSize: 13,
+                          color: Colors.red.shade700,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               )),
         ],
@@ -1689,15 +1679,9 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
               ),
             ),
             const SizedBox(height: 12),
-            StreamBuilder<QuerySnapshot>(
-              stream: FirebaseFirestore.instance.collection('clientes').snapshots(),
+            FutureBuilder<String?>(
+              future: LugarHelper.getLugarId(),
               builder: (context, snapshot) {
-                if (snapshot.hasError) {
-                  return Text(
-                    'Error al cargar clientes: ${snapshot.error}',
-                    style: GoogleFonts.montserrat(color: Colors.redAccent),
-                  );
-                }
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return Center(
                     child: CircularProgressIndicator(
@@ -1705,15 +1689,44 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                     ),
                   );
                 }
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                if (snapshot.hasError) {
+                  return Text(
+                    'Error al cargar clientes: ${snapshot.error}',
+                    style: GoogleFonts.montserrat(color: Colors.redAccent),
+                  );
+                }
+                final lugarId = snapshot.data;
+                if (lugarId == null) {
+                  return Text('No se pudo obtener lugar del usuario', style: GoogleFonts.montserrat(color: Colors.redAccent));
+                }
+                return StreamBuilder<QuerySnapshot>(
+                  stream: FirebaseFirestore.instance
+                      .collection('clientes')
+                      .where('lugarId', isEqualTo: lugarId)
+                      .snapshots(),
+                  builder: (context, snapCli) {
+                    if (snapCli.hasError) {
+                      return Text(
+                        'Error al cargar clientes: ${snapCli.error}',
+                        style: GoogleFonts.montserrat(color: Colors.redAccent),
+                      );
+                    }
+                    if (snapCli.connectionState == ConnectionState.waiting) {
+                      return Center(
+                        child: CircularProgressIndicator(
+                          valueColor: AlwaysStoppedAnimation<Color>(_secondaryColor),
+                        ),
+                      );
+                    }
+                    if (!snapCli.hasData || snapCli.data!.docs.isEmpty) {
                   return Text(
                     'No hay clientes registrados.',
                     style: GoogleFonts.montserrat(color: _primaryColor),
                   );
                 }
-                final clientes = snapshot.data!.docs
-                    .map((doc) => Cliente.fromFirestore(doc))
-                    .toList();
+                    final clientes = snapCli.data!.docs
+                        .map((doc) => Cliente.fromFirestore(doc))
+                        .toList();
                 return DropdownButtonFormField<String>(
                   decoration: InputDecoration(
                     labelText: 'Seleccionar Cliente',
@@ -1761,12 +1774,14 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                   onChanged: (value) {
                     final selectedCliente = clientes.firstWhere(
                       (cliente) => cliente.id == value,
-                      orElse: () => Cliente(id: '', nombre: '', telefono: '', correo: null),
+                      orElse: () => Cliente(id: '', nombre: '', telefono: ''),
                     );
                     _seleccionarCliente(
                         selectedCliente.id.isEmpty ? null : selectedCliente);
                   },
                   icon: Icon(Icons.keyboard_arrow_down, color: _secondaryColor),
+                );
+                  },
                 );
               },
             ),
@@ -2075,42 +2090,6 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
                   return null;
                 },
               ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _emailController,
-                decoration: InputDecoration(
-                  labelText: 'Correo',
-                  labelStyle: GoogleFonts.montserrat(
-                    color: Color.fromRGBO(
-                        (_primaryColor.red * 255).toInt(),
-                        (_primaryColor.green * 255).toInt(),
-                        (_primaryColor.blue * 255).toInt(),
-                        0.6),
-                  ),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide(color: _disabledColor),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide(color: _disabledColor),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide(color: _secondaryColor),
-                  ),
-                ),
-                style: GoogleFonts.montserrat(color: _primaryColor),
-                keyboardType: TextInputType.emailAddress,
-                validator: (value) {
-                  if (value != null && value.trim().isNotEmpty) {
-                    if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}').hasMatch(value)) {
-                      return 'Ingresa un correo válido';
-                    }
-                  }
-                  return null;
-                },
-              ),
               if (_showAbonoField) ...[
                 const SizedBox(height: 16),
                 TextFormField(
@@ -2212,9 +2191,7 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
       ? null
       : _crearReserva,
   style: ElevatedButton.styleFrom(
-    backgroundColor: _precioEditableActivado && !_esSuperAdmin && !_controlTotalActivado
-        ? Colors.orange.shade600 
-        : _secondaryColor,
+    backgroundColor: _secondaryColor,
     foregroundColor: Colors.white,
     padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
     shape: RoundedRectangleBorder(
@@ -2225,20 +2202,13 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
   child: Row(
     mainAxisSize: MainAxisSize.min,
     children: [
-      if (_precioEditableActivado && !_esSuperAdmin && !_controlTotalActivado)
-        Icon(Icons.pending_actions, size: 18)
-      else if (_precioEditableActivado && (_esSuperAdmin || _controlTotalActivado))
-        Icon(Icons.check_circle, size: 18)
-      else
-        Icon(Icons.add_circle, size: 18),
+      Icon(Icons.add_circle, size: 18),
       const SizedBox(width: 8),
       Flexible(
         child: Text(
           _esReservaRecurrente
               ? 'Crear Reserva Recurrente'
-              : _precioEditableActivado && !_esSuperAdmin && !_controlTotalActivado
-                  ? 'Crear Petición (Precio Personalizado)'
-                  : 'Confirmar Reserva${widget.horarios.length > 1 ? 's' : ''}',
+              : 'Confirmar Reserva${widget.horarios.length > 1 ? 's' : ''}',
           style: GoogleFonts.montserrat(
             fontSize: 16,
             fontWeight: FontWeight.w600,
@@ -2257,160 +2227,7 @@ class AgregarReservaScreenState extends State<AgregarReservaScreen>
     );
   }
 
-  Future<void> _crearPeticionReserva() async {
-  try {
-    final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-    
-    // Calcular precios originales y nuevos para la petición
-    double precioOriginalTotal = 0.0;
-    for (final horario in widget.horarios) {
-      precioOriginalTotal += Reserva.calcularMontoTotal(widget.cancha, widget.fecha, horario);
-    }
-    
-    final precioPersonalizadoTotal = double.tryParse(_precioTotalController.text) ?? precioOriginalTotal;
-    final abonoTotal = _selectedTipo == TipoAbono.completo ? precioPersonalizadoTotal : double.parse(_abonoController.text);
-    
-    // Crear datos de la reserva temporal (no se guarda hasta que se apruebe)
-    final datosReservaTemporal = {
-      'cancha_id': widget.cancha.id,
-      'cancha_nombre': widget.cancha.nombre,
-      'fecha': DateFormat('yyyy-MM-dd').format(widget.fecha),
-      'horarios': widget.horarios.map((h) => h.horaFormateada).toList(),
-      'sede': widget.sede,
-      'cliente_nombre': _nombreController.text,
-      'cliente_telefono': _telefonoController.text,
-      'cliente_email': _emailController.text.isEmpty ? null : _emailController.text,
-      'tipo_abono': _selectedTipo?.toString() ?? 'TipoAbono.parcial',
-      'precio_original_total': precioOriginalTotal,
-      'precio_personalizado_total': precioPersonalizadoTotal,
-      'monto_pagado': abonoTotal,
-      'descuento_aplicado': precioOriginalTotal - precioPersonalizadoTotal,
-      'confirmada': true,
-    };
-
-    // Crear valores para la petición
-    final valoresAntiguos = {
-      'tipo': 'nueva_reserva_precio_personalizado',
-      'precio_original': precioOriginalTotal,
-      'precio_aplicado': precioOriginalTotal,
-      'precio_personalizado': false,
-    };
-
-    final valoresNuevos = {
-      'tipo': 'nueva_reserva_precio_personalizado',
-      'datos_reserva': datosReservaTemporal,
-      'precio_original': precioOriginalTotal,
-      'precio_aplicado': precioPersonalizadoTotal,
-      'precio_personalizado': true,
-      'descuento_aplicado': precioOriginalTotal - precioPersonalizadoTotal,
-      'cantidad_horarios': widget.horarios.length,
-      'prioridad': 'alta', // Prioridad alta por descuentos
-    };
-
-    // Crear la petición usando un ID temporal
-    final peticionId = 'temporal_${DateTime.now().millisecondsSinceEpoch}';
-    await peticionProvider.crearPeticionMejorada(
-      reservaId: peticionId,
-      valoresAntiguos: valoresAntiguos,
-      valoresNuevos: valoresNuevos,
-    );
-
-    // 🔥 AGREGAR AUDITORÍA AQUÍ - Después de crear la petición
-    try {
-      final descuentoAplicado = precioOriginalTotal - precioPersonalizadoTotal;
-      
-      final datosParaAuditoria = {
-        'nombre': _nombreController.text,
-        'telefono': _telefonoController.text,
-        'correo': _emailController.text.isEmpty ? null : _emailController.text,
-        'fecha': DateFormat('yyyy-MM-dd').format(widget.fecha),
-        'horarios': widget.horarios.map((h) => h.horaFormateada).toList(),
-        'cancha_nombre': widget.cancha.nombre,
-        'cancha_id': widget.cancha.id,
-        'sede': widget.sede,
-        'montoTotal': precioPersonalizadoTotal,
-        'montoPagado': abonoTotal,
-        'estado': abonoTotal >= precioPersonalizadoTotal ? 'completo' : 'parcial',
-        'precio_personalizado': true,
-      };
-
-      await ReservaAuditUtils.auditarCreacionReserva(
-        reservaId: peticionId,
-        datosReserva: datosParaAuditoria,
-        tieneDescuento: true,
-        descuentoAplicado: descuentoAplicado,
-        esReservaGrupal: widget.horarios.length > 1,
-        cantidadHoras: widget.horarios.length,
-        contextoPrecio: {
-          'precio_original': precioOriginalTotal,
-          'precio_aplicado': precioPersonalizadoTotal,
-          'metodo_creacion': 'peticion_precio_personalizado',
-          'requiere_aprobacion': true,
-          'tipo_peticion': 'nueva_reserva_precio_personalizado',
-          'estado_peticion': 'pendiente',
-        },
-      );
-    } catch (e) {
-      debugPrint('⚠️ Error en auditoría de petición: $e');
-      // No interrumpir el flujo si la auditoría falla
-    }
-
-    if (!mounted) return;
-
-    // Mostrar mensaje de éxito
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '📋 Petición creada exitosamente',
-              style: GoogleFonts.montserrat(
-                fontWeight: FontWeight.w600,
-                color: Colors.white,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'La reserva con precio personalizado requiere aprobación del superadministrador.',
-              style: GoogleFonts.montserrat(
-                fontSize: 13,
-                color: Colors.white.withOpacity(0.9),
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Descuento: COP ${NumberFormat('#,###', 'es_CO').format((precioOriginalTotal - precioPersonalizadoTotal).toInt())}',
-              style: GoogleFonts.montserrat(
-                fontSize: 12,
-                color: Colors.white.withOpacity(0.8),
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ],
-        ),
-        backgroundColor: Colors.orange.shade600,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-        ),
-        margin: const EdgeInsets.all(12),
-        duration: const Duration(seconds: 6),
-      ),
-    );
-
-    await Future.delayed(const Duration(milliseconds: 100));
-    if (mounted) {
-      Navigator.of(context).pop(true);
-    }
-
-  } catch (e) {
-    throw Exception('Error al crear petición de reserva: $e');
-  }
 }
-}
-
 
 
 extension StringCapitalize on String {

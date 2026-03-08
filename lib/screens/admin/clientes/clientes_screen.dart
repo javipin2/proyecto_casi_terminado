@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_staggered_animations/flutter_staggered_animations.dart';
 import 'editar_cliente_screen.dart';
 import 'registrar_cliente_screen.dart';
+import '../../../services/lugar_helper.dart';
+import '../../../services/plan_feature_service.dart';
 
 class ClientesScreen extends StatefulWidget {
   const ClientesScreen({super.key});
@@ -168,8 +170,16 @@ class _ClientesScreenState extends State<ClientesScreen>
           ),
         ),
         child: FloatingActionButton.extended(
-          onPressed: () {
+          onPressed: () async {
             HapticFeedback.mediumImpact();
+            final allowed = await PlanFeatureService.ensureFeatureAvailable(
+              context,
+              PlanFeature.gestionClientes,
+            );
+            if (!allowed) return;
+
+            if (!context.mounted) return;
+
             Navigator.push(
               context,
               PageRouteBuilder(
@@ -253,11 +263,21 @@ class _ClientesScreenState extends State<ClientesScreen>
             ),
           ),
 
-          // Contador de clientes
-          StreamBuilder<QuerySnapshot>(
-            stream:
-                FirebaseFirestore.instance.collection('clientes').snapshots(),
-            builder: (context, snapshot) {
+          // Contador de clientes (filtrado por lugar)
+          FutureBuilder<String?>(
+            future: LugarHelper.getLugarId(),
+            builder: (context, lugarSnap) {
+              if (!lugarSnap.hasData) {
+                return const SizedBox.shrink();
+              }
+              final lugarId = lugarSnap.data;
+              if (lugarId == null) return const SizedBox.shrink();
+              return StreamBuilder<QuerySnapshot>(
+                stream: FirebaseFirestore.instance
+                    .collection('clientes')
+                    .where('lugarId', isEqualTo: lugarId)
+                    .snapshots(),
+                builder: (context, snapshot) {
               if (snapshot.hasData) {
                 int count = snapshot.data!.docs.length;
                 return Padding(
@@ -275,17 +295,31 @@ class _ClientesScreenState extends State<ClientesScreen>
                 );
               }
               return const SizedBox.shrink();
+                },
+              );
             },
           ),
 
           const SizedBox(height: 8),
 
-          // Lista de clientes
+          // Lista de clientes (filtrado por lugar)
           Expanded(
-            child: StreamBuilder<QuerySnapshot>(
-              stream:
-                  FirebaseFirestore.instance.collection('clientes').snapshots(),
-              builder: (context, snapshot) {
+            child: FutureBuilder<String?>(
+              future: LugarHelper.getLugarId(),
+              builder: (context, lugarSnap) {
+                if (!lugarSnap.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                final lugarId = lugarSnap.data;
+                if (lugarId == null) {
+                  return const SizedBox.shrink();
+                }
+                return StreamBuilder<QuerySnapshot>(
+                  stream: FirebaseFirestore.instance
+                      .collection('clientes')
+                      .where('lugarId', isEqualTo: lugarId)
+                      .snapshots(),
+                  builder: (context, snapshot) {
                 if (snapshot.hasError) {
                   return Center(
                     child: Column(
@@ -334,11 +368,8 @@ class _ClientesScreenState extends State<ClientesScreen>
                             (data['nombre'] ?? "").toString().toLowerCase();
                         final telefono =
                             (data['telefono'] ?? "").toString().toLowerCase();
-                        final correo =
-                            (data['correo'] ?? "").toString().toLowerCase();
                         return nombre.contains(_searchQuery) ||
-                            telefono.contains(_searchQuery) ||
-                            correo.contains(_searchQuery);
+                            telefono.contains(_searchQuery);
                       }).toList();
 
                 if (filteredDocs.isEmpty) {
@@ -406,6 +437,8 @@ class _ClientesScreenState extends State<ClientesScreen>
                     ),
                   ),
                 );
+                  },
+                );
               },
             ),
           ),
@@ -421,9 +454,16 @@ class _ClientesScreenState extends State<ClientesScreen>
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        onTap: () {
-          // Aquí podrías navegar a una pantalla de detalles del cliente
+        onTap: () async {
           HapticFeedback.selectionClick();
+          final allowed = await PlanFeatureService.ensureFeatureAvailable(
+            context,
+            PlanFeature.gestionClientes,
+          );
+          if (!allowed) return;
+
+          if (!context.mounted) return;
+
           Navigator.push(
             context,
             MaterialPageRoute(
@@ -483,21 +523,6 @@ class _ClientesScreenState extends State<ClientesScreen>
                             ),
                           ],
                         ),
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            const Icon(Icons.email,
-                                size: 16, color: Colors.grey),
-                            const SizedBox(width: 6),
-                            Expanded(
-                              child: Text(
-                                data['correo'] ?? "No disponible",
-                                style: TextStyle(color: Colors.grey.shade700),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                        ),
                       ],
                     ),
                   ),
@@ -508,8 +533,16 @@ class _ClientesScreenState extends State<ClientesScreen>
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   OutlinedButton.icon(
-                    onPressed: () {
+                    onPressed: () async {
                       HapticFeedback.selectionClick();
+                      final allowed = await PlanFeatureService.ensureFeatureAvailable(
+                        context,
+                        PlanFeature.gestionClientes,
+                      );
+                      if (!allowed) return;
+
+                      if (!context.mounted) return;
+
                       Navigator.push(
                         context,
                         MaterialPageRoute(
@@ -532,8 +565,14 @@ class _ClientesScreenState extends State<ClientesScreen>
                   ),
                   const SizedBox(width: 8),
                   OutlinedButton.icon(
-                    onPressed: () {
-                      _eliminarCliente(docId, context);
+                    onPressed: () async {
+                      final allowed = await PlanFeatureService.ensureFeatureAvailable(
+                        context,
+                        PlanFeature.gestionClientes,
+                      );
+                      if (!allowed) return;
+
+                      await _eliminarCliente(docId, context);
                     },
                     icon: const Icon(Icons.delete_outline, size: 16),
                     label: const Text("Eliminar"),

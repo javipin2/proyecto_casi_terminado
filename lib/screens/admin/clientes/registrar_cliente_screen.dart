@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../../../services/lugar_helper.dart';
 
 class RegistrarClienteScreen extends StatefulWidget {
   const RegistrarClienteScreen({super.key});
@@ -15,7 +16,6 @@ class RegistrarClienteScreenState extends State<RegistrarClienteScreen>
   final _formKey = GlobalKey<FormState>();
   final TextEditingController _nombreController = TextEditingController();
   final TextEditingController _telefonoController = TextEditingController();
-  final TextEditingController _correoController = TextEditingController();
   bool _isLoading = false;
   late AnimationController _fadeController;
 
@@ -40,7 +40,6 @@ class RegistrarClienteScreenState extends State<RegistrarClienteScreen>
   void dispose() {
     _nombreController.dispose();
     _telefonoController.dispose();
-    _correoController.dispose();
     _fadeController.dispose();
     super.dispose();
   }
@@ -51,10 +50,11 @@ class RegistrarClienteScreenState extends State<RegistrarClienteScreen>
         _isLoading = true;
       });
       try {
+        final lugarId = await LugarHelper.getLugarId();
         await FirebaseFirestore.instance.collection('clientes').add({
           'nombre': _nombreController.text.trim(),
           'telefono': _telefonoController.text.trim(),
-          'correo': _correoController.text.trim(),
+          'lugarId': lugarId,
         });
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -184,33 +184,6 @@ class RegistrarClienteScreenState extends State<RegistrarClienteScreen>
                               value == null || value.trim().isEmpty
                                   ? 'Ingrese el teléfono'
                                   : null,
-                        ),
-                        const SizedBox(height: 16),
-                        TextFormField(
-                          controller: _correoController,
-                          decoration: InputDecoration(
-                            labelText: 'Correo Electrónico',
-                            prefixIcon:
-                                Icon(Icons.email, color: _secondaryColor),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            filled: true,
-                            fillColor: Colors.white,
-                          ),
-                          style: GoogleFonts.montserrat(color: _primaryColor),
-                          keyboardType: TextInputType.emailAddress,
-                          validator: (value) {
-                            if (value == null || value.trim().isEmpty) {
-                              return null; // Correo es opcional
-                            }
-                            final emailRegex =
-                                RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$');
-                            if (!emailRegex.hasMatch(value)) {
-                              return 'Ingrese un correo válido';
-                            }
-                            return null;
-                          },
                         ),
                         const SizedBox(height: 24),
                         _isLoading

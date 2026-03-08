@@ -1,21 +1,21 @@
 {
   "project_info": {
-    "project_number": "201739490840",
-    "project_id": "canchas-la-jugada",
-    "storage_bucket": "canchas-la-jugada.firebasestorage.app"
+    "project_number": "185214677471",
+    "project_id": "proyecto-20bae",
+    "storage_bucket": "proyecto-20bae.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:201739490840:android:084fb44cd89806a16a156d",
+        "mobilesdk_app_id": "1:185214677471:android:67e1cc2030b5d7e6ff946a",
         "android_client_info": {
-          "package_name": "com.example.aplicacion"
+          "package_name": "com.tucanchafacil.app"
         }
       },
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyBusN_n3CDJwBFTsl38OA3YYeNhr-TOleo"
+          "current_key": "AIzaSyAuDGMwPMY-wkYOqYhkaJ2zkVT4GNbn75Y"
         }
       ],
       "services": {

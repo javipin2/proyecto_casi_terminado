@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:provider/provider.dart';
+import 'package:reserva_canchas/providers/auth_provider.dart' as auth;
 import 'package:reserva_canchas/screens/admin/encargado_dashboard.dart';
 import 'package:reserva_canchas/screens/admin/super_admin_dashboard.dart';
 import 'admin_dashboard_screen.dart';
+import 'package:reserva_canchas/screens/legal/privacy_policy_screen.dart';
+import 'package:reserva_canchas/screens/legal/terms_conditions_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -65,6 +68,7 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
     ));
     
     _animationController.forward();
+    _loadSavedCredentials();
   }
 
   @override
@@ -74,6 +78,73 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
+  }
+
+  /// Cargar credenciales guardadas
+  Future<void> _loadSavedCredentials() async {
+    try {
+      final authProvider = Provider.of<auth.AuthProvider>(context, listen: false);
+      
+      // Cargar preferencia de recordar
+      final rememberMe = await authProvider.loadRememberMePreference();
+      if (mounted) {
+        setState(() {
+          _rememberMe = rememberMe;
+        });
+      }
+      
+      // Si está marcado recordar, cargar credenciales
+      if (rememberMe) {
+        final credentials = await authProvider.loadSavedCredentials();
+        if (credentials != null && mounted) {
+          setState(() {
+            _emailController.text = credentials['email'] ?? '';
+            _passwordController.text = credentials['password'] ?? '';
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Error cargando credenciales guardadas: $e');
+    }
+  }
+
+  /// Limpiar credenciales guardadas
+  Future<void> _clearSavedCredentials() async {
+    try {
+      final authProvider = Provider.of<auth.AuthProvider>(context, listen: false);
+      await authProvider.clearSavedCredentials();
+      
+      if (mounted) {
+        setState(() {
+          _emailController.clear();
+          _passwordController.clear();
+          _rememberMe = false;
+        });
+        
+        // Mostrar mensaje de confirmación
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.check_circle_outline, color: Colors.white, size: 20),
+                const SizedBox(width: 8),
+                const Text("Credenciales guardadas eliminadas"),
+              ],
+            ),
+            backgroundColor: const Color(0xFF48BB78),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            margin: const EdgeInsets.all(16),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error limpiando credenciales guardadas: $e');
+      if (mounted) {
+        _showErrorSnackBar("Error al limpiar credenciales");
+      }
+    }
   }
 
   Future<void> _login() async {
@@ -86,82 +157,49 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
     setState(() => _isLoading = true);
 
     try {
-      UserCredential userCredential =
-          await FirebaseAuth.instance.signInWithEmailAndPassword(
-        email: _emailController.text.trim(),
-        password: _passwordController.text.trim(),
+      final authProvider = Provider.of<auth.AuthProvider>(context, listen: false);
+      
+      final success = await authProvider.signIn(
+        _emailController.text.trim(),
+        _passwordController.text.trim(),
+        rememberMe: _rememberMe,
       );
-
-      final uid = userCredential.user!.uid;
-
-      final doc = await FirebaseFirestore.instance
-          .collection('usuarios')
-          .doc(uid)
-          .get();
-
-      if (!doc.exists) {
-        throw Exception("No se encontró información de usuario en Firestore.");
-      }
-
-      final rol = doc.data()!['rol'];
 
       if (!mounted) return;
 
-      HapticFeedback.mediumImpact();
+      if (success) {
+        HapticFeedback.mediumImpact();
 
-      // Navegación actualizada según el rol
-      if (rol == 'superadmin') {
+        // Validar si el usuario está activo en Firestore
+        final data = authProvider.userData;
+        final isActive = data == null || data['activo'] != false;
+        if (!isActive) {
+          await authProvider.signOut();
+          _shakeController.forward().then((_) => _shakeController.reset());
+          _showErrorSnackBar(
+            "Tu usuario está inactivo. Comunícate con el administrador.",
+          );
+          return;
+        }
+
+        // Navegación actualizada según el rol usando el AuthProvider
+        Widget destination;
+        
+        if (authProvider.isSuperAdmin) {
+          destination = const SuperAdminDashboardScreen();
+        } else if (authProvider.userRole == 'admin') {
+          destination = const AdminDashboardScreen();
+        } else if (authProvider.isEncargado) {
+          destination = const EncargadoDashboardScreen();
+        } else {
+          _showErrorSnackBar("Rol no autorizado");
+          return;
+        }
+
         Navigator.pushReplacement(
           context,
           PageRouteBuilder(
-            pageBuilder: (_, __, ___) => const SuperAdminDashboardScreen(),
-            transitionsBuilder: (_, animation, __, child) {
-              return SlideTransition(
-                position: Tween<Offset>(
-                  begin: const Offset(1.0, 0.0),
-                  end: Offset.zero,
-                ).animate(CurvedAnimation(
-                  parent: animation,
-                  curve: Curves.easeInOutCubic,
-                )),
-                child: FadeTransition(
-                  opacity: animation,
-                  child: child,
-                ),
-              );
-            },
-            transitionDuration: const Duration(milliseconds: 400),
-          ),
-        );
-      } else if (rol == 'admin') {
-        Navigator.pushReplacement(
-          context,
-          PageRouteBuilder(
-            pageBuilder: (_, __, ___) => const AdminDashboardScreen(),
-            transitionsBuilder: (_, animation, __, child) {
-              return SlideTransition(
-                position: Tween<Offset>(
-                  begin: const Offset(1.0, 0.0),
-                  end: Offset.zero,
-                ).animate(CurvedAnimation(
-                  parent: animation,
-                  curve: Curves.easeInOutCubic,
-                )),
-                child: FadeTransition(
-                  opacity: animation,
-                  child: child,
-                ),
-              );
-            },
-            transitionDuration: const Duration(milliseconds: 400),
-          ),
-        );
-      } else if (rol == 'encargado') {
-        Navigator.pushReplacement(
-          context,
-          PageRouteBuilder(
-            pageBuilder: (_, __, ___) =>
-                const EncargadoDashboardScreen(),
+            pageBuilder: (_, __, ___) => destination,
             transitionsBuilder: (_, animation, __, child) {
               return SlideTransition(
                 position: Tween<Offset>(
@@ -181,7 +219,8 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
           ),
         );
       } else {
-        _showErrorSnackBar("Rol no autorizado");
+        _shakeController.forward().then((_) => _shakeController.reset());
+        _showErrorSnackBar("Error al iniciar sesión");
       }
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
@@ -360,23 +399,25 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
                                           children: [
                                             // Logo mejorado con imagen
                                             Container(
-                                              width: isSmallScreen ? 80 : 100,
-                                              height: isSmallScreen ? 80 : 100,
+                                              width: isSmallScreen ? 240 : 200,
+                                              height: isSmallScreen ? 140 : 120,
                                               decoration: BoxDecoration(
                                                 borderRadius: BorderRadius.circular(20),
                                                 boxShadow: [
                                                   BoxShadow(
-                                                    color: Colors.black.withValues(alpha: 0.1),
-                                                    blurRadius: 20,
-                                                    offset: const Offset(0, 10),
+                                                    color: Colors.black.withValues(alpha: 0.06),
+                                                    blurRadius: 40,
+                                                    spreadRadius: 0,
+                                                    offset: const Offset(0, 6),
                                                   ),
                                                 ],
                                               ),
                                               child: ClipRRect(
                                                 borderRadius: BorderRadius.circular(20),
                                                 child: Image.asset(
-                                                  'assets/img1.png',
+                                                  'assets/demo.png',
                                                   fit: BoxFit.cover,
+                                                  alignment: Alignment.center,
                                                   errorBuilder: (context, error, stackTrace) {
                                                     return Container(
                                                       decoration: BoxDecoration(
@@ -390,7 +431,7 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
                                                       ),
                                                       child: Icon(
                                                         Icons.sports_soccer,
-                                                        size: isSmallScreen ? 40 : 50,
+                                                        size: isSmallScreen ? 60 : 80,
                                                         color: Colors.white,
                                                       ),
                                                     );
@@ -399,7 +440,7 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
                                               ),
                                             ),
                                             
-                                            SizedBox(height: isSmallScreen ? 20 : 28),
+                                            SizedBox(height: isSmallScreen ? 12 : 16),
                                             
                                             // Título mejorado
                                             const Text(
@@ -618,6 +659,40 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
                                                     fontWeight: FontWeight.w500,
                                                   ),
                                                 ),
+                                                const Spacer(),
+                                                // Botón para limpiar credenciales guardadas
+                                                FutureBuilder<bool>(
+                                                  future: Provider.of<auth.AuthProvider>(context, listen: false).hasSavedCredentials(),
+                                                  builder: (context, snapshot) {
+                                                    if (snapshot.data == true) {
+                                                      return TextButton.icon(
+                                                        onPressed: () async {
+                                                          HapticFeedback.lightImpact();
+                                                          await _clearSavedCredentials();
+                                                        },
+                                                        icon: const Icon(
+                                                          Icons.clear_all,
+                                                          size: 16,
+                                                          color: Color(0xFFE53E3E),
+                                                        ),
+                                                        label: const Text(
+                                                          "Limpiar",
+                                                          style: TextStyle(
+                                                            color: Color(0xFFE53E3E),
+                                                            fontSize: 12,
+                                                            fontWeight: FontWeight.w500,
+                                                          ),
+                                                        ),
+                                                        style: TextButton.styleFrom(
+                                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                          minimumSize: Size.zero,
+                                                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                                        ),
+                                                      );
+                                                    }
+                                                    return const SizedBox.shrink();
+                                                  },
+                                                ),
                                               ],
                                             ),
                                             
@@ -688,6 +763,76 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
                                             ),
                                             
                                             SizedBox(height: isSmallScreen ? 16 : 24),
+
+                                            // Enlaces legales (discretos)
+                                            Center(
+                                              child: Wrap(
+                                                alignment: WrapAlignment.center,
+                                                crossAxisAlignment:
+                                                    WrapCrossAlignment.center,
+                                                spacing: 4,
+                                                runSpacing: 2,
+                                                children: [
+                                                  const Text(
+                                                    'Al continuar aceptas ',
+                                                    style: TextStyle(
+                                                      fontSize: 12,
+                                                      color: Color(0xFF718096),
+                                                      fontWeight: FontWeight.w500,
+                                                    ),
+                                                  ),
+                                                  InkWell(
+                                                    onTap: () {
+                                                      Navigator.of(context).push(
+                                                        MaterialPageRoute(
+                                                          builder: (_) =>
+                                                              const TermsConditionsScreen(),
+                                                        ),
+                                                      );
+                                                    },
+                                                    child: const Text(
+                                                      'Términos y condiciones',
+                                                      style: TextStyle(
+                                                        fontSize: 12,
+                                                        color: Color(0xFF1D4ED8),
+                                                        fontWeight: FontWeight.w600,
+                                                        decoration:
+                                                            TextDecoration.underline,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  const Text(
+                                                    ' y ',
+                                                    style: TextStyle(
+                                                      fontSize: 12,
+                                                      color: Color(0xFF718096),
+                                                      fontWeight: FontWeight.w500,
+                                                    ),
+                                                  ),
+                                                  InkWell(
+                                                    onTap: () {
+                                                      Navigator.of(context).push(
+                                                        MaterialPageRoute(
+                                                          builder: (_) =>
+                                                              const PrivacyPolicyScreen(),
+                                                        ),
+                                                      );
+                                                    },
+                                                    child: const Text(
+                                                      'Política de privacidad',
+                                                      style: TextStyle(
+                                                        fontSize: 12,
+                                                        color: Color(0xFF1D4ED8),
+                                                        fontWeight: FontWeight.w600,
+                                                        decoration:
+                                                            TextDecoration.underline,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                            SizedBox(height: isSmallScreen ? 16 : 20),
                                             
                                             // Indicador de seguridad
                                             Container(

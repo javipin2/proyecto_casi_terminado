@@ -167,6 +167,37 @@ class Horario {
     }
   }
 
+  /// **Convertir día de la semana de string a int**
+  static int _convertirDiaSemana(String dia) {
+    switch (dia.toLowerCase()) {
+      case 'lunes':
+      case 'monday':
+        return 1;
+      case 'martes':
+      case 'tuesday':
+        return 2;
+      case 'miércoles':
+      case 'miercoles':
+      case 'wednesday':
+        return 3;
+      case 'jueves':
+      case 'thursday':
+        return 4;
+      case 'viernes':
+      case 'friday':
+        return 5;
+      case 'sábado':
+      case 'sabado':
+      case 'saturday':
+        return 6;
+      case 'domingo':
+      case 'sunday':
+        return 7;
+      default:
+        return 0;
+    }
+  }
+
   static Future<List<Horario>> generarHorarios({
     required DateTime fecha,
     required String canchaId,
@@ -187,10 +218,52 @@ class Horario {
           .get();
 
       final horariosOcupados = <String, Map<String, dynamic>>{};
+      final horariosProcesandoPago = <String, Map<String, dynamic>>{};
       
+      // ✅ NUEVO: Consultar reservas temporales (en proceso de pago)
+      try {
+        final ahora = DateTime.now().millisecondsSinceEpoch;
+        final reservasTemporalesSnapshot = await FirebaseFirestore.instance
+            .collection('reservas_temporales')
+            .where('cancha_id', isEqualTo: canchaId)
+            .where('fecha', isEqualTo: fechaStr)
+            .where('sede', isEqualTo: sede)
+            .where('expira_en', isGreaterThan: ahora)
+            .get();
+        
+        developer.log('⏳ Reservas temporales encontradas: ${reservasTemporalesSnapshot.docs.length}');
+        
+        for (var doc in reservasTemporalesSnapshot.docs) {
+          final data = doc.data() as Map<String, dynamic>?;
+          if (data != null) {
+            final estado = data['estado'] as String?;
+            final horarioStr = normalizarHora(data['horario'] ?? '');
+            
+            if (horarioStr.isNotEmpty && (estado == 'bloqueado' || estado == 'pendiente')) {
+              horariosProcesandoPago[horarioStr] = {
+                'estado': estado,
+                'clienteNombre': data['nombre'] as String? ?? 'Cliente',
+                'referencia': doc.id,
+              };
+              developer.log('⏳ Horario $horarioStr marcado como PROCESANDO PAGO (estado: $estado)');
+            }
+          }
+        }
+      } catch (e) {
+        developer.log('⚠️ Error consultando reservas temporales: $e');
+      }
+      
+      // Procesar reservas existentes
       for (var doc in snapshot.docs) {
         final data = doc.data() as Map<String, dynamic>?;
         if (data != null) {
+          // ✅ FILTRAR RESERVAS CON ESTADO "devolucion"
+          final estado = data['estado'] as String?;
+          if (estado == 'devolucion') {
+            developer.log('🚫 Reserva ${doc.id} excluida por tener estado "devolucion"');
+            continue; // Saltar esta reserva
+          }
+          
           final horarioStr = normalizarHora(data['horario'] ?? '');
           if (horarioStr.isNotEmpty) {
             horariosOcupados[horarioStr] = {
@@ -214,6 +287,12 @@ class Horario {
         
         if (horarioObj.estaVencida(fecha)) {
           estado = EstadoHorario.vencido;
+        } else if (horariosProcesandoPago.containsKey(horaFormateadaNormalizada)) {
+          // ✅ PRIORIDAD MÁXIMA: Si hay una reserva temporal (en proceso de pago), mostrar como "Procesando"
+          final tempInfo = horariosProcesandoPago[horaFormateadaNormalizada]!;
+          estado = EstadoHorario.procesandoPago;
+          clienteNombre = tempInfo['clienteNombre'] as String? ?? 'Procesando pago';
+          developer.log('⏳ Horario $horaFormateadaNormalizada marcado como PROCESANDO PAGO (reserva temporal)');
         } else if (horariosOcupados.containsKey(horaFormateadaNormalizada)) {
           final reservaInfo = horariosOcupados[horaFormateadaNormalizada]!;
           final confirmada = reservaInfo['confirmada'] as bool;

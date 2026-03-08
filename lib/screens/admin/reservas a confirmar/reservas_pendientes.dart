@@ -6,6 +6,7 @@ import 'package:reserva_canchas/models/reserva.dart';
 import 'package:reserva_canchas/providers/reserva_provider.dart';
 import 'package:reserva_canchas/providers/cancha_provider.dart';
 import 'package:reserva_canchas/providers/sede_provider.dart';
+import 'package:reserva_canchas/services/lugar_helper.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/date_symbol_data_local.dart';
@@ -293,7 +294,6 @@ class _ConfirmarState extends State<Confirmar> with TickerProviderStateMixin {
     final double precioTotal = reserva.montoTotal;
     final double montoPagado = reserva.montoPagado;
     final double saldoPendiente = precioTotal - montoPagado;
-    final bool esPagoCompleto = saldoPendiente <= 0;
 
     final String mensaje = """
 
@@ -346,7 +346,7 @@ Future<void> _aceptarReserva(String reservaId, ReservaProvider provider) async {
     // Crear objeto Reserva para obtener los datos
     final reserva = await Reserva.fromFirestore(docSnapshot);
     
-    // Actualizar la reserva en Firestore
+    // ✅ Actualizar solo la reserva (la promoción ya se desactivó al crear la reserva en reserva_screen)
     await FirebaseFirestore.instance.runTransaction((transaction) async {
       final reservaRef = FirebaseFirestore.instance.collection('reservas').doc(reservaId);
       transaction.update(reservaRef, {'confirmada': true});
@@ -359,6 +359,7 @@ Future<void> _aceptarReserva(String reservaId, ReservaProvider provider) async {
       await _enviarMensajeConfirmacionWhatsApp(reserva);
     }
   } catch (e) {
+    debugPrint('❌ Error al aceptar reserva: $e');
     if (mounted) {
       _showErrorSnackBar('Error al aceptar la reserva: $e');
     }
@@ -408,16 +409,51 @@ Future<void> _aceptarReserva(String reservaId, ReservaProvider provider) async {
     if (confirmar == true) {
       setState(() => _isLoading = true);
       try {
+        // ✅ Obtener datos de la reserva antes de eliminarla para reactivar promoción si existe
+        final reservaDoc = await FirebaseFirestore.instance
+            .collection('reservas')
+            .doc(reservaId)
+            .get();
+        
+        final reservaData = reservaDoc.data();
+        final promocionId = reservaData?['promocion_id'] as String?;
+        
         await FirebaseFirestore.instance.runTransaction((transaction) async {
           final reservaRef = FirebaseFirestore.instance.collection('reservas').doc(reservaId);
           final tempRef = FirebaseFirestore.instance.collection('reservas_temporales').doc(reservaId);
+          
+          // ✅ Eliminar reserva y reserva temporal
           transaction.delete(reservaRef);
           transaction.delete(tempRef);
+          
+          // ✅ Si la reserva tenía una promoción asociada, reactivarla
+          if (promocionId != null && promocionId.isNotEmpty) {
+            final promocionRef = FirebaseFirestore.instance.collection('promociones').doc(promocionId);
+            final promocionDoc = await promocionRef.get();
+            
+            if (promocionDoc.exists) {
+              // ✅ Reactivar la promoción para que vuelva a aparecer
+              transaction.update(promocionRef, {
+                'activo': true,
+                'fecha_reactivacion': FieldValue.serverTimestamp(),
+                'motivo_reactivacion': 'Reserva rechazada',
+              });
+              debugPrint('✅ Promoción $promocionId reactivada tras rechazar reserva');
+            } else {
+              debugPrint('⚠️ Promoción $promocionId no encontrada para reactivar');
+            }
+          }
         });
+        
         if (mounted) {
-          _showSuccessSnackBar('Reserva rechazada exitosamente');
+          _showSuccessSnackBar(
+            promocionId != null && promocionId.isNotEmpty
+                ? 'Reserva rechazada y promoción reactivada'
+                : 'Reserva rechazada exitosamente'
+          );
         }
       } catch (e) {
+        debugPrint('❌ Error al rechazar reserva: $e');
         if (mounted) {
           _showErrorSnackBar('Error al rechazar la reserva: $e');
         }
@@ -1004,18 +1040,43 @@ Future<void> _aceptarReserva(String reservaId, ReservaProvider provider) async {
       final dataA = a.data() as Map<String, dynamic>;
       final dataB = b.data() as Map<String, dynamic>;
       
-      // Ordenar por fecha primero
-      final fechaA = dataA['fecha'] as String? ?? '';
-      final fechaB = dataB['fecha'] as String? ?? '';
+      // Ordenar por fecha primero - Manejar tanto String como Timestamp
+      String fechaA = '';
+      String fechaB = '';
+      
+      if (dataA['fecha'] is String) {
+        fechaA = dataA['fecha'] as String;
+      } else if (dataA['fecha'] is Timestamp) {
+        fechaA = DateFormat('yyyy-MM-dd').format((dataA['fecha'] as Timestamp).toDate());
+      }
+      
+      if (dataB['fecha'] is String) {
+        fechaB = dataB['fecha'] as String;
+      } else if (dataB['fecha'] is Timestamp) {
+        fechaB = DateFormat('yyyy-MM-dd').format((dataB['fecha'] as Timestamp).toDate());
+      }
+      
       final fechaComparison = fechaA.compareTo(fechaB);
       
       if (fechaComparison != 0) {
         return fechaComparison;
       }
       
-      // Si las fechas son iguales, ordenar por hora
-      final horaA = dataA['horario'] as String? ?? '0:00';
-      final horaB = dataB['horario'] as String? ?? '0:00';
+      // Si las fechas son iguales, ordenar por hora - Manejar tanto String como Timestamp
+      String horaA = '0:00';
+      String horaB = '0:00';
+      
+      if (dataA['horario'] is String) {
+        horaA = dataA['horario'] as String;
+      } else if (dataA['horario'] is Timestamp) {
+        horaA = DateFormat('HH:mm').format((dataA['horario'] as Timestamp).toDate());
+      }
+      
+      if (dataB['horario'] is String) {
+        horaB = dataB['horario'] as String;
+      } else if (dataB['horario'] is Timestamp) {
+        horaB = DateFormat('HH:mm').format((dataB['horario'] as Timestamp).toDate());
+      }
       return horaA.compareTo(horaB);
     });
 
@@ -1083,18 +1144,43 @@ Future<void> _aceptarReserva(String reservaId, ReservaProvider provider) async {
         final dataA = a.data() as Map<String, dynamic>;
         final dataB = b.data() as Map<String, dynamic>;
         
-        // Ordenar por fecha primero
-        final fechaA = dataA['fecha'] as String? ?? '';
-        final fechaB = dataB['fecha'] as String? ?? '';
+        // Ordenar por fecha primero - Manejar tanto String como Timestamp
+        String fechaA = '';
+        String fechaB = '';
+        
+        if (dataA['fecha'] is String) {
+          fechaA = dataA['fecha'] as String;
+        } else if (dataA['fecha'] is Timestamp) {
+          fechaA = DateFormat('yyyy-MM-dd').format((dataA['fecha'] as Timestamp).toDate());
+        }
+        
+        if (dataB['fecha'] is String) {
+          fechaB = dataB['fecha'] as String;
+        } else if (dataB['fecha'] is Timestamp) {
+          fechaB = DateFormat('yyyy-MM-dd').format((dataB['fecha'] as Timestamp).toDate());
+        }
+        
         final fechaComparison = fechaA.compareTo(fechaB);
         
         if (fechaComparison != 0) {
           return fechaComparison;
         }
         
-        // Si las fechas son iguales, ordenar por hora
-        final horaA = dataA['horario'] as String? ?? '0:00';
-        final horaB = dataB['horario'] as String? ?? '0:00';
+        // Si las fechas son iguales, ordenar por hora - Manejar tanto String como Timestamp
+        String horaA = '0:00';
+        String horaB = '0:00';
+        
+        if (dataA['horario'] is String) {
+          horaA = dataA['horario'] as String;
+        } else if (dataA['horario'] is Timestamp) {
+          horaA = DateFormat('HH:mm').format((dataA['horario'] as Timestamp).toDate());
+        }
+        
+        if (dataB['horario'] is String) {
+          horaB = dataB['horario'] as String;
+        } else if (dataB['horario'] is Timestamp) {
+          horaB = DateFormat('HH:mm').format((dataB['horario'] as Timestamp).toDate());
+        }
         return horaA.compareTo(horaB);
       });
 
@@ -2057,25 +2143,46 @@ Widget _buildResponsiveDesktopActions(String reservaId, bool isSmall) {
   Stream<QuerySnapshot> _buildQueryStream(bool isPendientes) {
   debugPrint('Consulta Firestore - useDateFilter: $_useDateFilter, sede: $_selectedSede, cancha: $_selectedCancha');
   
-  Query query = FirebaseFirestore.instance
-      .collection('reservas')
-      .where('confirmada', isEqualTo: isPendientes ? false : true);
+  // Obtener lugarId del usuario autenticado de forma asíncrona
+  return Stream.fromFuture(LugarHelper.getLugarId()).asyncExpand((lugarId) {
+    if (lugarId == null) {
+      debugPrint('❌ Error: No se pudo obtener lugarId');
+      return Stream.empty();
+    }
+    
+    debugPrint('✅ Filtrando reservas por lugarId: $lugarId');
+    debugPrint('🔍 Tipo de consulta: ${isPendientes ? "PENDIENTES" : "CONFIRMADAS"}');
+    
+    Query query = FirebaseFirestore.instance
+        .collection('reservas')
+        .where('confirmada', isEqualTo: isPendientes ? false : true)
+        .where('lugarId', isEqualTo: lugarId); // ✅ Agregar filtro por lugarId
 
-  // Solo aplicar filtro de fecha si está activo
-  if (_useDateFilter) {
-    final dateStr = DateFormat('yyyy-MM-dd').format(_selectedDate);
-    query = query.where('fecha', isEqualTo: dateStr);
-    debugPrint('Aplicando filtro de fecha: $dateStr');
-  }
+    // Solo aplicar filtro de fecha si está activo
+    if (_useDateFilter) {
+      final dateStr = DateFormat('yyyy-MM-dd').format(_selectedDate);
+      query = query.where('fecha', isEqualTo: dateStr);
+      debugPrint('📅 Aplicando filtro de fecha: $dateStr');
+    }
 
-  if (_selectedSede != null) {
-    query = query.where('sede', isEqualTo: _selectedSede);
-  }
-  if (_selectedCancha != null) {
-    query = query.where('cancha_id', isEqualTo: _selectedCancha);
-  }
+    if (_selectedSede != null) {
+      query = query.where('sede', isEqualTo: _selectedSede);
+      debugPrint('🏢 Aplicando filtro de sede: $_selectedSede');
+    }
+    if (_selectedCancha != null) {
+      query = query.where('cancha_id', isEqualTo: _selectedCancha);
+      debugPrint('⚽ Aplicando filtro de cancha: $_selectedCancha');
+    }
 
-  return query.snapshots();
+    return query.snapshots().map((snapshot) {
+      debugPrint('📊 Resultados encontrados: ${snapshot.docs.length} reservas');
+      for (var doc in snapshot.docs) {
+        final data = doc.data() as Map<String, dynamic>;
+        debugPrint('📋 Reserva: ${data['nombre']} - LugarId: ${data['lugarId']} - Confirmada: ${data['confirmada']}');
+      }
+      return snapshot;
+    });
+  });
 }
 
 

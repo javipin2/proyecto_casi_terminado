@@ -1,7 +1,7 @@
 name: reserva_canchas
 description: Aplicación para reservar canchas sintéticas.
 publish_to: 'none'
-version: 1.3.0+1
+version: 1.3.0+5
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -57,6 +57,7 @@ dependencies:
   logging: ^1.2.0  # Para manejo de logs en producción
 
   firebase_messaging: 15.2.9
+  flutter_local_notifications: ^18.0.1
   permission_handler: ^11.1.0
   package_info_plus: ^4.2.0
   
@@ -64,6 +65,11 @@ dependencies:
   shared_preferences: ^2.2.2
 
   usb_thermal_printer_web_pro: ^0.1.2
+  
+  # Mapas y geolocalización
+  google_maps_flutter: ^2.5.0
+  google_maps_flutter_web: ^0.5.4
+  geolocator: ^11.0.0
 
 dev_dependencies:
   flutter_test:
@@ -71,19 +77,20 @@ dev_dependencies:
   flutter_lints: ^5.0.0
   flutter_launcher_icons: ^0.13.1
 
-flutter_icons:
+flutter_launcher_icons:
   android: true
   ios: true
-  image_path: "assets/img1.png"
-  min_sdk_android: 21 # Para mejor compatibilidad
+  image_path: "assets/logg.png"
+  min_sdk_android: 21
 
 flutter:
   uses-material-design: true
   
   assets:
-    - assets/img1.png
+    - assets/demo.png
+    - assets/logg.png
+    - assets/logo-blanco.png
     - assets/fondo2.jpg
-    - assets/cancha_demo.png
     - assets/redi22.png
     - assets/grama1.jpg
 

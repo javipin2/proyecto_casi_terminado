@@ -10,7 +10,8 @@ import 'package:reserva_canchas/providers/sede_provider.dart';
 
 import '../../../models/reserva.dart';
 import '../../../models/horario.dart';
-import '../../../providers/peticion_provider.dart';
+import '../../../providers/auth_provider.dart';
+import '../../../services/lugar_helper.dart';
 import 'editar_reserva_screen.dart'; // Importar la nueva pantalla de edición
 
 class SuperuserDetallesReservas extends StatefulWidget {
@@ -33,7 +34,6 @@ class SuperuserDetallesReservasState extends State<SuperuserDetallesReservas>
   late AnimationController _fadeController;
   bool _isLoading = true;
   bool _dataLoaded = false;
-  double? _montoTotalCalculado;
 
   final Color _primaryColor = const Color(0xFF3C4043);
   final Color _secondaryColor = const Color(0xFF4285F4);
@@ -64,8 +64,6 @@ class SuperuserDetallesReservasState extends State<SuperuserDetallesReservas>
         _verificarRolUsuario(),
         _cargarInformacionGrupo(),
       ]).timeout(const Duration(seconds: 15));
-      
-      _montoTotalCalculado = await _calcularMontoTotal(_currentReserva);
       
       if (mounted) {
         setState(() {
@@ -192,20 +190,13 @@ class SuperuserDetallesReservasState extends State<SuperuserDetallesReservas>
   }
 
   Future<void> _verificarRolUsuario() async {
+    if (!mounted) return;
     try {
-      final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-      
-      final results = await Future.wait([
-        peticionProvider.esSuperAdmin(),
-        peticionProvider.esAdmin(),
-      ]).timeout(const Duration(seconds: 5));
-      
-      if (mounted) {
-        setState(() {
-          _esSuperAdmin = results[0];
-          _esAdmin = results[1];
-        });
-      }
+      final auth = Provider.of<AuthProvider>(context, listen: false);
+      setState(() {
+        _esSuperAdmin = auth.isSuperAdmin;
+        _esAdmin = auth.isAdmin;
+      });
     } catch (e) {
       debugPrint('Error verificando rol: $e');
       if (mounted) {
@@ -215,60 +206,6 @@ class SuperuserDetallesReservasState extends State<SuperuserDetallesReservas>
         });
       }
     }
-  }
-
-  Future<double> _calcularMontoTotal(Reserva reserva) async {
-    debugPrint('--- Calculando monto total ---');
-    final day = DateFormat('EEEE', 'es').format(reserva.fecha).toLowerCase();
-    
-    Cancha cancha = reserva.cancha;
-    if (cancha.preciosPorHorario.isEmpty || cancha.precio == 0) {
-      try {
-        final canchaDoc = await FirebaseFirestore.instance
-            .collection('canchas')
-            .doc(reserva.cancha.id)
-            .get();
-        if (canchaDoc.exists) {
-          cancha = Cancha.fromFirestore(canchaDoc);
-        }
-      } catch (e) {
-        debugPrint('Error al cargar cancha: $e');
-      }
-    }
-
-    double montoTotal = 0.0;
-
-    try {
-      final doc = await FirebaseFirestore.instance
-          .collection('reservas')
-          .doc(reserva.id)
-          .get();
-
-      List<String> horarios = [];
-      if (doc.exists && doc.data() != null) {
-        final data = doc.data();
-        horarios = (data?['horarios'] as List<dynamic>?)?.cast<String>() ?? [reserva.horario.horaFormateada];
-      } else {
-        horarios = [reserva.horario.horaFormateada];
-      }
-
-      for (var horarioStr in horarios) {
-        try {
-          final time = DateFormat('h:mm a').parse(horarioStr);
-          final horario = Horario(hora: TimeOfDay(hour: time.hour, minute: time.minute));
-          final precio = Reserva.calcularMontoTotal(cancha, reserva.fecha, horario);
-          montoTotal += precio;
-        } catch (e) {
-          debugPrint('Error al parsear hora: $horarioStr, error: $e');
-          montoTotal += cancha.precio;
-        }
-      }
-    } catch (e) {
-      debugPrint('Error Firestore: $e');
-      montoTotal = Reserva.calcularMontoTotal(cancha, reserva.fecha, reserva.horario);
-    }
-
-    return montoTotal;
   }
 
   Future<void> _cargarInformacionGrupo() async {
@@ -290,9 +227,17 @@ class SuperuserDetallesReservasState extends State<SuperuserDetallesReservas>
             });
           }
           
+          // Obtener lugarId del usuario autenticado
+          final lugarId = await LugarHelper.getLugarId();
+          if (lugarId == null) {
+            debugPrint('SuperuserDetallesReservas: No se pudo obtener lugarId');
+            return;
+          }
+
           final grupoQuery = await FirebaseFirestore.instance
               .collection('reservas')
               .where('grupo_reserva_id', isEqualTo: grupoId)
+              .where('lugarId', isEqualTo: lugarId) // ✅ Agregar filtrado por lugarId
               .get()
               .timeout(const Duration(seconds: 5));
           
@@ -939,181 +884,146 @@ class SuperuserDetallesReservasState extends State<SuperuserDetallesReservas>
 
   Widget _buildInfoCard() {
     final reserva = _currentReserva;
-    return FutureBuilder<double>(
-      future: _calcularMontoTotal(reserva),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return Card(
-            elevation: 2,
-            color: _cardColor,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: const Padding(
-              padding: EdgeInsets.all(16.0),
-              child: Center(child: CircularProgressIndicator()),
-            ),
-          );
-        }
-        if (snapshot.hasError) {
-          return Card(
-            elevation: 2,
-            color: _cardColor,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Text(
-                'Error: ${snapshot.error}',
-                style: GoogleFonts.montserrat(color: Colors.redAccent),
-              ),
-            ),
-          );
-        }
-
-        final montoTotal = snapshot.data ?? 0.0;
-        
-        return Card(
-          elevation: 2,
-          color: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
+    // Usar el valor real de la reserva (incluye precio personalizado), no el calculado por defecto
+    final montoTotal = reserva.montoTotal;
+    return Card(
+      elevation: 2,
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              _cardColor,
+              Colors.white,
+              _cardColor.withOpacity(0.5),
+            ],
           ),
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(16),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  _cardColor,
-                  Colors.white,
-                  _cardColor.withOpacity(0.5),
-                ],
-              ),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(20.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
                 children: [
-                  Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: _secondaryColor.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Icon(
-                          Icons.info_outline,
-                          color: _secondaryColor,
-                          size: 24,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          'Información de la Reserva',
-                          style: GoogleFonts.montserrat(
-                            fontSize: 20,
-                            fontWeight: FontWeight.w700,
-                            color: _primaryColor,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-                  
-                  _buildInfoRow(
-                    icon: Icons.sports_soccer,
-                    label: 'Cancha',
-                    value: reserva.cancha.nombre,
-                  ),
-                  const SizedBox(height: 12),
-                  
-                  _buildInfoRow(
-                    icon: Icons.location_on,
-                    label: 'Sede',
-                    value: Provider.of<SedeProvider>(context, listen: false).sedes.firstWhere(
-                      (sede) => sede['id'] == reserva.sede,
-                      orElse: () => {'nombre': reserva.sede},
-                    )['nombre'] as String,
-                  ),
-                  const SizedBox(height: 12),
-                  
-                  _buildInfoRow(
-                    icon: Icons.calendar_today,
-                    label: 'Fecha',
-                    value: DateFormat('EEEE d MMMM, yyyy', 'es').format(reserva.fecha),
-                  ),
-                  const SizedBox(height: 12),
-                  
-                  _buildInfoRow(
-                    icon: Icons.access_time,
-                    label: 'Horario',
-                    value: reserva.horario.horaFormateada,
-                  ),
-                  const SizedBox(height: 20),
-                  
-                  // Valor total con diseño especial
                   Container(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
-                      color: _secondaryColor.withOpacity(0.08),
+                      color: _secondaryColor.withOpacity(0.1),
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: _secondaryColor.withOpacity(0.2)),
                     ),
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: _secondaryColor,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: const Icon(
-                            Icons.monetization_on,
-                            color: Colors.white,
-                            size: 20,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Valor Total',
-                                style: GoogleFonts.montserrat(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w500,
-                                  color: _primaryColor.withOpacity(0.7),
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                _formatCurrency(montoTotal),
-                                style: GoogleFonts.montserrat(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w700,
-                                  color: _secondaryColor,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
+                    child: Icon(
+                      Icons.info_outline,
+                      color: _secondaryColor,
+                      size: 24,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Información de la Reserva',
+                      style: GoogleFonts.montserrat(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        color: _primaryColor,
+                      ),
                     ),
                   ),
                 ],
               ),
-            ),
+              const SizedBox(height: 20),
+              
+              _buildInfoRow(
+                icon: Icons.sports_soccer,
+                label: 'Cancha',
+                value: reserva.cancha.nombre,
+              ),
+              const SizedBox(height: 12),
+              
+              _buildInfoRow(
+                icon: Icons.location_on,
+                label: 'Sede',
+                value: Provider.of<SedeProvider>(context, listen: false).sedes.firstWhere(
+                  (sede) => sede['id'] == reserva.sede,
+                  orElse: () => {'nombre': reserva.sede},
+                )['nombre'] as String,
+              ),
+              const SizedBox(height: 12),
+              
+              _buildInfoRow(
+                icon: Icons.calendar_today,
+                label: 'Fecha',
+                value: DateFormat('EEEE d MMMM, yyyy', 'es').format(reserva.fecha),
+              ),
+              const SizedBox(height: 12),
+              
+              _buildInfoRow(
+                icon: Icons.access_time,
+                label: 'Horario',
+                value: reserva.horario.horaFormateada,
+              ),
+              const SizedBox(height: 20),
+              
+              // Valor total con diseño especial
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: _secondaryColor.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: _secondaryColor.withOpacity(0.2)),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: _secondaryColor,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(
+                        Icons.monetization_on,
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Valor Total',
+                            style: GoogleFonts.montserrat(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                              color: _primaryColor.withOpacity(0.7),
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            _formatCurrency(montoTotal),
+                            style: GoogleFonts.montserrat(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                              color: _secondaryColor,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 
@@ -1225,13 +1135,6 @@ class SuperuserDetallesReservasState extends State<SuperuserDetallesReservas>
                 icon: Icons.phone_outlined,
                 label: 'Teléfono',
                 value: reserva.telefono ?? 'No especificado',
-              ),
-              const SizedBox(height: 12),
-              
-              _buildClientInfoRow(
-                icon: Icons.email_outlined,
-                label: 'Correo',
-                value: reserva.email ?? 'No especificado',
               ),
               const SizedBox(height: 20),
               

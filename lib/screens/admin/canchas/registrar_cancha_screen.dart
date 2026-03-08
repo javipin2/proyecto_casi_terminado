@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -654,6 +655,19 @@ class _RegistrarCanchaScreenState extends State<RegistrarCanchaScreen>
         }
       }
 
+      // Obtener el lugarId del usuario autenticado
+      final user = FirebaseAuth.instance.currentUser;
+      String? lugarId;
+      if (user != null) {
+        final userDoc = await FirebaseFirestore.instance
+            .collection('usuarios')
+            .doc(user.uid)
+            .get();
+        if (userDoc.exists) {
+          lugarId = userDoc.data()?['lugarId'];
+        }
+      }
+
       await FirebaseFirestore.instance.collection('canchas').add({
         'nombre': _nombreController.text.trim(),
         'descripcion': _descripcionController.text.trim(),
@@ -662,6 +676,7 @@ class _RegistrarCanchaScreenState extends State<RegistrarCanchaScreen>
         'precio': double.tryParse(_precioController.text.trim()) ?? 0,
         'techada': _techada,
         'sedeId': _sede,
+        'lugarId': lugarId, // ✅ Agregar lugarId
         'preciosPorHorario': _preciosPorHorario,
         'disponible': _disponible,
         'motivoNoDisponible': _disponible ? null : _motivoNoDisponibleController.text.trim(),

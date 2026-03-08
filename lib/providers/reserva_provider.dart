@@ -2,6 +2,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:reserva_canchas/providers/audit_provider.dart';
 import '../models/reserva.dart';
 
@@ -60,19 +61,16 @@ class ReservaProvider with ChangeNotifier {
   void actualizarDatosCliente({
     required String nombre,
     required String telefono,
-    required String email,
   }) {
     if (_reservaActual != null) {
       _reservaActual!.nombre = nombre;
       _reservaActual!.telefono = telefono;
-      _reservaActual!.email = email;
       notifyListeners();
     } else if (_reservasGrupales != null) {
       // ✅ ACTUALIZAR TODAS LAS RESERVAS DEL GRUPO
       for (var reserva in _reservasGrupales!) {
         reserva.nombre = nombre;
         reserva.telefono = telefono;
-        reserva.email = email;
       }
       notifyListeners();
     }
@@ -162,6 +160,24 @@ class ReservaProvider with ChangeNotifier {
     notifyListeners();
 
     try {
+      // ✅ Asegurar que la reserva tenga lugarId antes de guardar
+      if (_reservaActual!.lugarId == null) {
+        // Obtener lugarId del usuario autenticado
+        final user = FirebaseAuth.instance.currentUser;
+        if (user != null) {
+          final userDoc = await FirebaseFirestore.instance
+              .collection('usuarios')
+              .doc(user.uid)
+              .get();
+          if (userDoc.exists) {
+            final lugarId = userDoc.data()?['lugarId'];
+            if (lugarId != null) {
+              _reservaActual = _reservaActual!.copyWith(lugarId: lugarId);
+            }
+          }
+        }
+      }
+      
       final docRef = await FirebaseFirestore.instance
           .collection('reservas')
           .add(_reservaActual!.toFirestore());
@@ -191,6 +207,19 @@ class ReservaProvider with ChangeNotifier {
     final grupoId = _reservasGrupales![0].grupoReservaId ?? 
                    DateTime.now().millisecondsSinceEpoch.toString();
 
+    // ✅ Obtener lugarId del usuario autenticado una sola vez
+    String? lugarId;
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      final userDoc = await FirebaseFirestore.instance
+          .collection('usuarios')
+          .doc(user.uid)
+          .get();
+      if (userDoc.exists) {
+        lugarId = userDoc.data()?['lugarId'];
+      }
+    }
+
     for (var reserva in _reservasGrupales!) {
       final docRef = FirebaseFirestore.instance.collection('reservas').doc();
       
@@ -198,6 +227,7 @@ class ReservaProvider with ChangeNotifier {
         grupoReservaId: grupoId,
         totalHorasGrupo: _reservasGrupales!.length,
         confirmada: true,
+        lugarId: lugarId, // ✅ Asegurar que tenga lugarId
       );
       
       batch.set(docRef, reservaConGrupo.toFirestore());

@@ -1,10 +1,17 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'package:provider/provider.dart';
-import 'sede_screen.dart';
+import 'ciudad_screen.dart';
+import 'lugar_screen.dart';
 import '../providers/version_provider.dart';
+import '../providers/auth_provider.dart';
 import '../services/version_service.dart';
+import '../services/ciudad_preference_service.dart';
+import '../services/push_notification_service.dart';
 import 'update_required_screen.dart';
+import 'admin/admin_dashboard_screen.dart';
+import 'admin/super_admin_dashboard.dart';
+import 'admin/encargado_dashboard.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -20,7 +27,6 @@ class _SplashScreenState extends State<SplashScreen>
   late Animation<double> _opacityAnimation;
   Timer? _navigationTimer;
   
-  final bool _isCheckingVersion = true;
   String _statusMessage = 'Iniciando aplicación...';
 
   @override
@@ -48,6 +54,24 @@ class _SplashScreenState extends State<SplashScreen>
 
     _controller.forward();
 
+    // Mostrar aviso si las notificaciones están bloqueadas (permiso denegado antes de tener context)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      PushNotificationService.onPermissionDenied = (message) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            duration: const Duration(seconds: 6),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      };
+      for (final msg in PushNotificationService.pendingPermissionDeniedMessages) {
+        PushNotificationService.onPermissionDenied!(msg);
+      }
+      PushNotificationService.pendingPermissionDeniedMessages.clear();
+    });
+
     // Inicializar verificación de versiones
     _initializeApp();
   }
@@ -55,10 +79,18 @@ class _SplashScreenState extends State<SplashScreen>
   Future<void> _initializeApp() async {
     try {
       setState(() {
-        _statusMessage = 'Verificando versión...';
+        _statusMessage = 'Inicializando autenticación...';
       });
 
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
       final versionProvider = Provider.of<VersionProvider>(context, listen: false);
+      
+      // Inicializar el provider de autenticación PRIMERO
+      await authProvider.initialize();
+      
+      setState(() {
+        _statusMessage = 'Verificando versión...';
+      });
       
       // Inicializar el provider de versiones
       await versionProvider.initialize();
@@ -71,16 +103,17 @@ class _SplashScreenState extends State<SplashScreen>
       await versionProvider.checkForUpdates();
 
       // Determinar siguiente pantalla basado en el estado
-      await _handleVersionCheck(versionProvider);
+      await _handleVersionCheck(versionProvider, authProvider);
 
     } catch (e) {
       debugPrint('Error inicializando app: $e');
       // En caso de error, continuar normalmente después de un delay
-      _navigateToMainApp();
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      _navigateToMainApp(authProvider);
     }
   }
 
-  Future<void> _handleVersionCheck(VersionProvider versionProvider) async {
+  Future<void> _handleVersionCheck(VersionProvider versionProvider, AuthProvider authProvider) async {
     final updateStatus = versionProvider.updateStatus;
 
     switch (updateStatus) {
@@ -108,7 +141,7 @@ class _SplashScreenState extends State<SplashScreen>
           _statusMessage = 'Nueva versión disponible';
         });
         await Future.delayed(const Duration(milliseconds: 1000));
-        _navigateToMainAppWithOptionalUpdate(versionProvider);
+        _navigateToMainAppWithOptionalUpdate(versionProvider, authProvider);
         break;
 
       case UpdateStatus.upToDate:
@@ -117,7 +150,7 @@ class _SplashScreenState extends State<SplashScreen>
           _statusMessage = 'Aplicación actualizada';
         });
         await Future.delayed(const Duration(milliseconds: 500));
-        _navigateToMainApp();
+        _navigateToMainApp(authProvider);
         break;
 
       case UpdateStatus.error:
@@ -127,29 +160,38 @@ class _SplashScreenState extends State<SplashScreen>
           _statusMessage = 'Continuando...';
         });
         await Future.delayed(const Duration(milliseconds: 500));
-        _navigateToMainApp();
+        _navigateToMainApp(authProvider);
         break;
     }
   }
 
-  void _navigateToMainApp() {
+  void _navigateToMainApp(AuthProvider authProvider) async {
     if (!mounted) return;
 
-    _navigationTimer = Timer(const Duration(milliseconds: 500), () {
+    _navigationTimer = Timer(const Duration(milliseconds: 500), () async {
       if (mounted) {
-        Navigator.of(context).pushReplacement(
-          PageRouteBuilder(
-            pageBuilder: (context, animation, secondaryAnimation) =>
-                const SedeScreen(),
-            transitionsBuilder: (context, animation, secondaryAnimation, child) {
-              return FadeTransition(
-                opacity: animation,
-                child: child,
-              );
-            },
-            transitionDuration: const Duration(milliseconds: 800),
-          ),
-        );
+        // Verificar si el usuario está autenticado
+        if (authProvider.isAuthenticated) {
+          // Navegar al dashboard correspondiente según el rol
+          _navigateToDashboard(authProvider);
+        } else {
+          // Verificar si es la primera vez o si hay ciudad guardada
+          final isFirstTime = await CiudadPreferenceService.isFirstTime();
+          final hasSelectedCiudad = await CiudadPreferenceService.hasSelectedCiudad();
+          
+          if (isFirstTime || !hasSelectedCiudad) {
+            // Primera vez o no hay ciudad guardada -> ir a selección de ciudades
+            _navigateToCiudadScreen();
+          } else {
+            // Hay ciudad guardada -> ir directamente a lugares
+            final ciudad = await CiudadPreferenceService.getSelectedCiudad();
+            if (ciudad != null) {
+              _navigateToLugarScreen(ciudad);
+            } else {
+              _navigateToCiudadScreen();
+            }
+          }
+        }
       }
     });
   }
@@ -182,24 +224,33 @@ class _SplashScreenState extends State<SplashScreen>
     });
   }
 
-  void _navigateToMainAppWithOptionalUpdate(VersionProvider versionProvider) {
+  void _navigateToMainAppWithOptionalUpdate(VersionProvider versionProvider, AuthProvider authProvider) async {
     if (!mounted) return;
 
-    _navigationTimer = Timer(const Duration(milliseconds: 500), () {
+    _navigationTimer = Timer(const Duration(milliseconds: 500), () async {
       if (mounted) {
-        Navigator.of(context).pushReplacement(
-          PageRouteBuilder(
-            pageBuilder: (context, animation, secondaryAnimation) =>
-                const SedeScreen(),
-            transitionsBuilder: (context, animation, secondaryAnimation, child) {
-              return FadeTransition(
-                opacity: animation,
-                child: child,
-              );
-            },
-            transitionDuration: const Duration(milliseconds: 800),
-          ),
-        );
+        // Verificar si el usuario está autenticado
+        if (authProvider.isAuthenticated) {
+          // Navegar al dashboard correspondiente según el rol
+          _navigateToDashboard(authProvider);
+        } else {
+          // Verificar si es la primera vez o si hay ciudad guardada
+          final isFirstTime = await CiudadPreferenceService.isFirstTime();
+          final hasSelectedCiudad = await CiudadPreferenceService.hasSelectedCiudad();
+          
+          if (isFirstTime || !hasSelectedCiudad) {
+            // Primera vez o no hay ciudad guardada -> ir a selección de ciudades
+            _navigateToCiudadScreen();
+          } else {
+            // Hay ciudad guardada -> ir directamente a lugares
+            final ciudad = await CiudadPreferenceService.getSelectedCiudad();
+            if (ciudad != null) {
+              _navigateToLugarScreen(ciudad);
+            } else {
+              _navigateToCiudadScreen();
+            }
+          }
+        }
 
         // Mostrar dialog de actualización opcional después de la navegación
         Future.delayed(const Duration(milliseconds: 1500), () {
@@ -209,6 +260,77 @@ class _SplashScreenState extends State<SplashScreen>
         });
       }
     });
+  }
+
+  void _navigateToCiudadScreen() {
+    Navigator.of(context).pushReplacement(
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            const CiudadScreen(),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(
+            opacity: animation,
+            child: child,
+          );
+        },
+        transitionDuration: const Duration(milliseconds: 800),
+      ),
+    );
+  }
+
+  void _navigateToLugarScreen(ciudad) {
+    Navigator.of(context).pushReplacement(
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            LugarScreen(ciudad: ciudad),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(
+            opacity: animation,
+            child: child,
+          );
+        },
+        transitionDuration: const Duration(milliseconds: 800),
+      ),
+    );
+  }
+
+  void _navigateToDashboard(AuthProvider authProvider) {
+    if (!mounted) return;
+
+    Widget destination;
+    
+    if (authProvider.isSuperAdmin) {
+      destination = const SuperAdminDashboardScreen();
+    } else if (authProvider.userRole == 'admin') {
+      destination = const AdminDashboardScreen();
+    } else if (authProvider.isEncargado) {
+      destination = const EncargadoDashboardScreen();
+    } else {
+      // Si no tiene un rol válido, ir a la pantalla principal
+      destination = const CiudadScreen();
+    }
+
+    Navigator.of(context).pushReplacement(
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => destination,
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(1.0, 0.0),
+              end: Offset.zero,
+            ).animate(CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeInOutCubic,
+            )),
+            child: FadeTransition(
+              opacity: animation,
+              child: child,
+            ),
+          );
+        },
+        transitionDuration: const Duration(milliseconds: 400),
+      ),
+    );
   }
 
   Future<void> _showOptionalUpdateDialog(VersionProvider versionProvider) async {
@@ -275,24 +397,25 @@ class _SplashScreenState extends State<SplashScreen>
                       children: [
                         // Logo principal
                         Container(
-                          width: 170,
-                          height: 170,
+                          width: 400,
+                          height: 300,
                           decoration: BoxDecoration(
                             color: const Color.fromARGB(0, 255, 255, 255),
                             borderRadius: BorderRadius.circular(20),
                             boxShadow: [
                               BoxShadow(
-                                color: const Color.fromARGB(50, 163, 201, 153)
-                                    .withOpacity(0.5),
-                                blurRadius: 40,
-                                spreadRadius: 1,
+                                color: const Color.fromARGB(38, 0, 0, 0)
+                                    .withOpacity(0.1),
+                                blurRadius: 50,
+                                spreadRadius: 0,
+                                offset: const Offset(0, 6),
                               ),
                             ],
                           ),
                           child: Image.asset(
-                            'assets/img1.png',
-                            width: 200,
-                            height: 200,
+                            'assets/demo.png',
+                            width: 240,
+                            height: 240,
                             errorBuilder: (context, error, stackTrace) {
                               debugPrint('Error cargando logo: $error');
                               return const Icon(Icons.error,

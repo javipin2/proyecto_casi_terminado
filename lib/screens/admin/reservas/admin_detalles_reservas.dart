@@ -7,11 +7,12 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'package:reserva_canchas/models/cancha.dart';
 import 'package:reserva_canchas/providers/sede_provider.dart';
-import 'package:reserva_canchas/utils/reserva_audit_utils.dart';
+import 'package:reserva_canchas/providers/audit_provider.dart';
 
 import '../../../models/reserva.dart';
 import '../../../models/horario.dart';
-import '../../../providers/peticion_provider.dart';
+import '../../../providers/auth_provider.dart';
+import '../../../services/lugar_helper.dart';
 import 'editar_reserva_screen.dart'; // Importar la nueva pantalla de edición
 
 class DetallesReservaScreen extends StatefulWidget {
@@ -34,7 +35,6 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
   late AnimationController _fadeController;
   bool _isLoading = true;
   bool _dataLoaded = false;
-  double? _montoTotalCalculado;
 
   final Color _primaryColor = const Color(0xFF3C4043);
   final Color _secondaryColor = const Color(0xFF4285F4);
@@ -56,10 +56,15 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
     duration: const Duration(milliseconds: 800),
   );
 
-  // Iniciar escucha del control total
-  final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-  peticionProvider.iniciarEscuchaControlTotal();
-
+  // Verificar rol desde AuthProvider
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (!mounted) return;
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    setState(() {
+      _esSuperAdmin = auth.isSuperAdmin;
+      _esAdmin = auth.isAdmin;
+    });
+  });
   _initializeData();
 }
 
@@ -69,8 +74,6 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
         _verificarRolUsuario(),
         _cargarInformacionGrupo(),
       ]).timeout(const Duration(seconds: 15));
-      
-      _montoTotalCalculado = await _calcularMontoTotal(_currentReserva);
       
       if (mounted) {
         setState(() {
@@ -93,10 +96,6 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
   }
 
   AppBar buildAppBar() {
-  // Obtener el estado del control total del provider
-  final peticionProvider = Provider.of<PeticionProvider>(context);
-  final controlTotalActivado = peticionProvider.controlTotalActivado;
-  
   return AppBar(
     title: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -160,10 +159,8 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
         tooltip: 'Editar reserva',
       ),
       
-      // Botón de eliminar - Lógica de visibilidad:
-      // - SuperAdmin: Siempre visible (sin restricciones)
-      // - Admin: Solo visible cuando control total está activado
-      if (_esSuperAdmin || (_esAdmin && controlTotalActivado))
+      // Botón de eliminar - visible para SuperAdmin y Admin
+      if (_esSuperAdmin || _esAdmin)
         IconButton(
           icon: const Icon(Icons.delete, color: Colors.redAccent),
           onPressed: _deleteReserva,
@@ -205,20 +202,13 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
   }
 
   Future<void> _verificarRolUsuario() async {
+    if (!mounted) return;
     try {
-      final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-      
-      final results = await Future.wait([
-        peticionProvider.esSuperAdmin(),
-        peticionProvider.esAdmin(),
-      ]).timeout(const Duration(seconds: 5));
-      
-      if (mounted) {
-        setState(() {
-          _esSuperAdmin = results[0];
-          _esAdmin = results[1];
-        });
-      }
+      final auth = Provider.of<AuthProvider>(context, listen: false);
+      setState(() {
+        _esSuperAdmin = auth.isSuperAdmin;
+        _esAdmin = auth.isAdmin;
+      });
     } catch (e) {
       debugPrint('Error verificando rol: $e');
       if (mounted) {
@@ -228,60 +218,6 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
         });
       }
     }
-  }
-
-  Future<double> _calcularMontoTotal(Reserva reserva) async {
-    debugPrint('--- Calculando monto total ---');
-    final day = DateFormat('EEEE', 'es').format(reserva.fecha).toLowerCase();
-    
-    Cancha cancha = reserva.cancha;
-    if (cancha.preciosPorHorario.isEmpty || cancha.precio == 0) {
-      try {
-        final canchaDoc = await FirebaseFirestore.instance
-            .collection('canchas')
-            .doc(reserva.cancha.id)
-            .get();
-        if (canchaDoc.exists) {
-          cancha = Cancha.fromFirestore(canchaDoc);
-        }
-      } catch (e) {
-        debugPrint('Error al cargar cancha: $e');
-      }
-    }
-
-    double montoTotal = 0.0;
-
-    try {
-      final doc = await FirebaseFirestore.instance
-          .collection('reservas')
-          .doc(reserva.id)
-          .get();
-
-      List<String> horarios = [];
-      if (doc.exists && doc.data() != null) {
-        final data = doc.data();
-        horarios = (data?['horarios'] as List<dynamic>?)?.cast<String>() ?? [reserva.horario.horaFormateada];
-      } else {
-        horarios = [reserva.horario.horaFormateada];
-      }
-
-      for (var horarioStr in horarios) {
-        try {
-          final time = DateFormat('h:mm a').parse(horarioStr);
-          final horario = Horario(hora: TimeOfDay(hour: time.hour, minute: time.minute));
-          final precio = Reserva.calcularMontoTotal(cancha, reserva.fecha, horario);
-          montoTotal += precio;
-        } catch (e) {
-          debugPrint('Error al parsear hora: $horarioStr, error: $e');
-          montoTotal += cancha.precio;
-        }
-      }
-    } catch (e) {
-      debugPrint('Error Firestore: $e');
-      montoTotal = Reserva.calcularMontoTotal(cancha, reserva.fecha, reserva.horario);
-    }
-
-    return montoTotal;
   }
 
   Future<void> _cargarInformacionGrupo() async {
@@ -303,9 +239,17 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
             });
           }
           
+          // Obtener lugarId del usuario autenticado
+          final lugarId = await LugarHelper.getLugarId();
+          if (lugarId == null) {
+            debugPrint('AdminDetallesReservas: No se pudo obtener lugarId');
+            return;
+          }
+
           final grupoQuery = await FirebaseFirestore.instance
               .collection('reservas')
               .where('grupo_reserva_id', isEqualTo: grupoId)
+              .where('lugarId', isEqualTo: lugarId) // ✅ Agregar filtrado por lugarId
               .get()
               .timeout(const Duration(seconds: 5));
           
@@ -494,7 +438,6 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
     final datosReservaParaAuditoria = {
       'nombre': widget.reserva.nombre,
       'telefono': widget.reserva.telefono,
-      'correo': widget.reserva.email,
       'fecha': DateFormat('yyyy-MM-dd').format(widget.reserva.fecha),
       'horario': widget.reserva.horario.horaFormateada,
       'montoTotal': widget.reserva.montoTotal,
@@ -515,11 +458,31 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
         .doc(widget.reserva.id)
         .delete();
 
-    // 🔍 AUDITORÍA AUTOMÁTICA - Registrar eliminación
-    await ReservaAuditUtils.auditarEliminacionReserva(
-      reservaId: widget.reserva.id,
-      datosReserva: datosReservaParaAuditoria,
-      motivo: motivo?.isNotEmpty == true ? motivo : 'Eliminación desde pantalla de edición',
+    // 🔍 AUDITORÍA AUTOMÁTICA - Registrar eliminación con nivel ALTO
+    final descripcion = motivo?.isNotEmpty == true 
+        ? 'Eliminación de reserva desde pantalla de detalles. Motivo: $motivo'
+        : 'Eliminación de reserva desde pantalla de detalles';
+    
+    await AuditProvider.registrarAccion(
+      accion: 'eliminar_reserva',
+      entidad: 'reserva',
+      entidadId: widget.reserva.id,
+      datosAntiguos: datosReservaParaAuditoria,
+      datosNuevos: {},
+      descripcion: descripcion,
+      metadatos: {
+        'cancha_nombre': datosReservaParaAuditoria['cancha_nombre'],
+        'sede': datosReservaParaAuditoria['sede'],
+        'cliente': datosReservaParaAuditoria['nombre'],
+        'fecha_reserva': datosReservaParaAuditoria['fecha'],
+        'horario': datosReservaParaAuditoria['horario'],
+        'motivo_eliminacion': motivo ?? 'No especificado',
+        'valor_perdido': datosReservaParaAuditoria['montoTotal'],
+        'abono_perdido': datosReservaParaAuditoria['montoPagado'],
+        'estado_al_eliminar': datosReservaParaAuditoria['estado'],
+        'interfaz_origen': 'detalles_reserva_screen',
+      },
+      nivelRiesgoForzado: 'alto',
     );
 
     if (!mounted) return;
@@ -952,17 +915,12 @@ class DetallesReservaScreenState extends State<DetallesReservaScreen>
   @override
 void dispose() {
   _fadeController.dispose();
-  // Detener escucha del control total
-  final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-  peticionProvider.detenerEscuchaControlTotal();
   super.dispose();
 }
 
   @override
 Widget build(BuildContext context) {
-  return Consumer<PeticionProvider>(
-    builder: (context, peticionProvider, child) {
-      return Localizations(
+  return Localizations(
         locale: const Locale('es', 'ES'),
         delegates: const [
           GlobalMaterialLocalizations.delegate,
@@ -1018,48 +976,13 @@ Widget build(BuildContext context) {
           ),
         ),
       );
-    },
-  );
 }
 
   Widget _buildInfoCard() {
     final reserva = _currentReserva;
-    return FutureBuilder<double>(
-      future: _calcularMontoTotal(reserva),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return Card(
-            elevation: 2,
-            color: _cardColor,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: const Padding(
-              padding: EdgeInsets.all(16.0),
-              child: Center(child: CircularProgressIndicator()),
-            ),
-          );
-        }
-        if (snapshot.hasError) {
-          return Card(
-            elevation: 2,
-            color: _cardColor,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Text(
-                'Error: ${snapshot.error}',
-                style: GoogleFonts.montserrat(color: Colors.redAccent),
-              ),
-            ),
-          );
-        }
-
-        final montoTotal = snapshot.data ?? 0.0;
-        
-        return Card(
+    // Usar el valor real de la reserva (incluye precio personalizado), no el calculado por defecto
+    final montoTotal = reserva.montoTotal;
+    return Card(
           elevation: 2,
           color: Colors.white,
           shape: RoundedRectangleBorder(
@@ -1198,8 +1121,6 @@ Widget build(BuildContext context) {
             ),
           ),
         );
-      },
-    );
   }
 
   Widget _buildInfoRow({
@@ -1310,13 +1231,6 @@ Widget build(BuildContext context) {
                 icon: Icons.phone_outlined,
                 label: 'Teléfono',
                 value: reserva.telefono ?? 'No especificado',
-              ),
-              const SizedBox(height: 12),
-              
-              _buildClientInfoRow(
-                icon: Icons.email_outlined,
-                label: 'Correo',
-                value: reserva.email ?? 'No especificado',
               ),
               const SizedBox(height: 20),
               

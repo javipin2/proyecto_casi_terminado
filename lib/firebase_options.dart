@@ -30,10 +30,7 @@ class DefaultFirebaseOptions {
           'you can reconfigure this by running the FlutterFire CLI again.',
         );
       case TargetPlatform.windows:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for windows - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        return windows;
       case TargetPlatform.linux:
         throw UnsupportedError(
           'DefaultFirebaseOptions have not been configured for linux - '
@@ -47,30 +44,37 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions web = FirebaseOptions(
-    apiKey: 'AIzaSyDLzBcnexpfCtmUkmG61r9MQ6_h2Uu-UKM',
-    appId: '1:201739490840:web:d2159a208f44b7ce6a156d',
-    messagingSenderId: '201739490840',
-    projectId: 'canchas-la-jugada',
-    authDomain: 'canchas-la-jugada.firebaseapp.com',
-    storageBucket: 'canchas-la-jugada.firebasestorage.app',
-    measurementId: 'G-YTREJN95RR',
+    apiKey: 'AIzaSyD57tk7priOgb45wXC7YJNqn9NZTTH0jtw',
+    appId: '1:185214677471:web:fa3326285cba36efff946a',
+    messagingSenderId: '185214677471',
+    projectId: 'proyecto-20bae',
+    authDomain: 'proyecto-20bae.firebaseapp.com',
+    storageBucket: 'proyecto-20bae.firebasestorage.app',
   );
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyBusN_n3CDJwBFTsl38OA3YYeNhr-TOleo',
-    appId: '1:201739490840:android:084fb44cd89806a16a156d',
-    messagingSenderId: '201739490840',
-    projectId: 'canchas-la-jugada',
-    storageBucket: 'canchas-la-jugada.firebasestorage.app',
+    apiKey: 'AIzaSyAuDGMwPMY-wkYOqYhkaJ2zkVT4GNbn75Y',
+    appId: '1:185214677471:android:67e1cc2030b5d7e6ff946a',
+    messagingSenderId: '185214677471',
+    projectId: 'proyecto-20bae',
+    storageBucket: 'proyecto-20bae.firebasestorage.app',
   );
 
   static const FirebaseOptions ios = FirebaseOptions(
-    apiKey: 'AIzaSyAFuQ_OAqh4OCedS2bKw8YBPolQA8asCV8',
-    appId: '1:201739490840:ios:1ea7a5ccd33e36286a156d',
-    messagingSenderId: '201739490840',
-    projectId: 'canchas-la-jugada',
-    storageBucket: 'canchas-la-jugada.firebasestorage.app',
+    apiKey: 'AIzaSyBMUp3P8rKkgh5aWtjKXZosWJ5YjN_5Erg',
+    appId: '1:185214677471:ios:8149b93a736be037ff946a',
+    messagingSenderId: '185214677471',
+    projectId: 'proyecto-20bae',
+    storageBucket: 'proyecto-20bae.firebasestorage.app',
     iosBundleId: 'com.example.app',
   );
 
+  static const FirebaseOptions windows = FirebaseOptions(
+    apiKey: 'AIzaSyD57tk7priOgb45wXC7YJNqn9NZTTH0jtw',
+    appId: '1:185214677471:web:e459f2f38448b6afff946a',
+    messagingSenderId: '185214677471',
+    projectId: 'proyecto-20bae',
+    authDomain: 'proyecto-20bae.firebaseapp.com',
+    storageBucket: 'proyecto-20bae.firebasestorage.app',
+  );
 }

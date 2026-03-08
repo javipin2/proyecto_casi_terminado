@@ -1,0 +1,126 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper: usuario autenticado
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Helper: obtener rol del usuario (admin, superadmin, encargado)
+    function getUsuarioRol() {
+      return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol;
+    }
+    
+    // Helper: es staff (admin, superadmin o encargado)
+    function isStaff() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/usuarios/$(request.auth.uid)) &&
+        getUsuarioRol() in ['admin', 'superadmin', 'encargado'];
+    }
+    
+    // Helper: es superadmin
+    function isSuperAdmin() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/usuarios/$(request.auth.uid)) &&
+        getUsuarioRol() == 'superadmin';
+    }
+    
+    // ========== USUARIOS ==========
+    // Solo el propio usuario puede leer su doc; solo superadmin puede escribir
+    match /usuarios/{userId} {
+      allow read: if isAuthenticated() && request.auth.uid == userId;
+      allow create, update, delete: if isSuperAdmin();
+    }
+    
+    // ========== CONFIG ==========
+    // admin_control: staff puede leer, solo superadmin puede escribir
+    match /config/{docId} {
+      allow read: if isStaff();
+      allow write: if isSuperAdmin();
+    }
+    
+    // ========== APP_CONFIG ==========
+    // version_control: todos pueden leer (app necesita verificar versión), staff puede escribir
+    match /app_config/{docId} {
+      allow read: if true;
+      allow write: if isStaff();
+    }
+    
+    // ========== SEDE ==========
+    // Lectura pública para sedes activas (reserva pública); staff puede todo
+    match /sede/{sedeId} {
+      allow read: if true;
+      allow write: if isStaff();
+    }
+    
+    // ========== CANCHAS ==========
+    // Lectura pública para reservas; staff puede todo
+    match /canchas/{canchaId} {
+      allow read: if true;
+      allow write: if isStaff();
+    }
+    
+    // ========== HORARIOS ==========
+    match /horarios/{horarioId} {
+      allow read: if true;
+      allow write: if isStaff();
+    }
+    
+    // ========== CLIENTES ==========
+    match /clientes/{clienteId} {
+      allow read, write: if isStaff();
+    }
+    
+    // ========== RESERVAS ==========
+    match /reservas/{reservaId} {
+      allow read: if true;
+      allow create: if true;
+      allow update, delete: if isStaff();
+    }
+    
+    // ========== RESERVAS_TEMPORALES ==========
+    // Bloqueos temporales durante el flujo de reserva - cualquiera puede crear/leer/eliminar
+    match /reservas_temporales/{docId} {
+      allow read, create, delete: if true;
+      allow update: if true;
+    }
+    
+    // ========== RESERVAS_RECURRENTES ==========
+    match /reservas_recurrentes/{docId} {
+      allow read, write: if isStaff();
+    }
+    
+    // ========== RESERVAS_PENDIENTES ==========
+    // Usado por Cloud Functions; staff puede leer
+    match /reservas_pendientes/{docId} {
+      allow read: if isStaff();
+      allow write: if isStaff();
+    }
+    
+    // ========== RESERVAS_HISTORIAL ==========
+    // Usado por Cloud Functions
+    match /reservas_historial/{docId} {
+      allow read: if isStaff();
+      allow write: if isStaff();
+    }
+    
+    // ========== AUDITORIA ==========
+    match /auditoria/{docId} {
+      allow read: if isStaff();
+      allow create: if isStaff();
+      allow update, delete: if isSuperAdmin();
+    }
+    
+    // ========== ALERTAS_CRITICAS ==========
+    match /alertas_criticas/{docId} {
+      allow read, write: if isStaff();
+    }
+    
+    // ========== FCM_TOKENS ==========
+    // Solo Cloud Functions (admin) leen/escriben; clientes usan callable registerFcmToken
+    match /fcm_tokens/{docId} {
+      allow read, write: if false;
+    }
+  }
+}

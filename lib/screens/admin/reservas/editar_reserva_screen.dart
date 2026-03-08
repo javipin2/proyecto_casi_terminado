@@ -15,9 +15,9 @@ import 'package:reserva_canchas/models/cancha.dart';
 import 'package:reserva_canchas/providers/reserva_recurrente_provider.dart';
 import 'package:reserva_canchas/models/reserva.dart';
 import 'package:reserva_canchas/models/horario.dart';
-import 'package:reserva_canchas/providers/peticion_provider.dart';
 import 'package:reserva_canchas/screens/admin/reservas/admin_reservas_horarios_screen.dart';
 import 'package:reserva_canchas/utils/reserva_audit_utils.dart';
+import 'package:reserva_canchas/services/lugar_helper.dart';
 
 
 class EditarReservaScreen extends StatefulWidget {
@@ -43,10 +43,9 @@ class EditarReservaScreen extends StatefulWidget {
 class EditarReservaScreenState extends State<EditarReservaScreen> with TickerProviderStateMixin {
   late TextEditingController _nombreController;
   late TextEditingController _telefonoController;
-  late TextEditingController _emailController;
   late TextEditingController _montoPagadoController;
   late TextEditingController _precioTotalController;
-  late DateTime _inicioSesionEdicion;
+  // Removemos _inicioSesionEdicion ya que no se usa
   String? _motivoPrecioPersonalizado;
   Map<String, dynamic> _valoresOriginales = {}; 
   TipoAbono? _selectedTipo;
@@ -73,7 +72,7 @@ class EditarReservaScreenState extends State<EditarReservaScreen> with TickerPro
   @override
 void initState() {
   super.initState();
-  _inicioSesionEdicion = DateTime.now(); // AGREGAR ESTA LÍNEA
+  // Removemos la línea que ya no se necesita
     _guardarValoresOriginales();
   _currentReserva = widget.reserva;
   _nuevaFecha = widget.reserva.fecha;
@@ -82,7 +81,6 @@ void initState() {
   _nuevoHorario = widget.reserva.horario.horaFormateada;
   _nombreController = TextEditingController(text: widget.reserva.nombre ?? '');
   _telefonoController = TextEditingController(text: widget.reserva.telefono ?? '');
-  _emailController = TextEditingController(text: widget.reserva.email ?? '');
   _montoPagadoController = TextEditingController(text: widget.reserva.montoPagado.toStringAsFixed(0));
   _precioTotalController = TextEditingController();
   _selectedTipo = widget.reserva.tipoAbono;
@@ -103,9 +101,7 @@ void _initializeDataWithDebounce() {
   WidgetsBinding.instance.addPostFrameCallback((_) {
     if (mounted) {
       if (widget.esAdmin || widget.esSuperAdmin) {
-        final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-        peticionProvider.iniciarEscuchaControlTotal();
-        peticionProvider.cargarConfiguracionControl();
+        // Sin peticiones: los cambios se aplican siempre directamente
       }
       _initializeData();
     }
@@ -114,21 +110,8 @@ void _initializeDataWithDebounce() {
 
 
   void _setupControllersWithDebounce() {
-  Timer? debounceTimer;
-  
-  void onFieldChangedWithDebounce() {
-    debounceTimer?.cancel();
-    debounceTimer = Timer(const Duration(milliseconds: 300), () {
-      if (mounted && _dataLoaded) {
-        setState(() {});
-      }
-    });
-  }
-  
-  _nombreController.addListener(onFieldChangedWithDebounce);
-  _telefonoController.addListener(onFieldChangedWithDebounce);
-  _emailController.addListener(onFieldChangedWithDebounce);
-  _montoPagadoController.addListener(onFieldChangedWithDebounce);
+  // Eliminamos los listeners problemáticos que causan setState en cada tecla
+  // Los campos de texto funcionarán sin necesidad de listeners adicionales
 }
 
 
@@ -147,10 +130,7 @@ void _initializeDataWithDebounce() {
           _dataLoaded = true;
         });
         _fadeController.forward();
-        _nombreController.addListener(_onFieldChanged);
-        _telefonoController.addListener(_onFieldChanged);
-        _emailController.addListener(_onFieldChanged);
-        _montoPagadoController.addListener(_onFieldChanged);
+        // Eliminamos los listeners que causan setState en cada tecla
       }
     } catch (e) {
       debugPrint('Error inicializando datos: $e');
@@ -168,89 +148,63 @@ void _initializeDataWithDebounce() {
     return AppBar(
       title: Text(widget.isGrupoReserva ? 'Editar Reserva Grupal' : 'Editar Reserva'),
       actions: [
-        // Mostrar estado de permisos con mejor feedback
-        Consumer<PeticionProvider>(
-          builder: (context, peticionProvider, child) {
-            if (widget.esSuperAdmin) {
-              return Container(
-                margin: const EdgeInsets.only(right: 8),
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [Colors.purple.shade400, Colors.purple.shade600],
-                  ),
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.purple.withOpacity(0.3),
-                      blurRadius: 4,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
+        if (widget.esSuperAdmin)
+          Container(
+            margin: const EdgeInsets.only(right: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Colors.purple.shade400, Colors.purple.shade600],
+              ),
+              borderRadius: BorderRadius.circular(12),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.purple.withOpacity(0.3),
+                  blurRadius: 4,
+                  offset: const Offset(0, 2),
                 ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.admin_panel_settings, color: Colors.white, size: 12),
-                    const SizedBox(width: 4),
-                    Text(
-                      'SUPER',
-                      style: GoogleFonts.montserrat(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            } else if (widget.esAdmin) {
-              final controlActivado = peticionProvider.controlTotalActivado;
-              return Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    margin: const EdgeInsets.only(right: 8),
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      gradient: controlActivado 
-                          ? LinearGradient(colors: [Colors.green.shade400, Colors.green.shade600])
-                          : LinearGradient(colors: [Colors.orange.shade400, Colors.orange.shade600]),
-                      borderRadius: BorderRadius.circular(12),
-                      boxShadow: [
-                        BoxShadow(
-                          color: (controlActivado ? Colors.green : Colors.orange).withOpacity(0.3),
-                          blurRadius: 4,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          controlActivado ? Icons.admin_panel_settings : Icons.pending_actions,
-                          size: 12,
-                          color: Colors.white,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          controlActivado ? 'DIRECTO' : 'PETICIÓN',
-                          style: GoogleFonts.montserrat(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ],
-                    ),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.admin_panel_settings, color: Colors.white, size: 12),
+                const SizedBox(width: 4),
+                Text(
+                  'SUPER',
+                  style: GoogleFonts.montserrat(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
                   ),
-                ],
-              );
-            }
-            return const SizedBox.shrink();
-          },
-        ),
+                ),
+              ],
+            ),
+          )
+        else if (widget.esAdmin)
+          Container(
+            margin: const EdgeInsets.only(right: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(colors: [Colors.blue.shade400, Colors.blue.shade600]),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.edit, size: 12, color: Colors.white),
+                const SizedBox(width: 4),
+                Text(
+                  'ADMIN',
+                  style: GoogleFonts.montserrat(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
+                  ),
+                ),
+              ],
+            ),
+          ),
         IconButton(
           icon: _isSaving 
               ? SizedBox(
@@ -271,17 +225,12 @@ void _initializeDataWithDebounce() {
     );
   }
 
-  void _onFieldChanged() {
-    if (_dataLoaded) {
-      setState(() {});
-    }
-  }
+  // Eliminamos el método _onFieldChanged que causaba setState innecesario
 
   void _guardarValoresOriginales() {
     _valoresOriginales = {
       'nombre': widget.reserva.nombre,
       'telefono': widget.reserva.telefono,
-      'correo': widget.reserva.email,
       'fecha': DateFormat('yyyy-MM-dd').format(widget.reserva.fecha),
       'horario': widget.reserva.horario.horaFormateada,
       'valor': widget.reserva.montoTotal,
@@ -297,7 +246,6 @@ void _initializeDataWithDebounce() {
     return {
       'nombre': _nombreController.text.trim(),
       'telefono': _telefonoController.text.trim(),
-      'correo': _emailController.text.trim(),
       'fecha': DateFormat('yyyy-MM-dd').format(_nuevaFecha ?? _currentReserva.fecha),
       'horario': _nuevoHorario ?? _currentReserva.horario.horaFormateada,
       'valor': _precioEditableActivado 
@@ -360,12 +308,7 @@ void _initializeDataWithDebounce() {
   }
 
   Future<bool> _verificarControlTotalActivo() async {
-    try {
-      final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-      return peticionProvider.controlTotalActivado;
-    } catch (e) {
-      return false;
-    }
+    return widget.esSuperAdmin || widget.esAdmin;
   }
 
 
@@ -374,9 +317,17 @@ void _initializeDataWithDebounce() {
     if (!mounted) return;
     debugPrint('Cargando canchas para sede: $sede');
     try {
+      // Obtener lugarId del usuario autenticado
+      final lugarId = await LugarHelper.getLugarId();
+      if (lugarId == null) {
+        debugPrint('EditarReservaScreen: No se pudo obtener lugarId');
+        return;
+      }
+
       final canchasSnapshot = await FirebaseFirestore.instance
           .collection('canchas')
           .where('sedeId', isEqualTo: sede)
+          .where('lugarId', isEqualTo: lugarId) // ✅ Agregar filtrado por lugarId
           .get()
           .timeout(const Duration(seconds: 10));
       final canchas = canchasSnapshot.docs.map((doc) {
@@ -480,22 +431,8 @@ void _initializeDataWithDebounce() {
 
   @override
   void dispose() {
-    // Detener escucha del provider
-    if (widget.esAdmin || widget.esSuperAdmin) {
-      try {
-        Provider.of<PeticionProvider>(context, listen: false).detenerEscuchaControlTotal();
-      } catch (e) {
-        debugPrint('Error deteniendo escucha: $e');
-      }
-    }
-    
-    _nombreController.removeListener(_onFieldChanged);
-    _telefonoController.removeListener(_onFieldChanged);
-    _emailController.removeListener(_onFieldChanged);
-    _montoPagadoController.removeListener(_onFieldChanged);
     _nombreController.dispose();
     _telefonoController.dispose();
-    _emailController.dispose();
     _montoPagadoController.dispose();
     _precioTotalController.dispose();
     _fadeController.dispose();
@@ -603,6 +540,20 @@ void _initializeDataWithDebounce() {
         ? _calcularMontoPersonalizado()
         : (_montoTotalCalculado ?? await _calcularMontoTotal(_currentReserva));
     double montoPagado = double.tryParse(_montoPagadoController.text) ?? _currentReserva.montoPagado;
+
+    // ✅ NUEVO: Validar montos negativos
+    if (montoTotal < 0) {
+      if (!mounted) return;
+      _mostrarError('El monto total no puede ser negativo.');
+      setState(() { _isSaving = false; });
+      return;
+    }
+    if (montoPagado < 0) {
+      if (!mounted) return;
+      _mostrarError('El abono no puede ser negativo.');
+      setState(() { _isSaving = false; });
+      return;
+    }
     
     // Validaciones de montos ACTUALIZADAS
     if (montoPagado > 0 && montoPagado > montoTotal) {
@@ -631,27 +582,9 @@ void _initializeDataWithDebounce() {
       return;
     }
 
-    final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-    
-    // Lógica de permisos (sin cambios)
-    bool puedeHacerCambiosDirectos = false;
-    
-    if (widget.esSuperAdmin) {
-      puedeHacerCambiosDirectos = true;
-      debugPrint('✅ SuperAdmin: Cambios directos permitidos');
-    } else if (widget.esAdmin) {
-      await peticionProvider.cargarConfiguracionControl();
-      puedeHacerCambiosDirectos = peticionProvider.controlTotalActivado;
-      debugPrint('🔧 Admin: Control total = ${peticionProvider.controlTotalActivado}');
-    }
-    
-    if (puedeHacerCambiosDirectos) {
-      debugPrint('🚀 Aplicando cambios directamente...');
-      await _aplicarCambiosDirectamente();
-    } else {
-      debugPrint('📝 Creando petición...');
-      await _crearPeticionCambios();
-    }
+    // Aplicar cambios directamente (sin peticiones)
+    debugPrint('🚀 Aplicando cambios directamente...');
+    await _aplicarCambiosDirectamente();
     
   } catch (e) {
     debugPrint('Error al procesar cambios: $e');
@@ -663,7 +596,7 @@ void _initializeDataWithDebounce() {
 
 
   // 🔥 MÉTODO CORREGIDO - Aplicar cambios directos
-Future<void> _aplicarCambiosDirectamente() async {
+  Future<void> _aplicarCambiosDirectamente() async {
   try {
     final valoresActuales = _obtenerValoresActuales();
     
@@ -743,10 +676,9 @@ Future<void> _aplicarCambiosDirectamente() async {
 }
 
 
-
 // 🔥 NUEVO MÉTODO - Auditoría unificada
 // 🔥 MÉTODO ACTUALIZADO - Auditoría unificada con descripción mejorada
-Future<void> _crearAuditoriaUnificada(
+  Future<void> _crearAuditoriaUnificada(
   Map<String, dynamic> valoresActuales,
   double porcentajeCambio
 ) async {
@@ -761,7 +693,6 @@ Future<void> _crearAuditoriaUnificada(
     final datosAntiguos = {
       'nombre': _valoresOriginales['nombre'],
       'telefono': _valoresOriginales['telefono'],
-      'correo': _valoresOriginales['correo'],
       'valor': precioOriginal,
       'montoPagado': _valoresOriginales['montoPagado'],
       'precio_personalizado': _valoresOriginales['precio_personalizado'] ?? false,
@@ -779,7 +710,6 @@ Future<void> _crearAuditoriaUnificada(
     final datosNuevos = {
       'nombre': valoresActuales['nombre'],
       'telefono': valoresActuales['telefono'],
-      'correo': valoresActuales['correo'],
       'valor': precioNuevo,
       'montoPagado': valoresActuales['montoPagado'],
       'precio_personalizado': esPrecioPersonalizado,
@@ -865,7 +795,7 @@ Future<void> _crearAuditoriaUnificada(
 }
 
 // 🆕 MÉTODO AUXILIAR - Análisis detallado de cambios
-Map<String, dynamic> _analizarCambiosDetalladamente(
+  Map<String, dynamic> _analizarCambiosDetalladamente(
   Map<String, dynamic> datosAntiguos,
   Map<String, dynamic> datosNuevos,
   double porcentajeCambio,
@@ -915,19 +845,12 @@ Map<String, dynamic> _analizarCambiosDetalladamente(
     cambiosDetectados.add(datosNuevos['confirmada'] == true ? 'Confirmación' : 'Desconfirmación');
   }
 
-  // Calcular nivel de riesgo
-  String nivelRiesgo = 'bajo';
-  if (porcentajeCambio >= 50 || cambiosDetectados.length >= 4) {
-    nivelRiesgo = 'critico';
-  } else if (porcentajeCambio >= 25 || cambiosDetectados.length >= 3) {
-    nivelRiesgo = 'alto';
-  } else if (porcentajeCambio >= 15 || cambiosDetectados.length >= 2) {
-    nivelRiesgo = 'medio';
-  }
-
+  // ✅ ELIMINADO: Cálculo de nivel de riesgo duplicado
+  // El nivel de riesgo se calcula correctamente en ReservaAuditUtils
+  // usando el sistema unificado de umbrales
+  
   return {
     'cambios_detectados': cambiosDetectados,
-    'nivel_riesgo_calculado': nivelRiesgo,
     'total_cambios': cambiosDetectados.length,
     'porcentaje_cambio_precio': porcentajeCambio,
   };
@@ -935,15 +858,15 @@ Map<String, dynamic> _analizarCambiosDetalladamente(
 
 
 
-String _calcularImpactoFinanciero(double precioOriginal, double precioNuevo) {
+  String _calcularImpactoFinanciero(double precioOriginal, double precioNuevo) {
   final diferencia = (precioNuevo - precioOriginal).abs();
   if (diferencia >= 100000) return 'muy_alto';
   if (diferencia >= 50000) return 'alto';
   if (diferencia >= 20000) return 'medio';
   return 'bajo';
-}
+  }
 
-bool _esHorarioPeak(String horario) {
+  bool _esHorarioPeak(String horario) {
   final regex = RegExp(r'(\d{1,2}):(\d{2})');
   final match = regex.firstMatch(horario);
   if (match != null) {
@@ -951,16 +874,16 @@ bool _esHorarioPeak(String horario) {
     return hora >= 18 && hora <= 22; // Consistente con ReservaAuditUtils
   }
   return false;
-}
+  }
 
-bool _esFechaFinDeSemana(DateTime fecha) {
+  bool _esFechaFinDeSemana(DateTime fecha) {
   return fecha.weekday == DateTime.friday || 
          fecha.weekday == DateTime.saturday || 
          fecha.weekday == DateTime.sunday;
-}
+  }
 
 
-String _generarMensajeExito(double porcentajeCambio) {
+  String _generarMensajeExito(double porcentajeCambio) {
   if (porcentajeCambio >= 50) {
     return '🚨 CAMBIO CRÍTICO aplicado - Reserva actualizada y auditada';
   } else if (porcentajeCambio >= 30) {
@@ -972,7 +895,7 @@ String _generarMensajeExito(double porcentajeCambio) {
   } else {
     return '✅ Reserva actualizada correctamente';
   }
-}
+  }
 
 
 
@@ -1049,7 +972,6 @@ String _generarMensajeExito(double porcentajeCambio) {
     final updateData = <String, dynamic>{
       'nombre': valoresActuales['nombre'],
       'telefono': valoresActuales['telefono'],
-      'correo': valoresActuales['correo'],
       'valor': valoresActuales['valor'],
       'montoPagado': valoresActuales['montoPagado'],
       'estado': valoresActuales['estado'],
@@ -1144,12 +1066,20 @@ String _generarMensajeExito(double porcentajeCambio) {
     String horario,
   ) async {
     try {
+      // Obtener lugarId del usuario autenticado
+      final lugarId = await LugarHelper.getLugarId();
+      if (lugarId == null) {
+        debugPrint('EditarReservaScreen: No se pudo obtener lugarId para verificar disponibilidad');
+        return false;
+      }
+
       // Verificar reservas normales
       final reservasNormales = await FirebaseFirestore.instance
           .collection('reservas')
           .where('cancha_id', isEqualTo: canchaId)
           .where('fecha', isEqualTo: DateFormat('yyyy-MM-dd').format(fecha))
           .where('horario', isEqualTo: horario)
+          .where('lugarId', isEqualTo: lugarId) // ✅ Agregar filtrado por lugarId
           .get();
 
       // Filtrar la reserva actual
@@ -1275,165 +1205,6 @@ String _generarMensajeExito(double porcentajeCambio) {
     ) ?? false;
   }
 
-
-
-
-  Future<void> _crearPeticionCambios() async {
-    try {
-      final peticionProvider = Provider.of<PeticionProvider>(context, listen: false);
-      final valoresActuales = _obtenerValoresActuales();
-      final peticionId = await peticionProvider.crearPeticion(
-        reservaId: widget.reserva.id,
-        valoresAntiguos: _valoresOriginales,
-        valoresNuevos: valoresActuales,
-      );
-      if (!mounted) return;
-      setState(() {
-        _isSaving = false;
-      });
-      await _mostrarDialogoPeticionCreada(peticionId);
-      Navigator.of(context).pop(true);
-    } catch (e) {
-      debugPrint('Error al crear petición: $e');
-      if (!mounted) return;
-      _mostrarError('Error al crear la petición: $e');
-      setState(() { _isSaving = false; });
-    }
-  }
-
-  Future<void> _mostrarDialogoPeticionCreada(String peticionId) async {
-    final cambiosRealizados = _obtenerResumenCambios();
-    return showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.orange.shade100,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Icon(
-                  Icons.pending_actions,
-                  color: Colors.orange.shade700,
-                ),
-              ),
-              const SizedBox(width: 12),
-              const Expanded(
-                child: Text('Petición Enviada Exitosamente'),
-              ),
-            ],
-          ),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Tu petición de cambios ha sido enviada y está pendiente de aprobación.',
-                  style: GoogleFonts.montserrat(fontSize: 16),
-                ),
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.shade50,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.blue.shade200),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'ID de Petición: ${peticionId.substring(0, 12)}...',
-                        style: GoogleFonts.montserrat(
-                          fontWeight: FontWeight.w600,
-                          color: Colors.blue.shade800,
-                        ),
-                      ),
-                      if (cambiosRealizados.isNotEmpty) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          'Cambios solicitados:',
-                          style: GoogleFonts.montserrat(fontWeight: FontWeight.w500),
-                        ),
-                        const SizedBox(height: 4),
-                        ...cambiosRealizados.map((cambio) => Padding(
-                          padding: const EdgeInsets.only(left: 8, bottom: 2),
-                          child: Text(
-                            '• $cambio',
-                            style: GoogleFonts.montserrat(fontSize: 14),
-                          ),
-                        )),
-                      ],
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.green.shade50,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.green.shade200),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(Icons.info_outline, color: Colors.green.shade700, size: 20),
-                          const SizedBox(width: 8),
-                          Text(
-                            '¿Qué pasa ahora?',
-                            style: GoogleFonts.montserrat(
-                              fontWeight: FontWeight.w600,
-                              color: Colors.green.shade800,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        '1. Un superadministrador revisará tus cambios\n'
-                        '2. Recibirás una notificación con la decisión\n'
-                        '3. Si se aprueba, los cambios se aplicarán automáticamente',
-                        style: GoogleFonts.montserrat(
-                          fontSize: 14,
-                          color: Colors.green.shade700,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.orange.shade600,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-              child: Text(
-                'Entendido',
-                style: GoogleFonts.montserrat(fontWeight: FontWeight.w600),
-              ),
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
-
   List<String> _obtenerResumenCambios() {
     final valoresOriginales = _valoresOriginales;
     final valoresActuales = _obtenerValoresActuales();
@@ -1447,9 +1218,6 @@ String _generarMensajeExito(double porcentajeCambio) {
             break;
           case 'telefono':
             cambios.add('Teléfono: "$oldValue" → "$newValue"');
-            break;
-          case 'correo':
-            cambios.add('Correo: "$oldValue" → "$newValue"');
             break;
           case 'fecha':
             try {
@@ -1929,9 +1697,7 @@ String _generarMensajeExito(double porcentajeCambio) {
                             }
                             return null;
                           },
-                          onChanged: (value) {
-                            setState(() {});
-                          },
+                          // Eliminamos el onChanged que causaba setState en cada tecla
                         ),
                       ],
                     ],
@@ -2179,40 +1945,6 @@ String _generarMensajeExito(double porcentajeCambio) {
       return 'Ingresa el teléfono';
     }
     return null;
-  },
-),
-
-            const SizedBox(height: 16),
-            
-            TextFormField(
-  controller: _emailController,
-  decoration: InputDecoration(
-    labelText: 'Correo (Opcional)',
-    prefixIcon: const Icon(Icons.email),
-    hintText: 'ejemplo@correo.com',
-    border: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(12),
-    ),
-    focusedBorder: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(12),
-      borderSide: BorderSide(color: Theme.of(context).primaryColor, width: 2),
-    ),
-    enabledBorder: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(12),
-      borderSide: BorderSide(color: Colors.grey.shade300),
-    ),
-    filled: true,
-    fillColor: Colors.grey.shade50,
-  ),
-  keyboardType: TextInputType.emailAddress,
-  validator: (value) {
-    // CORREO AHORA ES OPCIONAL
-    if (value != null && value.trim().isNotEmpty) {
-      if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}').hasMatch(value)) {
-        return 'Ingresa un correo válido';
-      }
-    }
-    return null; // Permitir vacío
   },
 ),
 

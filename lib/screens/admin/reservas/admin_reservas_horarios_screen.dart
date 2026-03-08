@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:provider/provider.dart';
@@ -8,6 +9,8 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:reserva_canchas/screens/admin/reservas/admin_detalles_reservas.dart';
 import 'package:reserva_canchas/utils/reserva_audit_utils.dart';
+import 'package:reserva_canchas/services/plan_feature_service.dart';
+import '../../../services/lugar_helper.dart';
 import '../../../models/cancha.dart';
 import '../../../models/reserva.dart';
 import '../../../models/horario.dart';
@@ -15,8 +18,8 @@ import '../../../providers/cancha_provider.dart';
 import '../../../providers/sede_provider.dart';
 import '../../../models/reserva_recurrente.dart';
 import '../../../providers/reserva_recurrente_provider.dart';
+import '../../../providers/promocion_provider.dart';
 import 'agregar_reserva_screen.dart';
-import '../../../models/peticion.dart';
 
 class AdminReservasScreen extends StatefulWidget {
   // ✅ AGREGAR PARÁMETROS PARA MODO SELECTOR
@@ -43,8 +46,6 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
   DateTime _selectedDate = DateTime.now();
   bool _isLoading = true;
   bool _viewGrid = true;
-  final bool _showingRecurrentReservas = false;
-  final List<ReservaRecurrente> _reservasRecurrentesActivas = [];
 
   late AnimationController _fadeController;
   late AnimationController _slideController;
@@ -70,11 +71,9 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
   final Color _availableColor = const Color(0xFFEEEEEE);
   final Color _selectedHourColor = const Color(0xFFFFCA28);
 
-  // ✅ REEMPLAZAR las variables de peticiones (líneas ~50-53)
-  List<Peticion> _peticionesPendientes = [];
-  Map<String, Peticion> _peticionesPorHorario = {};
-  StreamSubscription<QuerySnapshot>? _peticionesSubscription;
-  final Set<String> _peticionesNotificadas = {}; // ✅ NUEVO: Rastrear notificaciones mostradas
+  // ✅ OPTIMIZADO: Variables para promociones
+  Map<String, Map<String, dynamic>> _promocionesPorHorario = {}; // horarioNormalizado -> {precio, id, precio_promocional, ...}
+  StreamSubscription<Map<String, Map<String, dynamic>>>? _promocionesSubscription;
 
   // ✅ REEMPLAZAR el método initState (líneas ~80-95)
   @override
@@ -92,7 +91,6 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initializeData();
-      _iniciarEscuchaPeticionesEnTiempoReal(); // ✅ CAMBIO: Nuevo método
     });
   }
 
@@ -138,7 +136,7 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
   @override
   void dispose() {
     _reservasSubscription?.cancel();
-    _peticionesSubscription?.cancel(); // ✅ IMPORTANTE: Cancelar stream de peticiones
+    _promocionesSubscription?.cancel();
     _fadeController.dispose();
     _slideController.dispose();
     _debounceTimer?.cancel();
@@ -207,17 +205,35 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
         await reservaRecurrenteProvider.fetchReservasRecurrentes(sede: _selectedSedeId);
       }
 
+      // Obtener el lugarId del usuario autenticado
+      final lugarId = await LugarHelper.getLugarId();
+      if (lugarId == null) {
+        debugPrint('AdminReservasHorariosScreen: No se pudo obtener lugarId');
+        return;
+      }
+
+      debugPrint('🔍 CONSULTA RESERVAS:');
+      debugPrint('   - Fecha: ${DateFormat('yyyy-MM-dd').format(_selectedDate)}');
+      debugPrint('   - Sede: $_selectedSedeId');
+      debugPrint('   - Cancha: ${_selectedCancha!.id}');
+      debugPrint('   - LugarId: $lugarId');
+
       final stream = FirebaseFirestore.instance
           .collection('reservas')
           .where('fecha', isEqualTo: DateFormat('yyyy-MM-dd').format(_selectedDate))
           .where('sede', isEqualTo: _selectedSedeId)
           .where('cancha_id', isEqualTo: _selectedCancha!.id)
+          .where('lugarId', isEqualTo: lugarId)
           .limit(24)
           .snapshots();
 
       _reservasSubscription = stream.listen(
         (querySnapshot) async {
           try {
+            debugPrint('📊 RESULTADO CONSULTA:');
+            debugPrint('   - Documentos encontrados: ${querySnapshot.docs.length}');
+            debugPrint('   - Tamaño de la consulta: ${querySnapshot.size}');
+            
             final horarios = await Horario.generarHorarios(
               fecha: _selectedDate,
               canchaId: _selectedCancha!.id,
@@ -231,11 +247,24 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
             
             for (var doc in querySnapshot.docs) {
               try {
+                debugPrint('📄 Procesando documento: ${doc.id}');
+                debugPrint('   - Datos: ${doc.data()}');
+                
+                // ✅ FILTRAR RESERVAS CON ESTADO "devolucion"
+                final data = doc.data() as Map<String, dynamic>?;
+                if (data != null) {
+                  final estado = data['estado'] as String?;
+                  if (estado == 'devolucion') {
+                    debugPrint('🚫 Reserva ${doc.id} excluida por tener estado "devolucion"');
+                    continue; // Saltar esta reserva
+                  }
+                }
+                
                 final reserva = await Reserva.fromFirestore(doc);
                 final horaNormalizada = Horario.normalizarHora(reserva.horario.horaFormateada);
                 reservedMapTemp[horaNormalizada] = reserva;
                 reservasTemp.add(reserva);
-                debugPrint('📋 Reserva normal: ${reserva.nombre} - $horaNormalizada');
+                debugPrint('📋 Reserva normal: ${reserva.nombre} - $horaNormalizada - LugarId: ${reserva.lugarId}');
               } catch (e) {
                 debugPrint("❌ Error al procesar documento: $e");
               }
@@ -275,8 +304,8 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
                     montoPagado: reservaRecurrente.montoPagado,
                     nombre: reservaRecurrente.clienteNombre,
                     telefono: reservaRecurrente.clienteTelefono,
-                    email: reservaRecurrente.clienteEmail,
                     confirmada: true,
+                    lugarId: reservaRecurrente.lugarId, // ✅ Agregar lugarId de la reserva recurrente
                     reservaRecurrenteId: reservaRecurrente.id,
                     esReservaRecurrente: true,
                     precioPersonalizado: reservaRecurrente.precioPersonalizado,
@@ -309,7 +338,7 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
               debugPrint('📊 Total reservas mostradas: ${_reservas.length}');
               debugPrint('📊 Reservas normales: ${_reservas.where((r) => !r.esReservaRecurrente).length}');
               debugPrint('📊 Reservas recurrentes: ${_reservas.where((r) => r.esReservaRecurrente).length}');
-      _iniciarEscuchaPeticionesEnTiempoReal();
+      _iniciarEscuchaPromocionesEnTiempoReal(); // ✅ Iniciar escucha de promociones
 
             }
           } catch (e) {
@@ -332,6 +361,10 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
           }
         },
       );
+
+      // ✅ Iniciar escucha de promociones de inmediato (no solo cuando el stream emita)
+      // Garantiza que las promociones se carguen al volver de otra sección del dashboard
+      _iniciarEscuchaPromocionesEnTiempoReal();
     } catch (e) {
       debugPrint('❌ Error general en _loadReservas: $e');
       if (mounted) {
@@ -343,363 +376,60 @@ class AdminReservasScreenState extends State<AdminReservasScreen>
     }
   }
 
-  // ✅ AGREGAR este método después de _loadReservas (línea ~350 aprox)
-  void _iniciarEscuchaPeticionesEnTiempoReal() {
-  _peticionesSubscription?.cancel();
+  // ✅ OPTIMIZADO: Método para escuchar promociones usando Provider centralizado
+  void _iniciarEscuchaPromocionesEnTiempoReal() {
+  _promocionesSubscription?.cancel();
   
-  // 🆕 NUEVO: Map para rastrear el último estado conocido de cada petición
-  Map<String, EstadoPeticion> ultimosEstadosConocidos = {};
+  if (_selectedCancha == null) return;
   
-  _peticionesSubscription = FirebaseFirestore.instance
-      .collection('peticiones')
-      .where('estado', whereIn: ['pendiente', 'aprobada', 'rechazada'])
-      .snapshots()
-      .listen(
-    (querySnapshot) {
-      if (!mounted) return;
-      
-      final ahora = DateTime.now();
-      final List<Peticion> peticionesPendientes = [];
-      final Map<String, Peticion> peticionesPorHorario = {};
-      
-      // 🎯 OBTENER LA FECHA ACTUAL SELECCIONADA PARA FILTRAR
-      final fechaSeleccionadaStr = DateFormat('yyyy-MM-dd').format(_selectedDate);
-      
-      debugPrint('🔍 Procesando peticiones para fecha: $fechaSeleccionadaStr');
-      debugPrint('📅 Sede actual: $_selectedSedeId');
-      debugPrint('🏟️ Cancha actual: ${_selectedCancha?.id}');
-      
-      // 🆕 Variables para rastrear cambios reales de estado
-      bool huboReservaRecurrenteAprobada = false;
-      
-      for (var doc in querySnapshot.docs) {
-        try {
-          final peticion = Peticion.fromFirestore(doc);
-          final estadoAnterior = ultimosEstadosConocidos[peticion.id];
-          final estadoActual = peticion.estado;
-          
-          // 🔄 ACTUALIZAR EL ESTADO CONOCIDO
-          ultimosEstadosConocidos[peticion.id] = estadoActual;
-          
-          // ✅ PROCESAR TODOS LOS TIPOS DE PETICIONES DE RESERVAS
-          final tipoPeticion = peticion.valoresNuevos['tipo'] as String?;
-          final esNuevaReservaNormal = tipoPeticion == 'nueva_reserva_precio_personalizado';
-          final esNuevaReservaRecurrente = tipoPeticion == 'nueva_reserva_recurrente_precio_personalizado';
-          
-          if (esNuevaReservaNormal || esNuevaReservaRecurrente) {
-            
-            // ✅ DETECTAR CAMBIOS DE ESTADO REALES (solo si cambió desde la última vez)
-            if (estadoAnterior != null && estadoAnterior != estadoActual) {
-              
-              if (peticion.fueAprobada && !_peticionesNotificadas.contains('${peticion.id}_aprobada')) {
-                _peticionesNotificadas.add('${peticion.id}_aprobada');
-                String mensaje = esNuevaReservaRecurrente 
-                    ? '✅ Petición aprobada - se creó una nueva reserva recurrente'
-                    : '✅ Petición aprobada - se creó una nueva reserva';
-                _mostrarNotificacionPeticionActualizada(mensaje);
-                
-                // 🔄 MARCAR QUE HUBO UNA RESERVA RECURRENTE APROBADA
-                if (esNuevaReservaRecurrente) {
-                  huboReservaRecurrenteAprobada = true;
-                }
-                
-                // ✅ RECARGAR RESERVAS INMEDIATAMENTE SOLO PARA RESERVAS NORMALES
-                if (esNuevaReservaNormal) {
-                  Future.delayed(const Duration(milliseconds: 1000), () {
-                    if (mounted) _loadReservas();
-                  });
-                }
-              }
-              
-              if (peticion.fueRechazada && !_peticionesNotificadas.contains('${peticion.id}_rechazada')) {
-                _peticionesNotificadas.add('${peticion.id}_rechazada');
-                
-                String clienteNombre = 'Cliente';
-                if (esNuevaReservaRecurrente) {
-                  final datosReserva = peticion.valoresNuevos['datos_reserva_recurrente'] as Map<String, dynamic>? ?? {};
-                  clienteNombre = datosReserva['cliente_nombre'] as String? ?? 'Cliente';
-                } else {
-                  final datosReserva = peticion.valoresNuevos['datos_reserva'] as Map<String, dynamic>? ?? {};
-                  clienteNombre = datosReserva['cliente_nombre'] as String? ?? 'Cliente';
-                }
-                
-                String mensaje = esNuevaReservaRecurrente
-                    ? '❌ Petición de reserva recurrente de $clienteNombre fue rechazada'
-                    : '❌ Petición de $clienteNombre fue rechazada';
-                _mostrarNotificacionPeticionActualizada(mensaje);
-              }
-            }
-            
-            // 🎯 FILTRAR PETICIONES PENDIENTES SOLO PARA LA FECHA/SEDE/CANCHA ACTUAL
-            if (peticion.estaPendiente) {
-              bool debeIncluirse = false;
-              
-              if (esNuevaReservaNormal) {
-                // ✅ PARA RESERVAS NORMALES: verificar fecha exacta + sede + cancha
-                debeIncluirse = _peticionAplicaParaReservaNormal(peticion, fechaSeleccionadaStr);
-              } else if (esNuevaReservaRecurrente) {
-                // ✅ PARA RESERVAS RECURRENTES: verificar si aplica para la fecha actual
-                debeIncluirse = _peticionAplicaParaReservaRecurrente(peticion, _selectedDate);
-              }
-              
-              if (debeIncluirse) {
-                peticionesPendientes.add(peticion);
-                
-                // ✅ PROCESAR SEGÚN EL TIPO
-                if (esNuevaReservaNormal) {
-                  _procesarPeticionReservaNormal(peticion, peticionesPorHorario);
-                } else if (esNuevaReservaRecurrente) {
-                  _procesarPeticionReservaRecurrente(peticion, peticionesPorHorario);
-                }
-              } else {
-                debugPrint('🚫 Petición ${peticion.id} no aplica para la fecha/sede/cancha actual');
-              }
-            }
-          }
-        } catch (e) {
-          debugPrint('Error procesando petición: $e');
-        }
-      }
-      
-      setState(() {
-        _peticionesPendientes = peticionesPendientes;
-        _peticionesPorHorario = peticionesPorHorario;
-      });
-      
-      // 🔄 REFRESCAR RESERVAS RECURRENTES SI HUBO APROBACIONES
-      if (huboReservaRecurrenteAprobada) {
-        debugPrint('🔄 Refrescando reservas recurrentes después de aprobación...');
-        Future.delayed(const Duration(milliseconds: 1500), () {
-          if (mounted) _refrescarReservasRecurrentesYRecargar();
-        });
-      }
-      
-      debugPrint('📊 RESULTADO DEL FILTRADO:');
-      debugPrint('   - Peticiones pendientes para esta vista: ${peticionesPendientes.length}');
-      debugPrint('   - Horarios con peticiones: ${peticionesPorHorario.length}');
-      
-      // ✅ LLAMAR AL DEBUG DESPUÉS DE PROCESAR
-      _debugPeticionesActuales();
-    },
-    onError: (error) {
-      debugPrint('Error en stream de peticiones: $error');
-      if (mounted) {
-        _showErrorSnackBar('Error al escuchar peticiones: $error');
-      }
-    },
-  );
-}
-
-
-bool _peticionAplicaParaReservaNormal(Peticion peticion, String fechaSeleccionadaStr) {
-  final datosReserva = peticion.valoresNuevos['datos_reserva'] as Map<String, dynamic>?;
-  if (datosReserva == null) return false;
-  
-  final fechaPeticion = datosReserva['fecha'] as String?;
-  final sedePeticion = datosReserva['sede'] as String?;
-  final canchaPeticion = datosReserva['cancha_id'] as String?;
-  
-  // 🎯 FILTRO ESTRICTO: fecha, sede y cancha deben coincidir exactamente
-  final fechaCoincide = fechaPeticion == fechaSeleccionadaStr;
-  final sedeCoincide = sedePeticion == _selectedSedeId;
-  final canchaCoincide = canchaPeticion == _selectedCancha?.id;
-  
-  final aplica = fechaCoincide && sedeCoincide && canchaCoincide;
-  
-  debugPrint('🔍 Verificando petición reserva normal ${peticion.id}:');
-  debugPrint('   - Fecha: $fechaPeticion == $fechaSeleccionadaStr → $fechaCoincide');
-  debugPrint('   - Sede: $sedePeticion == $_selectedSedeId → $sedeCoincide');
-  debugPrint('   - Cancha: $canchaPeticion == ${_selectedCancha?.id} → $canchaCoincide');
-  debugPrint('   - Resultado: $aplica');
-  
-  return aplica;
-}
-
-// 🆕 NUEVO MÉTODO: Verificar si una petición de reserva recurrente aplica para la fecha actual
-bool _peticionAplicaParaReservaRecurrente(Peticion peticion, DateTime fechaSeleccionada) {
-  final datosReserva = peticion.valoresNuevos['datos_reserva_recurrente'] as Map<String, dynamic>?;
-  if (datosReserva == null) return false;
-  
-  final sedePeticion = datosReserva['sede'] as String?;
-  final canchaPeticion = datosReserva['cancha_id'] as String?;
-  final diasSemana = datosReserva['dias_semana'] as List?;
-  final fechaInicio = datosReserva['fecha_inicio'] as String?;
-  final fechaFin = datosReserva['fecha_fin'] as String?;
-  
-  // ✅ VERIFICAR SEDE Y CANCHA PRIMERO
-  if (sedePeticion != _selectedSedeId || canchaPeticion != _selectedCancha?.id) {
-    debugPrint('🚫 Petición recurrente ${peticion.id}: sede/cancha no coincide');
-    return false;
-  }
-  
-  if (diasSemana == null || fechaInicio == null) {
-    debugPrint('🚫 Petición recurrente ${peticion.id}: datos incompletos');
-    return false;
-  }
-  
-  try {
-    final fechaInicioDateTime = DateTime.parse(fechaInicio);
-    DateTime? fechaFinDateTime;
-    if (fechaFin != null && fechaFin.isNotEmpty) {
-      fechaFinDateTime = DateTime.parse(fechaFin);
-    }
-    
-    // ✅ VERIFICAR CONDICIONES DE FECHA Y DÍA
-    final fechaSeleccionadaStr = DateFormat('yyyy-MM-dd').format(fechaSeleccionada);
-    final diaSeleccionado = DateFormat('EEEE', 'es').format(fechaSeleccionada).toLowerCase();
-    
-    // Convertir días de la semana a formato español
-    final diasSemanaFormateados = diasSemana.map((dia) {
-      final diaStr = dia.toString().toLowerCase();
-      switch (diaStr) {
-        case 'monday': case 'lunes': return 'lunes';
-        case 'tuesday': case 'martes': return 'martes';
-        case 'wednesday': case 'miércoles': case 'miercoles': return 'miércoles';
-        case 'thursday': case 'jueves': return 'jueves';
-        case 'friday': case 'viernes': return 'viernes';
-        case 'saturday': case 'sábado': case 'sabado': return 'sábado';
-        case 'sunday': case 'domingo': return 'domingo';
-        default: return diaStr;
-      }
-    }).toList();
-    
-    final fechaEnRango = fechaSeleccionada.isAfter(fechaInicioDateTime.subtract(const Duration(days: 1))) &&
-                        (fechaFinDateTime == null || fechaSeleccionada.isBefore(fechaFinDateTime.add(const Duration(days: 1))));
-    
-    final esDiaValido = diasSemanaFormateados.contains(diaSeleccionado);
-    
-    // Verificar días excluidos
-    final diasExcluidos = datosReserva['dias_excluidos'] as List? ?? [];
-    final estaExcluida = diasExcluidos.contains(fechaSeleccionadaStr);
-    
-    final aplica = fechaEnRango && esDiaValido && !estaExcluida;
-    
-    debugPrint('🔍 Verificando petición recurrente ${peticion.id}:');
-    debugPrint('   - Fecha en rango: $fechaEnRango');
-    debugPrint('   - Día válido: $esDiaValido ($diaSeleccionado en $diasSemanaFormateados)');
-    debugPrint('   - No excluida: ${!estaExcluida}');
-    debugPrint('   - Resultado: $aplica');
-    
-    return aplica;
-  } catch (e) {
-    debugPrint('❌ Error verificando petición recurrente ${peticion.id}: $e');
-    return false;
-  }
-}
-
-
-
-
-  void _procesarPeticionReservaNormal(Peticion peticion, Map<String, Peticion> peticionesPorHorario) {
-  final datosReserva = peticion.valoresNuevos['datos_reserva'] as Map<String, dynamic>?;
-  if (datosReserva == null) return;
-  
-  final fecha = datosReserva['fecha'] as String?;
-  final sede = datosReserva['sede'] as String?;
-  final canchaId = datosReserva['cancha_id'] as String?;
-  final horarios = datosReserva['horarios'] as List?;
-  
-  // ✅ VALIDACIÓN ESTRICTA: Solo mostrar si coincide EXACTAMENTE con la pantalla actual
   final fechaSeleccionadaStr = DateFormat('yyyy-MM-dd').format(_selectedDate);
   
-  // 🔍 VERIFICACIÓN COMPLETA: fecha, sede y cancha deben coincidir exactamente
-  final fechaCoincide = fecha == fechaSeleccionadaStr;
-  final sedeCoincide = sede == _selectedSedeId;
-  final canchaCoincide = canchaId == _selectedCancha?.id;
-  
-  debugPrint('🔍 Procesando petición reserva normal:');
-  debugPrint('   - ID Petición: ${peticion.id}');
-  debugPrint('   - Fecha petición: $fecha');
-  debugPrint('   - Fecha seleccionada: $fechaSeleccionadaStr');
-  debugPrint('   - Fecha coincide: $fechaCoincide');
-  debugPrint('   - Sede petición: $sede');
-  debugPrint('   - Sede seleccionada: $_selectedSedeId');
-  debugPrint('   - Sede coincide: $sedeCoincide');
-  debugPrint('   - Cancha petición: $canchaId');
-  debugPrint('   - Cancha seleccionada: ${_selectedCancha?.id}');
-  debugPrint('   - Cancha coincide: $canchaCoincide');
-  debugPrint('   - Horarios: $horarios');
-  
-  // ✅ SOLO PROCESAR SI TODOS LOS CRITERIOS COINCIDEN
-  if (fechaCoincide && sedeCoincide && canchaCoincide && horarios != null) {
-    debugPrint('✅ ¡Petición válida! Agregando a horarios...');
+  // Usar un Future para obtener lugarId y luego iniciar el stream
+  LugarHelper.getLugarId().then((lugarId) {
+    if (lugarId == null || !mounted) return;
     
-    for (var horario in horarios) {
-      final horaStr = horario.toString();
-      final horaNormalizada = Horario.normalizarHora(horaStr);
-      peticionesPorHorario[horaNormalizada] = peticion;
-      
-      debugPrint('   ✅ Horario agregado: $horaNormalizada');
+    // ✅ Aplicar caché de inmediato si existe (para que al volver a la sección se vean las promos sin esperar al stream)
+    final promocionProvider = Provider.of<PromocionProvider>(context, listen: false);
+    final cache = promocionProvider.getPromocionesFromCache(
+      lugarId: lugarId,
+      canchaId: _selectedCancha!.id,
+      fecha: fechaSeleccionadaStr,
+    );
+    if (cache != null && cache.isNotEmpty && mounted) {
+      setState(() {
+        _promocionesPorHorario = Map.from(cache);
+      });
+      debugPrint('📊 Promociones desde caché: ${_promocionesPorHorario.length}');
     }
-  } else {
-    // 🚫 DEBUG: Explicar por qué NO se procesa la petición
-    debugPrint('🚫 Petición NO procesada. Razones:');
-    if (!fechaCoincide) {
-      debugPrint('   ❌ Fecha no coincide: $fecha ≠ $fechaSeleccionadaStr');
-    }
-    if (!sedeCoincide) {
-      debugPrint('   ❌ Sede no coincide: $sede ≠ $_selectedSedeId');
-    }
-    if (!canchaCoincide) {
-      debugPrint('   ❌ Cancha no coincide: $canchaId ≠ ${_selectedCancha?.id}');
-    }
-    if (horarios == null) {
-      debugPrint('   ❌ No hay horarios en la petición');
-    }
-  }
-}
 
-
-
-// ✅ AGREGAR este método después de _procesarPeticionReservaRecurrente para debugging
-void _debugPeticionesActuales() {
-  debugPrint('🔍 DEBUG PETICIONES ACTUALES:');
-  debugPrint('   - Fecha seleccionada: ${DateFormat('yyyy-MM-dd').format(_selectedDate)}');
-  debugPrint('   - Sede seleccionada: $_selectedSedeId');
-  debugPrint('   - Cancha seleccionada: ${_selectedCancha?.id} (${_selectedCancha?.nombre})');
-  debugPrint('   - Total peticiones pendientes: ${_peticionesPendientes.length}');
-  debugPrint('   - Peticiones por horario: ${_peticionesPorHorario.length}');
-  
-  debugPrint('📋 LISTADO DE TODAS LAS PETICIONES PENDIENTES:');
-  for (var peticion in _peticionesPendientes) {
-    final tipo = peticion.valoresNuevos['tipo'] as String?;
-    debugPrint('   🔸 Petición ${peticion.id}:');
-    debugPrint('      - Tipo: $tipo');
-    
-    if (tipo == 'nueva_reserva_precio_personalizado') {
-      final datosReserva = peticion.valoresNuevos['datos_reserva'] as Map<String, dynamic>? ?? {};
-      final fechaPeticion = datosReserva['fecha'];
-      final sedePeticion = datosReserva['sede'];
-      final canchaPeticion = datosReserva['cancha_id'];
-      
-      debugPrint('      - Fecha: $fechaPeticion ${fechaPeticion == DateFormat('yyyy-MM-dd').format(_selectedDate) ? '✅' : '❌'}');
-      debugPrint('      - Sede: $sedePeticion ${sedePeticion == _selectedSedeId ? '✅' : '❌'}');
-      debugPrint('      - Cancha: $canchaPeticion ${canchaPeticion == _selectedCancha?.id ? '✅' : '❌'}');
-      debugPrint('      - Horarios: ${datosReserva['horarios']}');
-      debugPrint('      - Cliente: ${datosReserva['cliente_nombre']}');
-    } else if (tipo == 'nueva_reserva_recurrente_precio_personalizado') {
-      final datosReserva = peticion.valoresNuevos['datos_reserva_recurrente'] as Map<String, dynamic>? ?? {};
-      debugPrint('      - Sede: ${datosReserva['sede']} ${datosReserva['sede'] == _selectedSedeId ? '✅' : '❌'}');
-      debugPrint('      - Cancha: ${datosReserva['cancha_id']} ${datosReserva['cancha_id'] == _selectedCancha?.id ? '✅' : '❌'}');
-      debugPrint('      - Horario: ${datosReserva['horario']}');
-      debugPrint('      - Días: ${datosReserva['dias_semana']}');
-      debugPrint('      - Fecha inicio: ${datosReserva['fecha_inicio']}');
-      debugPrint('      - Fecha fin: ${datosReserva['fecha_fin']}');
-      debugPrint('      - Cliente: ${datosReserva['cliente_nombre']}');
-    }
-  }
-  
-  debugPrint('🎯 HORARIOS CON PETICIONES ACTIVAS:');
-  _peticionesPorHorario.forEach((horario, peticion) {
-    final tipo = peticion.valoresNuevos['tipo'] as String?;
-    debugPrint('   ⏰ $horario: Petición ${peticion.id} ($tipo)');
+    _promocionesSubscription = promocionProvider.getPromociones(
+      lugarId: lugarId,
+      canchaId: _selectedCancha!.id,
+      fecha: fechaSeleccionadaStr,
+      sedeId: _selectedSedeId,
+    ).listen(
+      (promocionesTemp) {
+        if (!mounted) return;
+        
+        setState(() {
+          _promocionesPorHorario = promocionesTemp;
+        });
+        
+        debugPrint('📊 Promociones activas: ${_promocionesPorHorario.length}');
+      },
+      onError: (error) {
+        debugPrint('❌ Error en stream de promociones: $error');
+        if (mounted) {
+          setState(() {
+            _promocionesPorHorario = {};
+          });
+        }
+      },
+    );
+  }).catchError((error) {
+    debugPrint('❌ Error obteniendo lugarId para promociones: $error');
   });
-  
-  debugPrint('📊 RESUMEN:');
-  debugPrint('   - Peticiones mostradas en UI: ${_peticionesPorHorario.length}');
-  debugPrint('   - Peticiones totales pendientes: ${_peticionesPendientes.length}');
 }
-
 
 Future<void> _refrescarReservasRecurrentesYRecargar() async {
   if (!mounted) return;
@@ -746,94 +476,6 @@ Future<void> _refrescarReservasRecurrentesYRecargar() async {
     if (mounted) {
       _showErrorSnackBar('Error actualizando reservas: $e');
     }
-  }
-}
-
-
-void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion> peticionesPorHorario) {
-  final datosReserva = peticion.valoresNuevos['datos_reserva_recurrente'] as Map<String, dynamic>?;
-  if (datosReserva == null) return;
-  
-  final sede = datosReserva['sede'] as String?;
-  final canchaId = datosReserva['cancha_id'] as String?;
-  final horario = datosReserva['horario'] as String?;
-  final diasSemana = datosReserva['dias_semana'] as List?;
-  final fechaInicio = datosReserva['fecha_inicio'] as String?;
-  final fechaFin = datosReserva['fecha_fin'] as String?;
-  
-  debugPrint('🔍 Procesando petición reserva recurrente:');
-  debugPrint('   - ID Petición: ${peticion.id}');
-  debugPrint('   - Sede petición: $sede');
-  debugPrint('   - Sede seleccionada: $_selectedSedeId');
-  debugPrint('   - Cancha petición: $canchaId');
-  debugPrint('   - Cancha seleccionada: ${_selectedCancha?.id}');
-  
-  // ✅ VERIFICAR SEDE Y CANCHA PRIMERO
-  if (sede != _selectedSedeId || canchaId != _selectedCancha?.id) {
-    debugPrint('🚫 Petición recurrente no coincide con sede/cancha actual');
-    return;
-  }
-  
-  if (horario == null || diasSemana == null || fechaInicio == null) {
-    debugPrint('🚫 Datos incompletos en petición recurrente');
-    return;
-  }
-  
-  try {
-    final fechaInicioDateTime = DateTime.parse(fechaInicio);
-    DateTime? fechaFinDateTime;
-    if (fechaFin != null && fechaFin.isNotEmpty) {
-      fechaFinDateTime = DateTime.parse(fechaFin);
-    }
-    
-    // ✅ VERIFICAR SI LA FECHA SELECCIONADA ESTÁ EN EL RANGO DE LA RESERVA RECURRENTE
-    final fechaSeleccionada = _selectedDate;
-    final fechaSeleccionadaStr = DateFormat('yyyy-MM-dd').format(fechaSeleccionada);
-    final diaSeleccionado = DateFormat('EEEE', 'es').format(fechaSeleccionada).toLowerCase();
-    
-    // Convertir días de la semana a formato español si están en inglés
-    final diasSemanaFormateados = diasSemana.map((dia) {
-      final diaStr = dia.toString().toLowerCase();
-      switch (diaStr) {
-        case 'monday': case 'lunes': return 'lunes';
-        case 'tuesday': case 'martes': return 'martes';
-        case 'wednesday': case 'miércoles': case 'miercoles': return 'miércoles';
-        case 'thursday': case 'jueves': return 'jueves';
-        case 'friday': case 'viernes': return 'viernes';
-        case 'saturday': case 'sábado': case 'sabado': return 'sábado';
-        case 'sunday': case 'domingo': return 'domingo';
-        default: return diaStr;
-      }
-    }).toList();
-    
-    // ✅ VERIFICAR CONDICIONES PARA MOSTRAR LA PETICIÓN
-    final fechaEnRango = fechaSeleccionada.isAfter(fechaInicioDateTime.subtract(const Duration(days: 1))) &&
-                        (fechaFinDateTime == null || fechaSeleccionada.isBefore(fechaFinDateTime.add(const Duration(days: 1))));
-    
-    final esDiaValido = diasSemanaFormateados.contains(diaSeleccionado);
-    
-    // Verificar días excluidos
-    final diasExcluidos = datosReserva['dias_excluidos'] as List? ?? [];
-    final estaExcluida = diasExcluidos.contains(fechaSeleccionadaStr);
-    
-    debugPrint('   - Fecha en rango: $fechaEnRango');
-    debugPrint('   - Día válido: $esDiaValido (día: $diaSeleccionado, días válidos: $diasSemanaFormateados)');
-    debugPrint('   - Está excluida: $estaExcluida');
-    
-    // ✅ SOLO AGREGAR SI TODAS LAS CONDICIONES SE CUMPLEN
-    if (fechaEnRango && esDiaValido && !estaExcluida) {
-      final horaNormalizada = Horario.normalizarHora(horario);
-      peticionesPorHorario[horaNormalizada] = peticion;
-      
-      debugPrint('✅ Petición reserva recurrente agregada para: $horaNormalizada');
-      debugPrint('📅 Fecha: $fechaSeleccionadaStr, Día: $diaSeleccionado');
-      debugPrint('📋 Cliente: ${datosReserva['cliente_nombre']}');
-    } else {
-      debugPrint('🚫 Petición recurrente no aplica para la fecha actual');
-    }
-    
-  } catch (e) {
-    debugPrint('❌ Error procesando petición reserva recurrente: $e');
   }
 }
 
@@ -901,14 +543,9 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
       _isLoading = true;
     });
     
-    // 🆕 LIMPIAR NOTIFICACIONES AL CAMBIAR FECHA
-    _peticionesNotificadas.clear();
-    
     _debounceTimer?.cancel();
     _debounceTimer = Timer(const Duration(milliseconds: 200), () {
       _loadReservas();
-      // ✅ NUEVO: REINICIAR STREAM DE PETICIONES CUANDO CAMBIA LA FECHA
-      // Se ejecutará automáticamente desde _loadReservas()
     });
   }
 }
@@ -971,6 +608,9 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
       ),
     ).then((result) async {
       if (result == true && mounted) {
+        // ✅ NUEVO: Desactivar promociones de los horarios reservados
+        await _desactivarPromocionesReservadas();
+        
         setState(() {
           _selectedHours.clear();
         });
@@ -978,18 +618,51 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
       }
     });
   }
+  
+  // ✅ NUEVO: Método para desactivar promociones cuando se crea una reserva
+  Future<void> _desactivarPromocionesReservadas() async {
+    if (_selectedHours.isEmpty) return;
+    
+    try {
+      final batch = FirebaseFirestore.instance.batch();
+      int promocionesDesactivadas = 0;
+      
+      for (final horaStr in _selectedHours) {
+        final horaNormalizada = Horario.normalizarHora(horaStr);
+        if (_promocionesPorHorario.containsKey(horaNormalizada)) {
+          final promocion = _promocionesPorHorario[horaNormalizada]!;
+          final promocionId = promocion['id'] as String;
+          
+          final promocionRef = FirebaseFirestore.instance
+              .collection('promociones')
+              .doc(promocionId);
+          
+          // Desactivar la promoción en lugar de eliminarla (para auditoría)
+          batch.update(promocionRef, {
+            'activo': false,
+            'fecha_desactivacion': FieldValue.serverTimestamp(),
+            'motivo_desactivacion': 'Reserva creada por administrador',
+          });
+          
+          promocionesDesactivadas++;
+          debugPrint('🗑️ Promoción desactivada: $promocionId para horario $horaNormalizada');
+        }
+      }
+      
+      if (promocionesDesactivadas > 0) {
+        await batch.commit();
+        debugPrint('✅ $promocionesDesactivadas promoción(es) desactivada(s) correctamente');
+      }
+    } catch (e) {
+      debugPrint('❌ Error desactivando promociones: $e');
+      // No mostrar error al usuario, solo log
+    }
+  }
 
   // ✅ REEMPLAZAR el método _toggleHourSelection (líneas ~530 aprox)
   void _toggleHourSelection(String horaStr) {
   setState(() {
     final horaNormalizada = Horario.normalizarHora(horaStr);
-    
-    // ✅ VERIFICAR SI HAY UNA PETICIÓN PENDIENTE PARA ESTE HORARIO
-    if (_peticionesPorHorario.containsKey(horaNormalizada)) {
-      final peticion = _peticionesPorHorario[horaNormalizada]!;
-      _mostrarOpcionesPeticionPendiente(horaStr, peticion);
-      return;
-    }
     
     // ✅ VERIFICAR SI ESTÁ RESERVADO
     if (_reservedMap.containsKey(horaNormalizada)) {
@@ -1073,6 +746,569 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
         ],
       ),
     );
+  }
+
+  Future<void> _showPublicarPromocionesDialog() async {
+    if (_selectedCancha == null || _selectedHours.isEmpty) {
+      _showErrorSnackBar('Selecciona una cancha y un horario');
+      return;
+    }
+
+    // 🔐 Validar plan: promociones solo para Plan Premium o Pro
+    final allowed = await PlanFeatureService.ensureFeatureAvailable(
+      context,
+      PlanFeature.promocionesHoras,
+    );
+    if (!allowed) return;
+    
+    // ✅ Validar que solo hay 1 horario seleccionado
+    if (_selectedHours.length != 1) {
+      _showErrorSnackBar('Solo puedes crear promociones para un horario a la vez');
+      return;
+    }
+    
+    // ✅ NUEVO: Validar que la fecha y hora sean futuras
+    if (!_esFechaHoraFutura()) {
+      final ahora = DateTime.now();
+      final fechaSeleccionada = DateTime(
+        _selectedDate.year,
+        _selectedDate.month,
+        _selectedDate.day,
+      );
+      final fechaHoy = DateTime(ahora.year, ahora.month, ahora.day);
+      
+      if (fechaSeleccionada.isBefore(fechaHoy)) {
+        _showErrorSnackBar('No puedes crear promociones para días pasados');
+      } else {
+        _showErrorSnackBar('No puedes crear promociones para horas pasadas o en curso. Solo horas futuras');
+      }
+      return;
+    }
+    
+    final horaStr = _selectedHours.first;
+    final horaNormalizada = Horario.normalizarHora(horaStr);
+    
+    // ✅ Verificar si ya existe una promoción para este horario
+                  final promocionExistente = _promocionesPorHorario[horaNormalizada];
+                  final bool esEdicion = promocionExistente != null;
+                  
+                  final precioController = TextEditingController(
+                    text: esEdicion ? (promocionExistente['precio_promocional'] as double).toStringAsFixed(0) : '',
+                  );
+                  final notaController = TextEditingController(
+                    text: esEdicion ? (promocionExistente['nota'] as String? ?? '') : '',
+                  );
+    bool isSubmitting = false;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: !isSubmitting,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) => AlertDialog(
+            title: Text(
+              esEdicion ? 'Editar Promoción' : 'Publicar Promoción',
+              style: GoogleFonts.montserrat(fontWeight: FontWeight.w600),
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Fecha: ${DateFormat('yyyy-MM-dd').format(_selectedDate)}', style: GoogleFonts.montserrat(fontSize: 13)),
+                const SizedBox(height: 6),
+                Text('Cancha: ${_selectedCancha?.nombre ?? ''}', style: GoogleFonts.montserrat(fontSize: 13)),
+                const SizedBox(height: 12),
+                Text('Horario seleccionado:', style: GoogleFonts.montserrat(fontWeight: FontWeight.w500)),
+                const SizedBox(height: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.blue.shade200),
+                  ),
+                  child: Text(
+                    horaStr,
+                    style: GoogleFonts.montserrat(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.blue.shade900,
+                    ),
+                  ),
+                ),
+                if (esEdicion) ...[
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      Icon(Icons.check_circle, size: 14, color: Colors.green.shade700),
+                      const SizedBox(width: 6),
+                      Text('Estado: Activa', style: GoogleFonts.montserrat(fontSize: 12, color: Colors.green.shade700, fontWeight: FontWeight.w500)),
+                    ],
+                  ),
+                ] else ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Si ya existe una promoción para este horario, será reemplazada automáticamente.',
+                    style: GoogleFonts.montserrat(fontSize: 11, color: Colors.grey.shade600),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                TextField(
+                  controller: precioController,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                  ],
+                  decoration: const InputDecoration(
+                    labelText: 'Precio promocional',
+                    hintText: 'Ej. 50000',
+                    prefixText: 'COP ',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: notaController,
+                  decoration: const InputDecoration(
+                    labelText: 'Nota (opcional)'
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              // ✅ NUEVO: Botón eliminar solo si es edición
+              if (esEdicion)
+                TextButton.icon(
+                  onPressed: isSubmitting ? null : () async {
+                    final confirmar = await showDialog<bool>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: Text('Desactivar Promoción', style: GoogleFonts.montserrat(fontWeight: FontWeight.w600)),
+                        content: Text(
+                          '¿Desactivar esta promoción? Dejará de mostrarse en la app.',
+                          style: GoogleFonts.montserrat(),
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            child: Text('Cancelar', style: GoogleFonts.montserrat()),
+                          ),
+                          ElevatedButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+                            child: Text('Desactivar', style: GoogleFonts.montserrat(color: Colors.white)),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (confirmar == true) {
+                      Navigator.pop(context);
+                      await _eliminarPromocion(
+                        promocionExistente['id'] as String,
+                        horaStr,
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.remove_circle_outline, color: Colors.orange),
+                  label: Text('Desactivar', style: GoogleFonts.montserrat(color: Colors.orange)),
+                ),
+              TextButton(
+                onPressed: isSubmitting ? null : () => Navigator.pop(context),
+                child: Text('Cancelar', style: GoogleFonts.montserrat()),
+              ),
+              ElevatedButton.icon(
+                onPressed: isSubmitting ? null : () async {
+                  final precioText = precioController.text.trim();
+                  if (precioText.isEmpty) {
+                    _showErrorSnackBar('Ingresa un precio promocional');
+                    return;
+                  }
+                  double? precio;
+                  try { precio = double.parse(precioText.replaceAll(',', '.')); } catch (_) {}
+                  if (precio == null || precio <= 0) {
+                    _showErrorSnackBar('Precio inválido');
+                    return;
+                  }
+                  setState(() { isSubmitting = true; });
+                  
+                  if (esEdicion) {
+                    // Actualizar promoción existente
+                    await _actualizarPromocion(
+                      promocionId: promocionExistente['id'] as String,
+                      precio: precio,
+                      nota: notaController.text.trim(),
+                    );
+                  } else {
+                    // Crear nueva promoción
+                    await _publicarPromociones(precio: precio, nota: notaController.text.trim());
+                  }
+                  
+                  if (mounted) Navigator.pop(context);
+                },
+                icon: Icon(esEdicion ? Icons.edit : Icons.local_offer, size: 18),
+                label: Text(esEdicion ? 'Actualizar' : 'Publicar', style: GoogleFonts.montserrat()),
+                style: ElevatedButton.styleFrom(backgroundColor: _secondaryColor, foregroundColor: Colors.white),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // ✅ NUEVO: Validar si la fecha y hora seleccionadas son futuras
+  bool _esFechaHoraFutura() {
+    if (_selectedCancha == null || _selectedHours.isEmpty) return false;
+    
+    final ahora = DateTime.now();
+    final fechaSeleccionada = DateTime(
+      _selectedDate.year,
+      _selectedDate.month,
+      _selectedDate.day,
+    );
+    final fechaHoy = DateTime(ahora.year, ahora.month, ahora.day);
+    
+    // Si la fecha es pasada, no es válida
+    if (fechaSeleccionada.isBefore(fechaHoy)) {
+      return false;
+    }
+    
+    // Si la fecha es hoy, verificar que la hora sea futura
+    if (fechaSeleccionada.isAtSameMomentAs(fechaHoy)) {
+      try {
+        final horaStr = _selectedHours.first;
+        final horario = Horario.fromHoraFormateada(horaStr);
+        final horaActual = TimeOfDay.now();
+        
+        // Comparar minutos del día
+        final minutosSeleccionados = horario.hora.hour * 60 + horario.hora.minute;
+        final minutosActuales = horaActual.hour * 60 + horaActual.minute;
+        
+        // La hora debe ser al menos 1 minuto en el futuro
+        return minutosSeleccionados > minutosActuales;
+      } catch (e) {
+        debugPrint('Error validando hora: $e');
+        return false;
+      }
+    }
+    
+    // Si la fecha es futura, es válida
+    return true;
+  }
+
+  // ✅ NUEVO: Obtener precio normal de la cancha para el día y hora específicos
+  double _obtenerPrecioNormalCancha() {
+    if (_selectedCancha == null) return 0.0;
+    
+    final String day = DateFormat('EEEE', 'es').format(_selectedDate).toLowerCase();
+    final horaStr = _selectedHours.first;
+    final horaNormalizada = Horario.normalizarHora(horaStr);
+    
+    final preciosPorDia = _selectedCancha!.preciosPorHorario[day];
+    if (preciosPorDia == null) {
+      return _selectedCancha!.precio;
+    }
+    
+    final precioData = preciosPorDia[horaNormalizada];
+    if (precioData == null) {
+      return _selectedCancha!.precio;
+    }
+    
+    // precioData siempre es Map<String, dynamic> según la estructura de Cancha
+    final precio = precioData['precio'];
+    if (precio is num) {
+      return precio.toDouble();
+    }
+    
+    return _selectedCancha!.precio;
+  }
+
+  Future<void> _publicarPromociones({required double precio, String? nota}) async {
+    try {
+      // ✅ NUEVO: Validación de seguridad adicional
+      if (!_esFechaHoraFutura()) {
+        _showErrorSnackBar('No puedes crear promociones para horas pasadas o en curso');
+        return;
+      }
+      
+      // Obtener lugarId del admin autenticado
+      final lugarId = await LugarHelper.getLugarId();
+      if (lugarId == null) {
+        _showErrorSnackBar('No se pudo determinar el lugarId');
+        return;
+      }
+
+      final fechaStr = DateFormat('yyyy-MM-dd').format(_selectedDate);
+      final horaStr = _selectedHours.first; // ✅ Solo hay 1 hora
+
+      // Intentar obtener el nombre de la sede
+      String sedeNombre = _selectedSedeId;
+      try {
+        final sedeDoc = await FirebaseFirestore.instance.collection('sedes').doc(_selectedSedeId).get();
+        if (sedeDoc.exists) {
+          sedeNombre = (sedeDoc.data()?['nombre'] as String?) ?? _selectedSedeId;
+        }
+      } catch (_) {}
+
+      // Crear nueva promoción
+      final docRef = FirebaseFirestore.instance.collection('promociones').doc();
+      String canchaNombre = _selectedCancha?.nombre ?? _selectedCancha?.id ?? '';
+
+      // Precio normal del horario (para mostrar % descuento en la tarjeta de promo)
+      final precioNormal = _obtenerPrecioNormalCancha();
+
+      // Convención: sede = ID de sede (para filtros); sede_nombre = nombre para mostrar
+      final datosPromocion = {
+        'lugarId': lugarId,
+        'sede': _selectedSedeId,
+        'sede_nombre': sedeNombre,
+        'cancha_id': _selectedCancha?.id,
+        'cancha_nombre': canchaNombre,
+        'fecha': fechaStr,
+        'horario': horaStr,
+        'precio_promocional': precio,
+        'precio_original': precioNormal,
+        'activo': true,
+        'creado_por': 'admin',
+        'creado_en': FieldValue.serverTimestamp(),
+        if (nota != null && nota.isNotEmpty) 'nota': nota,
+      };
+
+      // ✅ Desactivar otras promociones activas para el mismo slot (mismo lugar, cancha, fecha, horario) para evitar duplicados
+      int desactivadas = 0;
+      final canchaId = _selectedCancha?.id;
+      if (canchaId != null && canchaId.isNotEmpty) {
+        final otrasPromos = await FirebaseFirestore.instance
+            .collection('promociones')
+            .where('lugarId', isEqualTo: lugarId)
+            .where('cancha_id', isEqualTo: canchaId)
+            .where('fecha', isEqualTo: fechaStr)
+            .where('horario', isEqualTo: horaStr)
+            .where('activo', isEqualTo: true)
+            .get();
+        for (final doc in otrasPromos.docs) {
+          await doc.reference.update({
+            'activo': false,
+            'desactivado_en': FieldValue.serverTimestamp(),
+            'motivo_desactivacion': 'Reemplazada por nueva promoción',
+          });
+          desactivadas++;
+        }
+      }
+
+      await docRef.set(datosPromocion);
+
+      // ✅ Auditar creación de promoción
+      await ReservaAuditUtils.auditarCreacionPromocion(
+        promocionId: docRef.id,
+        datosPromocion: datosPromocion,
+        precioNormal: precioNormal,
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              desactivadas > 0
+                  ? 'Promoción publicada. Se desactivó $desactivadas promoción(es) anterior(es) para este horario.'
+                  : 'Promoción publicada correctamente.',
+              style: GoogleFonts.montserrat(),
+            ),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            margin: const EdgeInsets.all(12),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+        _iniciarEscuchaPromocionesEnTiempoReal();
+      }
+    } catch (e) {
+      _showErrorSnackBar('Error publicando promoción: $e');
+    }
+  }
+  
+  // ✅ NUEVO: Actualizar promoción en Firestore
+  Future<void> _actualizarPromocion({
+    required String promocionId,
+    required double precio,
+    String? nota,
+  }) async {
+    try {
+      // ✅ NUEVO: Validar que la fecha y hora sean futuras (solo para nuevas promociones, no para editar existentes)
+      // Nota: Permitimos editar promociones existentes aunque la hora haya pasado, pero no crear nuevas
+      
+      final promocionRef = FirebaseFirestore.instance.collection('promociones').doc(promocionId);
+      
+      // ✅ Obtener datos antiguos para auditoría
+      final promocionDoc = await promocionRef.get();
+      if (!promocionDoc.exists) {
+        _showErrorSnackBar('La promoción no existe');
+        return;
+      }
+      final datosAntiguos = promocionDoc.data()!;
+      
+      // ✅ NUEVO: Verificar si la promoción existente es para una hora pasada
+      // Si es así, solo permitir editar si se está cambiando a una hora futura
+      final fechaPromocionStr = datosAntiguos['fecha'] as String?;
+      final horarioPromocionStr = datosAntiguos['horario'] as String?;
+      
+      if (fechaPromocionStr != null && horarioPromocionStr != null) {
+        try {
+          final fechaPromocion = DateTime.parse(fechaPromocionStr);
+          final fechaHoy = DateTime.now();
+          final fechaPromocionDate = DateTime(fechaPromocion.year, fechaPromocion.month, fechaPromocion.day);
+          final fechaHoyDate = DateTime(fechaHoy.year, fechaHoy.month, fechaHoy.day);
+          
+          // Si la fecha de la promoción es pasada, no permitir editar
+          if (fechaPromocionDate.isBefore(fechaHoyDate)) {
+            _showErrorSnackBar('No puedes editar promociones de días pasados');
+            return;
+          }
+          
+          // Si la fecha es hoy, verificar que la hora no haya pasado
+          if (fechaPromocionDate.isAtSameMomentAs(fechaHoyDate)) {
+            final horarioPromocion = Horario.fromHoraFormateada(horarioPromocionStr);
+            final horaActual = TimeOfDay.now();
+            final minutosPromocion = horarioPromocion.hora.hour * 60 + horarioPromocion.hora.minute;
+            final minutosActuales = horaActual.hour * 60 + horaActual.minute;
+            
+            if (minutosPromocion <= minutosActuales) {
+              _showErrorSnackBar('No puedes editar promociones de horas pasadas o en curso');
+              return;
+            }
+          }
+        } catch (e) {
+          debugPrint('Error validando fecha/hora de promoción existente: $e');
+          // Continuar con la edición si hay error en la validación
+        }
+      }
+      
+      final updateData = <String, dynamic>{
+        'precio_promocional': precio,
+        'actualizado_en': FieldValue.serverTimestamp(),
+        'actualizado_por': 'admin',
+      };
+      
+      if (nota != null && nota.isNotEmpty) {
+        updateData['nota'] = nota;
+      } else {
+        updateData['nota'] = FieldValue.delete();
+      }
+      
+      await promocionRef.update(updateData);
+      
+      // ✅ NUEVO: Obtener datos nuevos y auditar
+      final promocionDocActualizado = await promocionRef.get();
+      final datosNuevos = promocionDocActualizado.data()!;
+      final precioNormal = _obtenerPrecioNormalCancha();
+      
+      await ReservaAuditUtils.auditarEdicionPromocion(
+        promocionId: promocionId,
+        datosAntiguos: datosAntiguos,
+        datosNuevos: datosNuevos,
+        precioNormal: precioNormal,
+      );
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Promoción actualizada correctamente.', style: GoogleFonts.montserrat()),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            margin: const EdgeInsets.all(12),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        _iniciarEscuchaPromocionesEnTiempoReal();
+      }
+    } catch (e) {
+      _showErrorSnackBar('Error actualizando promoción: $e');
+    }
+  }
+
+  /// Desactiva la promoción (deja de mostrarse en la app; el registro se conserva).
+  Future<void> _eliminarPromocion(String promocionId, String horario) async {
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Desactivar Promoción', style: GoogleFonts.montserrat(fontWeight: FontWeight.w600)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '¿Desactivar la promoción del horario $horario?',
+              style: GoogleFonts.montserrat(),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Dejará de mostrarse en la app. El registro se conserva (desactivado) para auditoría.',
+              style: GoogleFonts.montserrat(fontSize: 12, color: Colors.grey.shade700),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('Cancelar', style: GoogleFonts.montserrat()),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+            child: Text('Desactivar', style: GoogleFonts.montserrat(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmar != true) return;
+    
+    try {
+      // ✅ Obtener datos de la promoción antes de eliminarla para auditoría
+      final promocionDoc = await FirebaseFirestore.instance
+          .collection('promociones')
+          .doc(promocionId)
+          .get();
+      
+      if (!promocionDoc.exists) {
+        _showErrorSnackBar('La promoción no existe');
+        return;
+      }
+      
+      final datosPromocion = promocionDoc.data()!;
+      
+      await FirebaseFirestore.instance
+          .collection('promociones')
+          .doc(promocionId)
+          .update({
+            'activo': false,
+            'eliminado_en': FieldValue.serverTimestamp(),
+            'eliminado_por': 'admin',
+          });
+      
+      // ✅ NUEVO: Auditar eliminación de promoción
+      await ReservaAuditUtils.auditarEliminacionPromocion(
+        promocionId: promocionId,
+        datosPromocion: datosPromocion,
+      );
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Promoción desactivada. Ya no se mostrará en la app.', style: GoogleFonts.montserrat()),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            margin: const EdgeInsets.all(12),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        _iniciarEscuchaPromocionesEnTiempoReal();
+      }
+    } catch (e) {
+      _showErrorSnackBar('Error desactivando promoción: $e');
+    }
   }
 
   void _confirmarSeleccion() {
@@ -1209,35 +1445,91 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
   Future<void> _excluirDiaReservaRecurrente(Reserva reserva) async {
   if (reserva.reservaRecurrenteId == null) return;
   
-  try {
-    final reservaRecurrenteProvider = Provider.of<ReservaRecurrenteProvider>(context, listen: false);
-    
-    // 🔥 LA AUDITORÍA AHORA SE MANEJA DENTRO DEL PROVIDER CON SÍMBOLO DE ADVERTENCIA
-    await reservaRecurrenteProvider.excluirDiaReservaRecurrente(
-      reserva.reservaRecurrenteId!,
-      _selectedDate,
-    );
-    
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            '⚠️ Día excluido de la reserva recurrente. El horario ${reserva.horario.horaFormateada} está ahora disponible para ${DateFormat('EEEE d MMMM', 'es').format(_selectedDate)}.',
+  final motivoController = TextEditingController();
+  
+  final result = await showDialog<String>(
+    context: context,
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+      title: Text('Excluir día específico', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Esto excluirá la reserva recurrente solo para el día ${DateFormat('dd/MM/yyyy').format(_selectedDate)}.',
             style: GoogleFonts.montserrat(),
           ),
-          backgroundColor: Colors.orange,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          margin: const EdgeInsets.all(12),
-          duration: const Duration(seconds: 4),
+          const SizedBox(height: 16),
+          Text(
+            'Motivo de la exclusión:',
+            style: GoogleFonts.montserrat(fontWeight: FontWeight.w500, color: _primaryColor),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: motivoController,
+            maxLines: 3,
+            decoration: InputDecoration(
+              hintText: 'Ingresa el motivo de la exclusión...',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              filled: true,
+              fillColor: Colors.grey.shade50,
+            ),
+            style: GoogleFonts.montserrat(),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, null),
+          child: Text('Cancelar', style: GoogleFonts.montserrat(color: Colors.grey)),
         ),
+        ElevatedButton(
+          onPressed: () => Navigator.pop(context, motivoController.text.trim()),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.orange,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          child: Text('Excluir día', style: GoogleFonts.montserrat(color: Colors.white)),
+        ),
+      ],
+    ),
+  );
+  
+  if (result != null && mounted) {
+    try {
+      final reservaRecurrenteProvider = Provider.of<ReservaRecurrenteProvider>(context, listen: false);
+      
+      // 🔥 LA AUDITORÍA AHORA SE MANEJA DENTRO DEL PROVIDER CON NIVEL ALTO
+      await reservaRecurrenteProvider.excluirDiaReservaRecurrente(
+        reserva.reservaRecurrenteId!,
+        _selectedDate,
+        motivo: result.isEmpty ? null : result,
       );
       
-      _loadReservas();
-    }
-  } catch (e) {
-    if (mounted) {
-      _showErrorSnackBar('NO SE PUDO EXCLUIR EL DÍA, PIDE ACCESO DE CONTROL TOTAL AL SUPERUSUARIO');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '⚠️ Día excluido de la reserva recurrente. El horario ${reserva.horario.horaFormateada} está ahora disponible para ${DateFormat('EEEE d MMMM', 'es').format(_selectedDate)}.',
+              style: GoogleFonts.montserrat(),
+            ),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            margin: const EdgeInsets.all(12),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+        
+        _loadReservas();
+      }
+    } catch (e) {
+      if (mounted) {
+        _showErrorSnackBar('NO SE PUDO EXCLUIR EL DÍA, PIDE ACCESO DE CONTROL TOTAL AL SUPERUSUARIO');
+      }
     }
   }
 }
@@ -1328,40 +1620,75 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
                 ),
                 Padding(
                   padding: const EdgeInsets.all(20),
-                  child: Row(
+                  child: Column(
                     children: [
-                      Icon(Icons.repeat_rounded, color: _secondaryColor),
-                      const SizedBox(width: 12),
-                      Text(
-                        'Reservas Recurrentes',
-                        style: GoogleFonts.montserrat(
-                          fontSize: 20,
-                          fontWeight: FontWeight.w600,
-                          color: _primaryColor,
-                        ),
-                      ),
-                      const Spacer(),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
+                      Row(
                         children: [
-                          Text(
-                            '${reservasActivas.length} activas',
-                            style: GoogleFonts.montserrat(
-                              fontSize: 14,
-                              color: Colors.green,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                          if (reservasCanceladas.isNotEmpty)
-                            Text(
-                              '${reservasCanceladas.length} canceladas',
+                          Icon(Icons.repeat_rounded, color: _secondaryColor),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Reservas Recurrentes',
                               style: GoogleFonts.montserrat(
-                                fontSize: 12,
-                                color: Colors.red.withOpacity(0.7),
+                                fontSize: 20,
+                                fontWeight: FontWeight.w600,
+                                color: _primaryColor,
                               ),
                             ),
+                          ),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text(
+                                '${reservasActivas.length} activas',
+                                style: GoogleFonts.montserrat(
+                                  fontSize: 14,
+                                  color: Colors.green,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                              if (reservasCanceladas.isNotEmpty)
+                                Text(
+                                  '${reservasCanceladas.length} canceladas',
+                                  style: GoogleFonts.montserrat(
+                                    fontSize: 12,
+                                    color: Colors.red.withOpacity(0.7),
+                                  ),
+                                ),
+                            ],
+                          ),
                         ],
                       ),
+                      // ✅ NUEVO: Botón para eliminar reservas canceladas
+                      if (reservasCanceladas.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: () async {
+                              await _eliminarReservasRecurrentesCanceladas(
+                                reservasCanceladas,
+                                setModalState,
+                              );
+                            },
+                            icon: Icon(Icons.delete_sweep, color: Colors.red.shade700),
+                            label: Text(
+                              'Eliminar ${reservasCanceladas.length} reserva${reservasCanceladas.length > 1 ? 's' : ''} cancelada${reservasCanceladas.length > 1 ? 's' : ''}',
+                              style: GoogleFonts.montserrat(
+                                color: Colors.red.shade700,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            style: OutlinedButton.styleFrom(
+                              side: BorderSide(color: Colors.red.shade300),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -1514,6 +1841,129 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
     );
   }
 
+  // ✅ NUEVO: Eliminar reservas recurrentes canceladas
+  Future<void> _eliminarReservasRecurrentesCanceladas(
+    List<ReservaRecurrente> reservasCanceladas,
+    StateSetter setModalState,
+  ) async {
+    final cantidad = reservasCanceladas.length;
+    
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(
+          'Eliminar Reservas Canceladas',
+          style: GoogleFonts.montserrat(fontWeight: FontWeight.w600),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '¿Estás seguro de que deseas eliminar permanentemente $cantidad reserva${cantidad > 1 ? 's' : ''} recurrente${cantidad > 1 ? 's' : ''} cancelada${cantidad > 1 ? 's' : ''}?',
+              style: GoogleFonts.montserrat(),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.red.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.red.shade200),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded, color: Colors.red.shade700, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Esta acción no se puede deshacer. Se eliminarán permanentemente de la base de datos.',
+                      style: GoogleFonts.montserrat(
+                        fontSize: 12,
+                        color: Colors.red.shade700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('Cancelar', style: GoogleFonts.montserrat()),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: Text('Eliminar', style: GoogleFonts.montserrat(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmar != true) return;
+    
+    // Mostrar indicador de carga
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(child: CircularProgressIndicator()),
+    );
+    
+    try {
+      final batch = FirebaseFirestore.instance.batch();
+      int eliminadas = 0;
+      
+      for (final reserva in reservasCanceladas) {
+        try {
+          // Eliminar de Firestore
+          final reservaRef = FirebaseFirestore.instance
+              .collection('reservas_recurrentes')
+              .doc(reserva.id);
+          
+          batch.delete(reservaRef);
+          eliminadas++;
+        } catch (e) {
+          debugPrint('Error eliminando reserva recurrente ${reserva.id}: $e');
+        }
+      }
+      
+      await batch.commit();
+      
+      if (mounted) Navigator.pop(context); // Cerrar indicador de carga
+      
+      // Refrescar el provider y el modal
+      final reservaRecurrenteProvider = Provider.of<ReservaRecurrenteProvider>(context, listen: false);
+      await reservaRecurrenteProvider.fetchReservasRecurrentes(sede: _selectedSedeId);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '✅ $eliminadas reserva${eliminadas > 1 ? 's' : ''} recurrente${eliminadas > 1 ? 's' : ''} cancelada${eliminadas > 1 ? 's' : ''} eliminada${eliminadas > 1 ? 's' : ''} permanentemente',
+              style: GoogleFonts.montserrat(),
+            ),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            margin: const EdgeInsets.all(12),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+        
+        // Actualizar el estado del modal
+        setModalState(() {});
+      }
+    } catch (e) {
+      if (mounted) Navigator.pop(context); // Cerrar indicador de carga
+      if (mounted) {
+        _showErrorSnackBar('Error eliminando reservas canceladas: $e');
+      }
+    }
+  }
+
   Future<void> _confirmarEliminarReservaRecurrente(ReservaRecurrente reserva) async {
   final ahora = DateTime.now();
   final diaSemanaHoy = DateFormat('EEEE', 'es').format(ahora).toLowerCase();
@@ -1545,53 +1995,76 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
     mensajeHoy = '\n📅 Hoy no hay reserva programada para este horario.';
   }
 
-  final confirmado = await showDialog<bool>(
+  final motivoController = TextEditingController();
+  
+  final confirmado = await showDialog<String>(
     context: context,
     builder: (context) => AlertDialog(
       title: Text(
         'Cancelar Reservas Futuras',
         style: GoogleFonts.montserrat(fontWeight: FontWeight.w600),
       ),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '¿Estás seguro de que deseas cancelar todas las reservas futuras de ${reserva.clienteNombre}?',
-            style: GoogleFonts.montserrat(),
-          ),
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: mostrarAdvertenciaHoy ? Colors.orange.withOpacity(0.1) : Colors.blue.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '¿Estás seguro de que deseas cancelar todas las reservas futuras de ${reserva.clienteNombre}?',
+              style: GoogleFonts.montserrat(),
             ),
-            child: Text(
-              mensajeHoy,
-              style: GoogleFonts.montserrat(
-                fontSize: 13,
-                color: mostrarAdvertenciaHoy ? Colors.orange.shade700 : Colors.blue.shade700,
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: mostrarAdvertenciaHoy ? Colors.orange.withOpacity(0.1) : Colors.blue.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                mensajeHoy,
+                style: GoogleFonts.montserrat(
+                  fontSize: 13,
+                  color: mostrarAdvertenciaHoy ? Colors.orange.shade700 : Colors.blue.shade700,
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '🗓️ Todas las reservas desde mañana serán canceladas.',
-            style: GoogleFonts.montserrat(
-              fontSize: 13,
-              color: Colors.grey.shade600,
+            const SizedBox(height: 8),
+            Text(
+              '🗓️ Todas las reservas desde mañana serán canceladas.',
+              style: GoogleFonts.montserrat(
+                fontSize: 13,
+                color: Colors.grey.shade600,
+              ),
             ),
-          ),
-        ],
+            const SizedBox(height: 16),
+            Text(
+              'Motivo de la cancelación:',
+              style: GoogleFonts.montserrat(fontWeight: FontWeight.w500, color: _primaryColor),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: motivoController,
+              maxLines: 3,
+              decoration: InputDecoration(
+                hintText: 'Ingresa el motivo de la cancelación...',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                filled: true,
+                fillColor: Colors.grey.shade50,
+              ),
+              style: GoogleFonts.montserrat(),
+            ),
+          ],
+        ),
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(context, false),
+          onPressed: () => Navigator.pop(context, null),
           child: Text('Cancelar', style: GoogleFonts.montserrat()),
         ),
         TextButton(
-          onPressed: () => Navigator.pop(context, true),
+          onPressed: () => Navigator.pop(context, motivoController.text.trim()),
           style: TextButton.styleFrom(foregroundColor: Colors.red),
           child: Text('Cancelar Futuras', style: GoogleFonts.montserrat()),
         ),
@@ -1599,7 +2072,7 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
     ),
   );
 
-  if (confirmado == true) {
+  if (confirmado != null) {
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -1611,66 +2084,11 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
     try {
       final provider = Provider.of<ReservaRecurrenteProvider>(context, listen: false);
       
-      await provider.cancelarReservasFuturas(reserva.id);
-
-      // 🔥 AUDITORÍA CORREGIDA CON RESERVA_AUDIT_UTILS - CON SÍMBOLO DE ADVERTENCIA
-      try {
-        // Obtener nombre de la cancha
-        String? canchaNombre;
-        try {
-          final canchaDoc = await FirebaseFirestore.instance
-              .collection('canchas')
-              .doc(reserva.canchaId)
-              .get();
-          if (canchaDoc.exists) {
-            canchaNombre = canchaDoc.data()?['nombre'];
-          }
-        } catch (e) {
-          debugPrint('Error obteniendo nombre de cancha: $e');
-        }
-
-        // Preparar datos para la auditoría
-        final datosReservaCancelada = {
-          'id': reserva.id,
-          'nombre': reserva.clienteNombre,
-          'telefono': reserva.clienteTelefono,
-          'correo': reserva.clienteEmail,
-          'fecha_inicio': DateFormat('yyyy-MM-dd').format(reserva.fechaInicio),
-          'fecha_fin': reserva.fechaFin != null ? DateFormat('yyyy-MM-dd').format(reserva.fechaFin!) : null,
-          'horario': reserva.horario,
-          'cancha_nombre': canchaNombre ?? reserva.canchaId,
-          'cancha_id': reserva.canchaId,
-          'sede': reserva.sede,
-          'montoTotal': reserva.montoTotal,
-          'montoPagado': reserva.montoPagado,
-          'estado': reserva.estado.toString(),
-          'dias_semana': reserva.diasSemana,
-          'tipo_recurrencia': reserva.tipoRecurrencia.toString(),
-          'precio_personalizado': reserva.precioPersonalizado,
-          'precio_original': reserva.precioOriginal,
-          'descuento_aplicado': reserva.descuentoAplicado,
-        };
-
-        // 🔥 CLAVE: Motivo con símbolo de advertencia al inicio
-        String motivoCancelacion = '⚠️ Cancelación de reservas futuras por solicitud del usuario';
-        if (mostrarAdvertenciaHoy) {
-          motivoCancelacion += ' - Incluye reserva del día actual';
-        }
-
-        // 🔥 USAR RESERVA_AUDIT_UTILS CORRECTAMENTE
-        await ReservaAuditUtils.auditarEliminacionReserva(
-          reservaId: reserva.id,
-          datosReserva: datosReservaCancelada,
-          motivo: motivoCancelacion, // ⚠️ Ahora incluye el símbolo
-          esEliminacionMasiva: true, // Se cancelan múltiples reservas
-        );
-
-        debugPrint('✅ Auditoría de cancelación procesada correctamente');
-
-      } catch (e) {
-        debugPrint('⚠️ Error en auditoría de cancelación de reserva recurrente: $e');
-        // No interrumpir el flujo si la auditoría falla
-      }
+      // Pasar el motivo al provider (la auditoría se hace dentro del provider)
+      await provider.cancelarReservasFuturas(
+        reserva.id,
+        motivo: confirmado.isEmpty ? null : confirmado,
+      );
 
       if (mounted) Navigator.pop(context);
       if (mounted) Navigator.pop(context);
@@ -1744,6 +2162,23 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
       ],
       // ✅ BOTONES NORMALES SOLO CUANDO NO ES MODO SELECTOR
       if (!widget.esModoSelector) ...[
+        // ✅ NUEVO: Publicar promociones solo cuando hay EXACTAMENTE 1 horario seleccionado Y es futuro
+        if (_selectedHours.length == 1)
+          Tooltip(
+            message: _esFechaHoraFutura() 
+                ? 'Publicar Promoción' 
+                : 'Solo se pueden crear promociones para horas futuras',
+            child: Container(
+              margin: EdgeInsets.only(right: 4),
+              child: IconButton(
+                icon: Icon(
+                  Icons.local_offer, 
+                  color: _esFechaHoraFutura() ? _secondaryColor : _disabledColor,
+                ),
+                onPressed: _esFechaHoraFutura() ? _showPublicarPromocionesDialog : null,
+              ),
+            ),
+          ),
         Tooltip(
           message: 'Reservas Recurrentes',
           child: Container(
@@ -1898,7 +2333,7 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
             ? Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _buildDropdown('Sede', _selectedSedeId, sedeProvider.sedes
+                  _buildDropdown<String>('Sede', _selectedSedeId.isEmpty ? null : _selectedSedeId, sedeProvider.sedes
                       .map((sede) => DropdownMenuItem<String>(
                             value: sede['id'] as String,
                             child: Text(sede['nombre'] as String),
@@ -1917,9 +2352,7 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
       _selectedHours.clear();
       _isLoading = true;
     });
-    
-    // 🆕 LIMPIAR NOTIFICACIONES AL CAMBIAR SEDE
-    _peticionesNotificadas.clear();
+
     
     sedeProvider.setSede(_selectedSedeNombre);
     
@@ -1927,7 +2360,6 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
     await reservaRecurrenteProvider.fetchReservasRecurrentes(sede: _selectedSedeId);
     
     await _loadCanchas();
-    // ✅ Las peticiones se reiniciarán automáticamente desde _loadCanchas() -> _loadReservas()
   }
 
                   }, isMobile),
@@ -1945,9 +2377,7 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
       _selectedHours.clear();
       _isLoading = true;
     });
-    
-    // 🆕 LIMPIAR NOTIFICACIONES AL CAMBIAR CANCHA
-    _peticionesNotificadas.clear();
+
     
     _loadReservas();
   }
@@ -1957,7 +2387,7 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
             : Row(
                 children: [
                   Expanded(
-                    child: _buildDropdown('Sede', _selectedSedeId, sedeProvider.sedes
+                    child: _buildDropdown<String>('Sede', _selectedSedeId.isEmpty ? null : _selectedSedeId, sedeProvider.sedes
                         .map((sede) => DropdownMenuItem<String>(
                               value: sede['id'] as String,
                               child: Text(sede['nombre'] as String),
@@ -1976,9 +2406,7 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
       _selectedHours.clear();
       _isLoading = true;
     });
-    
-    // 🆕 LIMPIAR NOTIFICACIONES AL CAMBIAR SEDE
-    _peticionesNotificadas.clear();
+
     
     sedeProvider.setSede(_selectedSedeNombre);
     
@@ -1986,7 +2414,6 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
     await reservaRecurrenteProvider.fetchReservasRecurrentes(sede: _selectedSedeId);
     
     await _loadCanchas();
-    // ✅ Las peticiones se reiniciarán automáticamente desde _loadCanchas() -> _loadReservas()
   }
                     }, isMobile),
                   ),
@@ -2006,9 +2433,7 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
       _selectedHours.clear();
       _isLoading = true;
     });
-    
-    // 🆕 LIMPIAR NOTIFICACIONES AL CAMBIAR CANCHA
-    _peticionesNotificadas.clear();
+
     
     _loadReservas();
   }
@@ -2126,6 +2551,12 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
   }
 
   Widget _buildGridView(int crossAxisCount, double childAspectRatio) {
+    final promosActivas = _promocionesPorHorario.isNotEmpty
+        ? _promocionesPorHorario.values
+            .map((v) => v['horario'] as String?)
+            .whereType<String>()
+            .toList()
+        : <String>[];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2140,6 +2571,35 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
             ),
           ),
         ),
+        if (promosActivas.isNotEmpty) ...[
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.purple.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.purple.withOpacity(0.3)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.local_offer_rounded, size: 18, color: Colors.purple.shade700),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '${promosActivas.length} promoción(es) activa(s) para esta fecha: ${promosActivas.join(', ')}',
+                    style: GoogleFonts.montserrat(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.purple.shade900,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
         Expanded(
           child: GridView.builder(
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
@@ -2155,10 +2615,6 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
               final isReserved = _reservedMap.containsKey(horaNormalizada);
               final isSelected = _selectedHours.contains(horaNormalizada);
               final reserva = isReserved ? _reservedMap[horaNormalizada] : null;
-              
-              // ✅ VERIFICAR SI HAY PETICIÓN PENDIENTE
-              final tienePeticionPendiente = _peticionesPorHorario.containsKey(horaNormalizada);
-              final peticion = tienePeticionPendiente ? _peticionesPorHorario[horaNormalizada] : null;
 
               Color textColor;
               Color shadowColor;
@@ -2166,14 +2622,7 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
               IconData statusIcon;
               String statusText;
 
-              // ✅ PRIORIZAR PETICIONES PENDIENTES
-              if (tienePeticionPendiente) {
-                textColor = Colors.orange;
-                shadowColor = Colors.orange.withOpacity(0.3);
-                backgroundColor = Colors.orange.withOpacity(0.1);
-                statusIcon = Icons.hourglass_top;
-                statusText = 'Pendiente';
-              } else if (isReserved) {
+              if (isReserved) {
                 final bool isRecurrent = reserva?.esReservaRecurrente ?? false;
                 
                 if (isRecurrent) {
@@ -2212,10 +2661,16 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
                           _selectedCancha!.precio)
                   : 0.0;
 
-              // ✅ OBTENER PRECIO DE PETICIÓN PENDIENTE
-              if (tienePeticionPendiente && peticion != null) {
-                precio = peticion.valoresNuevos['precio_aplicado'] as double? ?? precio;
-              } else if (isReserved && reserva != null) {
+              // ✅ PRIORIDAD 1: PRECIO DE PROMOCIÓN ACTIVA (si no está reservado)
+              final tienePromocion = _promocionesPorHorario.containsKey(horaNormalizada);
+              final promocion = tienePromocion ? _promocionesPorHorario[horaNormalizada] : null;
+              
+              // ✅ PRIORIDAD 2: PRECIO PROMOCIONAL (solo si no hay reserva)
+              if (tienePromocion && promocion != null && !isReserved) {
+                precio = promocion['precio_promocional'] as double;
+              } 
+              // ✅ PRIORIDAD 3: PRECIO DE RESERVA EXISTENTE
+              else if (isReserved && reserva != null) {
                 precio = reserva.montoTotal;
               }
 
@@ -2246,19 +2701,17 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
                           color: backgroundColor,
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(
-                            color: tienePeticionPendiente
-                                ? Colors.orange
-                                : isReserved
-                                    ? (reserva?.confirmada ?? true ? _reservedColor : Colors.red)
-                                    : isSelected
-                                        ? _selectedHourColor
-                                        : const Color.fromRGBO(60, 64, 67, 0.3),
-                            width: tienePeticionPendiente ? 2.0 : 1.5,
+                            color: isReserved
+                                ? (reserva?.confirmada ?? true ? _reservedColor : Colors.red)
+                                : isSelected
+                                    ? _selectedHourColor
+                                    : const Color.fromRGBO(60, 64, 67, 0.3),
+                            width: 1.5,
                           ),
                           boxShadow: [
                             BoxShadow(
                               color: shadowColor,
-                              blurRadius: tienePeticionPendiente ? 12 : 8,
+                              blurRadius: 8,
                               offset: const Offset(0, 2),
                             ),
                           ],
@@ -2292,24 +2745,24 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              'COP ${precio.toInt()}${tienePeticionPendiente ? ' (Desc.)' : ''}',
+                              'COP ${precio.toInt()}${tienePromocion && !isReserved ? ' (Promo)' : ''}',
                               style: GoogleFonts.montserrat(
                                 fontSize: 10,
                                 fontWeight: FontWeight.w500,
                                 color: textColor,
                               ),
                             ),
-                            // ✅ INDICADOR ADICIONAL PARA PETICIONES
-                            if (tienePeticionPendiente) ...[
+                            // ✅ BADGE PARA PROMOCIONES
+                            if (tienePromocion && !isReserved) ...[
                               const SizedBox(height: 2),
                               Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                                 decoration: BoxDecoration(
-                                  color: Colors.orange,
+                                  color: Colors.purple,
                                   borderRadius: BorderRadius.circular(6),
                                 ),
                                 child: Text(
-                                  'ESPERANDO',
+                                  'PROMO',
                                   style: GoogleFonts.montserrat(
                                     fontSize: 8,
                                     fontWeight: FontWeight.w600,
@@ -2333,6 +2786,12 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
   }
 
   Widget _buildListView(bool isMobile) {
+    final promosActivas = _promocionesPorHorario.isNotEmpty
+        ? _promocionesPorHorario.values
+            .map((v) => v['horario'] as String?)
+            .whereType<String>()
+            .toList()
+        : <String>[];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2347,6 +2806,35 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
             ),
           ),
         ),
+        if (promosActivas.isNotEmpty) ...[
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.purple.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.purple.withOpacity(0.3)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.local_offer_rounded, size: 18, color: Colors.purple.shade700),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '${promosActivas.length} promoción(es) activa(s): ${promosActivas.join(', ')}',
+                    style: GoogleFonts.montserrat(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.purple.shade900,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
         Expanded(
           child: ListView.builder(
             itemCount: _hours.length,
@@ -2356,31 +2844,15 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
               final isReserved = _reservedMap.containsKey(horaNormalizada);
               final isSelected = _selectedHours.contains(horaNormalizada);
               final reserva = isReserved ? _reservedMap[horaNormalizada] : null;
-              
-              // ✅ VERIFICAR SI HAY PETICIÓN PENDIENTE
-              final tienePeticionPendiente = _peticionesPorHorario.containsKey(horaNormalizada);
-              final peticion = tienePeticionPendiente ? _peticionesPorHorario[horaNormalizada] : null;
 
               Color textColor;
               Color shadowColor;
               Color backgroundColor;
               Color leadingBackgroundColor;
               IconData statusIcon;
-              String statusText;
               String subtitleText;
 
-              // ✅ PRIORIZAR PETICIONES PENDIENTES
-              if (tienePeticionPendiente) {
-                textColor = Colors.orange;
-                shadowColor = Colors.orange.withOpacity(0.3);
-                backgroundColor = Colors.orange.withOpacity(0.05);
-                leadingBackgroundColor = Colors.orange.withOpacity(0.2);
-                statusIcon = Icons.hourglass_top;
-                statusText = 'Pendiente Confirmación';
-                
-                final datosReserva = peticion!.valoresNuevos['datos_reserva'] as Map<String, dynamic>? ?? {};
-                subtitleText = '${datosReserva['cliente_nombre'] ?? 'Cliente'} - Esperando aprobación';
-              } else if (isReserved) {
+              if (isReserved) {
                 final bool isRecurrent = reserva?.esReservaRecurrente ?? false;
                 
                 if (isRecurrent) {
@@ -2389,7 +2861,6 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
                   backgroundColor = const Color(0xFF1A237E).withOpacity(0.05);
                   leadingBackgroundColor = const Color(0xFF1A237E).withOpacity(0.2);
                   statusIcon = Icons.repeat_rounded;
-                  statusText = 'Recurrente';
                   subtitleText = 'Reservado por: ${reserva?.nombre ?? "Cliente"}';
                 } else {
                   textColor = _reservedColor;
@@ -2397,7 +2868,6 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
                   backgroundColor = _reservedColor.withOpacity(0.05);
                   leadingBackgroundColor = const Color.fromRGBO(76, 175, 80, 0.2);
                   statusIcon = Icons.event_busy;
-                  statusText = 'Reservado';
                   subtitleText = 'Reservado por: ${reserva?.nombre ?? "Cliente"}';
                 }
               } else if (isSelected) {
@@ -2406,7 +2876,6 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
                 backgroundColor = _selectedHourColor.withOpacity(0.05);
                 leadingBackgroundColor = _selectedHourColor;
                 statusIcon = Icons.check_circle;
-                statusText = 'Seleccionado';
                 subtitleText = 'Seleccionado para reservar';
               } else {
                 textColor = _primaryColor;
@@ -2414,7 +2883,6 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
                 backgroundColor = Colors.white;
                 leadingBackgroundColor = _availableColor;
                 statusIcon = Icons.event_available;
-                statusText = 'Disponible';
                 subtitleText = 'Disponible para reservar';
               }
 
@@ -2427,11 +2895,17 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
                           _selectedCancha!.precio)
                   : 0.0;
 
-              // ✅ OBTENER PRECIO DE PETICIÓN PENDIENTE
-              if (tienePeticionPendiente && peticion != null) {
-                precio = peticion.valoresNuevos['precio_aplicado'] as double? ?? precio;
-                subtitleText += ' - COP ${precio.toInt()} (Con descuento)';
-              } else {
+              // ✅ PRIORIDAD 1: PRECIO DE PROMOCIÓN ACTIVA (si no está reservado)
+              final tienePromocion = _promocionesPorHorario.containsKey(horaNormalizada);
+              final promocion = tienePromocion ? _promocionesPorHorario[horaNormalizada] : null;
+
+              // ✅ PRIORIDAD 2: PRECIO PROMOCIONAL (solo si no hay reserva)
+              if (tienePromocion && promocion != null && !isReserved) {
+                precio = promocion['precio_promocional'] as double;
+                subtitleText += ' - COP ${precio.toInt()} (Promoción)';
+              } 
+              // ✅ PRIORIDAD 3: PRECIO DE RESERVA EXISTENTE
+              else {
                 if (isReserved && reserva != null) {
                   precio = reserva.montoTotal;
                 }
@@ -2464,19 +2938,17 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
                           color: backgroundColor,
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(
-                            color: tienePeticionPendiente
-                                ? Colors.orange
-                                : isReserved
-                                    ? (reserva?.confirmada ?? true ? _reservedColor : Colors.red)
-                                    : isSelected
-                                        ? _selectedHourColor
-                                        : const Color.fromRGBO(60, 64, 67, 0.3),
-                            width: tienePeticionPendiente ? 2.0 : 1.5,
+                            color: isReserved
+                                ? (reserva?.confirmada ?? true ? _reservedColor : Colors.red)
+                                : isSelected
+                                    ? _selectedHourColor
+                                    : const Color.fromRGBO(60, 64, 67, 0.3),
+                            width: 1.5,
                           ),
                           boxShadow: [
                             BoxShadow(
                               color: shadowColor,
-                              blurRadius: tienePeticionPendiente ? 10 : 6,
+                              blurRadius: 6,
                               offset: const Offset(0, 2),
                             ),
                           ],
@@ -2499,7 +2971,7 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
                             child: Center(
                               child: Icon(statusIcon, 
                                   size: isMobile ? 12 : 14, 
-                                  color: tienePeticionPendiente ? Colors.orange : textColor),
+                                  color: textColor),
                             ),
                           ),
                           title: Row(
@@ -2512,17 +2984,17 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
                                   color: textColor,
                                 ),
                               ),
-                              // ✅ BADGE PARA PETICIONES PENDIENTES
-                              if (tienePeticionPendiente) ...[
+                              // ✅ BADGE PARA PROMOCIONES
+                              if (tienePromocion && !isReserved) ...[
                                 const SizedBox(width: 8),
                                 Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                                   decoration: BoxDecoration(
-                                    color: Colors.orange,
+                                    color: Colors.purple,
                                     borderRadius: BorderRadius.circular(10),
                                   ),
                                   child: Text(
-                                    'PENDIENTE',
+                                    'PROMO',
                                     style: GoogleFonts.montserrat(
                                       fontSize: 8,
                                       fontWeight: FontWeight.w600,
@@ -2545,38 +3017,18 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
                               ),
                             ),
                           ),
-                          trailing: tienePeticionPendiente
+                          trailing: isReserved
                               ? Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Icon(
-                                      Icons.access_time,
-                                      color: Colors.orange,
-                                      size: isMobile ? 16 : 20,
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Text(
-                                      'Ver',
-                                      style: GoogleFonts.montserrat(
-                                        fontSize: 12,
-                                        color: Colors.orange,
-                                        fontWeight: FontWeight.w500,
-                                      ),
+                                    IconButton(
+                                      icon: Icon(Icons.edit, color: _secondaryColor, size: isMobile ? 16 : 20),
+                                      onPressed: () => _viewReservaDetails(reserva!),
+                                      tooltip: 'Editar',
                                     ),
                                   ],
                                 )
-                              : isReserved
-                                  ? Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        IconButton(
-                                          icon: Icon(Icons.edit, color: _secondaryColor, size: isMobile ? 16 : 20),
-                                          onPressed: () => _viewReservaDetails(reserva!),
-                                          tooltip: 'Editar',
-                                        ),
-                                      ],
-                                    )
-                                  : Icon(
+                              : Icon(
                                       Icons.arrow_forward_ios_rounded,
                                       size: isMobile ? 12 : 16,
                                       color: Color.fromRGBO(
@@ -2598,230 +3050,5 @@ void _procesarPeticionReservaRecurrente(Peticion peticion, Map<String, Peticion>
         ),
       ],
     );
-  }
-
-  void _mostrarOpcionesPeticionPendiente(String horario, Peticion peticion) {
-  final tipoPeticion = peticion.valoresNuevos['tipo'] as String?;
-  final esReservaRecurrente = tipoPeticion == 'nueva_reserva_recurrente_precio_personalizado';
-  
-  String clienteNombre = 'Cliente';
-  String detalleAdicional = '';
-  
-  if (esReservaRecurrente) {
-    final datosReserva = peticion.valoresNuevos['datos_reserva_recurrente'] as Map<String, dynamic>? ?? {};
-    clienteNombre = datosReserva['cliente_nombre'] as String? ?? 'Cliente';
-    final diasSemana = datosReserva['dias_semana'] as List? ?? [];
-    detalleAdicional = '\nReserva recurrente: ${diasSemana.join(', ')}';
-  } else {
-    final datosReserva = peticion.valoresNuevos['datos_reserva'] as Map<String, dynamic>? ?? {};
-    clienteNombre = datosReserva['cliente_nombre'] as String? ?? 'Cliente';
-    final horarios = datosReserva['horarios'] as List? ?? [];
-    if (horarios.length > 1) {
-      detalleAdicional = '\nReserva múltiple: ${horarios.length} horarios';
-    }
-  }
-  
-  showModalBottomSheet(
-    context: context,
-    backgroundColor: Colors.transparent,
-    builder: (context) => Container(
-      decoration: BoxDecoration(
-        color: _backgroundColor,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 40,
-            height: 4,
-            decoration: BoxDecoration(
-              color: _disabledColor,
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-          const SizedBox(height: 20),
-          Icon(
-            esReservaRecurrente ? Icons.repeat_on : Icons.hourglass_top,
-            size: 48,
-            color: Colors.orange,
-          ),
-          const SizedBox(height: 12),
-          Text(
-            esReservaRecurrente ? 'Petición Reserva Recurrente' : 'Petición Pendiente',
-            style: GoogleFonts.montserrat(
-              fontSize: 20,
-              fontWeight: FontWeight.w600,
-              color: _primaryColor,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '$clienteNombre - $horario',
-            style: GoogleFonts.montserrat(
-              fontSize: 16,
-              color: _primaryColor.withOpacity(0.7),
-            ),
-          ),
-          if (detalleAdicional.isNotEmpty)
-            Text(
-              detalleAdicional,
-              style: GoogleFonts.montserrat(
-                fontSize: 14,
-                color: _primaryColor.withOpacity(0.6),
-              ),
-              textAlign: TextAlign.center,
-            ),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.orange.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              esReservaRecurrente 
-                  ? 'Esta reserva recurrente está esperando confirmación del superadministrador.'
-                  : 'Esta reserva está esperando confirmación del superadministrador.',
-              style: GoogleFonts.montserrat(
-                color: Colors.orange.shade700,
-                fontSize: 14,
-              ),
-              textAlign: TextAlign.center,
-            ),
-          ),
-          const SizedBox(height: 20),
-          ListTile(
-            leading: Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.red.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(Icons.cancel_outlined, color: Colors.red),
-            ),
-            title: Text(
-              'Cancelar Petición',
-              style: GoogleFonts.montserrat(fontWeight: FontWeight.w500, color: Colors.red),
-            ),
-            subtitle: Text(
-              'Eliminar esta solicitud de reserva',
-              style: GoogleFonts.montserrat(fontSize: 12),
-            ),
-            onTap: () async {
-              Navigator.pop(context);
-              await _cancelarPeticion(peticion.id);
-            },
-          ),
-          const SizedBox(height: 8),
-        ],
-      ),
-    ),
-  );
-}
-
-
-
-  // ✅ REEMPLAZAR el método _cancelarPeticion completo (líneas ~1100 aprox)
-  Future<void> _cancelarPeticion(String peticionId) async {
-    final confirmado = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(
-          'Cancelar Petición',
-          style: GoogleFonts.montserrat(fontWeight: FontWeight.w600),
-        ),
-        content: Text(
-          '¿Estás seguro de que deseas cancelar esta petición de reserva?',
-          style: GoogleFonts.montserrat(),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('No', style: GoogleFonts.montserrat()),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: Text('Sí, Cancelar', style: GoogleFonts.montserrat()),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmado == true) {
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => const Center(child: CircularProgressIndicator()),
-      );
-
-      try {
-        // ✅ ACTUALIZACIÓN CORRECTA DE ESTADO
-        await FirebaseFirestore.instance
-            .collection('peticiones')
-            .doc(peticionId)
-            .update({
-          'estado': 'cancelada',
-          'fecha_respuesta': Timestamp.now(),
-          'respuesta_admin': 'Cancelada por el administrador',
-          'admin_id': 'admin', // ✅ Usar el ID del admin actual si está disponible
-        });
-
-        if (mounted) Navigator.pop(context);
-        
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                'Petición cancelada correctamente',
-                style: GoogleFonts.montserrat(),
-              ),
-              backgroundColor: Colors.green,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-              margin: const EdgeInsets.all(12),
-            ),
-          );
-        }
-      } catch (e) {
-        if (mounted) Navigator.pop(context);
-        if (mounted) {
-          _showErrorSnackBar('Error al cancelar petición: $e');
-        }
-      }
-    }
-  }
-
-  void _mostrarNotificacionPeticionActualizada(String mensaje) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              Icon(Icons.notifications_active, color: Colors.white, size: 20),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  mensaje,
-                  style: GoogleFonts.montserrat(color: Colors.white),
-                ),
-              ),
-            ],
-          ),
-          backgroundColor: _secondaryColor,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          margin: const EdgeInsets.all(12),
-          duration: const Duration(seconds: 3),
-          action: SnackBarAction(
-            label: 'OK',
-            textColor: Colors.white,
-            onPressed: () {},
-          ),
-        ),
-      );
-    }
   }
 }
